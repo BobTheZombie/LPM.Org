@@ -6,7 +6,7 @@ lpm — Linux Package Manager with SAT solver, native .lpm packaging, signatures
 Features:
 - SAT-grade resolver (CNF + DPLL): versioned deps, provides (incl. versioned), conflicts, obsoletes, alternatives, recommends/suggests.
 - LFS-friendly: --root installs (chroot/DESTDIR), no systemd/RPM deps.
-- .lpm builder: tar + pixz (-9) with embedded .lpm-meta.json & .lpm-manifest.json (sha256 + size).
+- .lpm builder: tar + zstd with embedded .lpm-meta.json & .lpm-manifest.json (sha256 + size).
 - Sign & verify: OpenSSL signing (PEM private key) and verification (trusted public keys dir).
 - Repo handling: repoadd/repodel/repolist, fetch JSON indices, genindex from a dir of .lpm packages.
 - State & safety: SQLite installed DB, file manifests, history, pins (hold/prefer), verify command.
@@ -103,8 +103,8 @@ CONF = load_conf(CONF_FILE)
 ARCH = CONF.get("ARCH", os.uname().machine if hasattr(os, "uname") else "x86_64")
 
 # ================ PACKAGING  ================
-# Hard-locked to .tpxz
-EXT = ".tpxz"
+# Hard-locked to .zst
+EXT = ".zst"
 
 # =========================== Version / Semver ops =============================
 SEMVER_RE = re.compile(r"^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-+~].*)?$")
@@ -548,7 +548,7 @@ def run_hook(hook: str, env: Dict[str,str]):
     if path.exists() and os.access(path, os.X_OK):
         subprocess.run([str(path)], env={**os.environ, **env}, check=True)
 
-# =========================== Packaging helpers (.tpxz) =========================
+# =========================== Packaging helpers (.zst) ==========================
 def sha256sum(p: Path) -> str:
     h=hashlib.sha256()
     with p.open("rb") as f:
@@ -566,19 +566,19 @@ def collect_manifest(stagedir: Path) -> List[Dict[str,str]]:
 # =========================== Unified package tar opener =========================
 def open_package_tar(blob: Path, stream: bool = True) -> tarfile.TarFile:
     """
-    Open a .tpxz (pixz tarball) safely.
-    Validates that pixz produced output and raises clear errors if not.
+    Open a .zst (zstd-compressed tarball) safely.
+    Validates that zstd produced output and raises clear errors if not.
     """
     if not blob.exists():
         die(f"Package not found: {blob}")
 
-    # Only allow .tpxz
-    if not blob.suffix.endswith(".tpxz"):
-        die(f"{blob} is not a .tpxz archive")
+    # Only allow .zst
+    if blob.suffix != EXT:
+        die(f"{blob} is not a {EXT} archive")
 
-    # Start pixz in tarball mode
+    # Start zstd in decompress mode
     proc = subprocess.Popen(
-        ["pixz", "-d", "-t", "-c", str(blob)],
+        ["zstd", "-d", "-q", "-c", str(blob)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE
     )
@@ -595,7 +595,7 @@ def open_package_tar(blob: Path, stream: bool = True) -> tarfile.TarFile:
         return tf
     except Exception as e:
         _, err = proc.communicate(timeout=2)
-        die(f"Failed to open {blob}: {e}\n[pixz stderr] {err.decode().strip()}")
+        die(f"Failed to open {blob}: {e}\n[zstd stderr] {err.decode().strip()}")
 
 # =============== BUILDPKG Function ==============================
 def build_package(stagedir: Path, meta: PkgMeta, out: Path, sign=True):
@@ -603,11 +603,11 @@ def build_package(stagedir: Path, meta: PkgMeta, out: Path, sign=True):
     if not stagedir.is_dir():
         die(f"Stagedir {stagedir} missing")
 
-    if not out.name.endswith(".tpxz"):
-        out = out.with_suffix(".tpxz")
+    if not out.name.endswith(EXT):
+        out = out.with_suffix(EXT)
 
-    if shutil.which("pixz") is None:
-        die("pixz is required to build .tpxz packages but was not found in PATH")
+    if shutil.which("zstd") is None:
+        die(f"zstd is required to build {EXT} packages but was not found in PATH")
 
     # Write metadata + manifest
     meta_path = stagedir / ".lpm-meta.json"
@@ -620,21 +620,22 @@ def build_package(stagedir: Path, meta: PkgMeta, out: Path, sign=True):
     with mani_path.open("w", encoding="utf-8") as f:
         json.dump(mani, f, indent=2)
 
-    # --- FIX: two-step tar → pixz process ---
-    tmp_tar = stagedir.parent / f"{meta.name}-{meta.version}.tar"
-    try:
-        subprocess.run(
-            ["tar", "--sort=name", "--mtime=@0", "--owner=0", "--group=0",
-             "--numeric-owner", "-cf", str(tmp_tar), "-C", str(stagedir), "."],
-            check=True
-        )
-        subprocess.run(
-            ["pixz", "-9", "-t", str(tmp_tar), "-o", str(out)],
-            check=True
-        )
-    finally:
-        if tmp_tar.exists():
-            tmp_tar.unlink()
+    # Package with tar + zstd
+    subprocess.run(
+        [
+            "tar",
+            "--zstd",
+            "-cf", str(out),
+            "--sort=name",
+            "--mtime=@0",
+            "--owner=0",
+            "--group=0",
+            "--numeric-owner",
+            "-C", str(stagedir),
+            ".",
+        ],
+        check=True,
+    )
 
     # Sign package if signing key exists
     if sign and SIGN_KEY.exists():
@@ -711,7 +712,7 @@ def extract_tar(blob: Path, root: Path) -> List[str]:
     return manifest
 
 def _cache_path_for(url: str) -> Path:
-    name = os.path.basename(urllib.parse.urlparse(url).path) or "lpm.pxz"
+    name = os.path.basename(urllib.parse.urlparse(url).path) or f"lpm{EXT}"
     return CACHE_DIR / name
 
 def fetch_blob(p: PkgMeta) -> Tuple[Path, Optional[Path]]:
@@ -1005,7 +1006,7 @@ exit 0
     )
 
     outdir = script_dir if outdir is None else outdir
-    out = outdir / f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}.tpxz"
+    out = outdir / f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}"
     build_package(stagedir, meta, out, sign=True)
     return out
 
@@ -1117,7 +1118,7 @@ def cmd_build(a):
         requires=a.requires, provides=a.provides, conflicts=a.conflicts,
         obsoletes=a.obsoletes, recommends=a.recommends, suggests=a.suggests
     )
-    out = Path(a.output or f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}.tpxz")
+    out = Path(a.output or f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}")
     build_package(stagedir, meta, out, sign=(not a.no_sign))
 
 def cmd_buildpkg(a):
@@ -1146,15 +1147,15 @@ def cmd_fileinstall(a):
 
 def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = False, verify: bool = True):
     """
-    Production-grade .tpxz package installer.
+    Production-grade .zst package installer.
     """
     # --- Step 1: Validate extension + magic ---
     if file.suffix != EXT:
         die(f"{file.name} is not a {EXT} package")
     try:
         with file.open("rb") as f:
-            magic = f.read(6)
-        if not magic.startswith(b"\xfd7zXZ"):
+            magic = f.read(4)
+        if magic != b"\x28\xb5\x2f\xfd":
             die(f"{file.name} is not a valid {EXT} (bad magic header)")
     except Exception as e:
         die(f"Cannot read {file}: {e}")
