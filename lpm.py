@@ -122,6 +122,23 @@ def load_conf(path: Path) -> Dict[str,str]:
 CONF = load_conf(CONF_FILE)
 ARCH = CONF.get("ARCH", os.uname().machine if hasattr(os, "uname") else "x86_64")
 
+# ================ Init System Detection ===============================================
+def detect_init_system() -> str:
+    """
+    Detect which init system is active.
+    Returns: 'systemd', 'runit', 'openrc', 'sysv', or 'unknown'
+    """
+    if shutil.which("systemctl") and os.path.isdir("/run/systemd/system"):
+        return "systemd"
+    if os.path.isdir("/etc/runit") or os.path.isdir("/etc/runit/runsvdir"):
+        return "runit"
+    if os.path.isdir("/etc/init.d"):
+        if shutil.which("openrc"):
+            return "openrc"
+        return "sysv"
+    return "unknown"
+
+
 # ================ PACKAGING  ================
 # Hard-locked to .zst
 EXT = ".zst"
@@ -562,11 +579,118 @@ def solve(goals: List[str], universe: Universe) -> List[PkgMeta]:
         dep_depth[p.name]=d; return d
     return sorted(chosen.values(), key=lambda p: depth_of(p))
 
-# =========================== Hooks ============================================
+# =========================== Hooks =============================================
 def run_hook(hook: str, env: Dict[str,str]):
     path = HOOK_DIR / hook
     if path.exists() and os.access(path, os.X_OK):
         subprocess.run([str(path)], env={**os.environ, **env}, check=True)
+        
+# =========================== Service File Handling =============================
+def handle_service_files(pkg_name: str, root: Path):
+    """
+    Detect service files from installed package and register them
+    according to the active init system.
+    """
+    init = detect_init_system()
+    policy = CONF.get("INIT_POLICY", "manual").lower()  # auto/manual/none
+
+    if policy == "none":
+        return
+
+    if init == "systemd":
+        service_dir = root / "usr/lib/systemd/system"
+        if service_dir.exists():
+            for svc in service_dir.glob("*.service"):
+                if policy == "auto":
+                    subprocess.run(["systemctl", "enable", "--now", svc.name],
+                                   check=False)
+                log(f"[systemd] Detected service: {svc.name}")
+
+    elif init == "sysv":
+        initd = root / "etc/init.d"
+        if initd.exists():
+            for svc in initd.iterdir():
+                if policy == "auto":
+                    subprocess.run(["update-rc.d", svc.name, "defaults"],
+                                   check=False)
+                log(f"[sysv] Found init script: {svc.name}")
+
+    elif init == "openrc":
+        initd = root / "etc/init.d"
+        if initd.exists():
+            for svc in initd.iterdir():
+                if policy == "auto":
+                    subprocess.run(["rc-update", "add", svc.name, "default"],
+                                   check=False)
+                log(f"[openrc] Found OpenRC service: {svc.name}")
+
+    elif init == "runit":
+        svdir = root / "etc/sv"
+        runsvdir = Path("/etc/runit/runsvdir/default")
+        if svdir.exists():
+            for svc in svdir.iterdir():
+                if policy == "auto":
+                    runsvdir.mkdir(parents=True, exist_ok=True)
+                    target = runsvdir / svc.name
+                    try:
+                        if not target.exists():
+                            target.symlink_to(svc)
+                    except Exception as e:
+                        warn(f"runit symlink failed for {svc}: {e}")
+                log(f"[runit] Found runit service: {svc.name}")
+
+    else:
+        warn("No supported init system detected")
+        
+        
+def remove_service_files(pkg_name: str, root: Path):
+    """
+    Handle service cleanup on package removal.
+    """
+    init = detect_init_system()
+    policy = CONF.get("INIT_POLICY", "manual").lower()
+
+    if policy == "none":
+        return
+
+    if init == "systemd":
+        service_dir = root / "usr/lib/systemd/system"
+        if service_dir.exists():
+            for svc in service_dir.glob("*.service"):
+                if policy == "auto":
+                    subprocess.run(["systemctl", "disable", "--now", svc.name],
+                                   check=False)
+                log(f"[systemd] Disabled service: {svc.name}")
+
+    elif init == "sysv":
+        initd = root / "etc/init.d"
+        if initd.exists():
+            for svc in initd.iterdir():
+                if policy == "auto":
+                    subprocess.run(["update-rc.d", "-f", svc.name, "remove"],
+                                   check=False)
+                log(f"[sysv] Removed init script: {svc.name}")
+
+    elif init == "openrc":
+        initd = root / "etc/init.d"
+        if initd.exists():
+            for svc in initd.iterdir():
+                if policy == "auto":
+                    subprocess.run(["rc-update", "del", svc.name, "default"],
+                                   check=False)
+                log(f"[openrc] Removed OpenRC service: {svc.name}")
+
+    elif init == "runit":
+        runsvdir = Path("/etc/runit/runsvdir/default")
+        if runsvdir.exists():
+            for svc in runsvdir.iterdir():
+                try:
+                    if svc.is_symlink() and svc.exists():
+                        svc.unlink()
+                        log(f"[runit] Unlinked runit service: {svc.name}")
+                except Exception as e:
+                    warn(f"runit cleanup failed for {svc}: {e}")
+
 
 # =========================== Packaging helpers (.zst) ==========================
 def sha256sum(p: Path) -> str:
@@ -825,9 +949,19 @@ def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool, force: 
 
             log(f"==> install {p.name}-{p.version}-{p.release}.{p.arch}")
             run_hook("pre_install", {"LPM_PKG": p.name, "LPM_VERSION": p.version, "LPM_ROOT": str(root)})
-            blob, sig = fetch_blob(p)
+
+            try:
+                blob, sig = fetch_blob(p)
+            except Exception as e:
+                warn(f"Could not fetch {p.name} from repos ({e}), trying GitLab fallback...")
+                tmp = Path(f"/tmp/lpm-dep-{p.name}.lpmbuild")
+                fetch_lpmbuild(p.name, tmp)
+                built = run_lpmbuild(tmp)
+                return installpkg(built, root=root, dry_run=dry, verify=verify, force=force)
+
             if verify and not dry:
                 verify_signature(blob, sig)
+
             meta_in, mani_in = read_package_meta(blob)
             if not dry:
                 extract_tar(blob, root)
@@ -848,6 +982,7 @@ def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool, force: 
                     "INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
                     (int(time.time()), "install", p.name, None, p.version, json.dumps(dataclasses.asdict(p))),
                 )
+
             run_hook("post_install", {"LPM_PKG": p.name, "LPM_VERSION": p.version, "LPM_ROOT": str(root)})
 
 
@@ -878,6 +1013,10 @@ def _remove_installed_package(meta: dict, root: Path, dry_run: bool, conn):
                     pass
         except Exception as e:
             warn(f"rm {p}: {e}")
+            
+        # Stop/disable/init cleanup for services
+        remove_service_files(name, root)
+ 
 
     conn.execute("DELETE FROM installed WHERE name=?", (name,))
     conn.execute(
@@ -918,17 +1057,35 @@ def do_upgrade(targets: List[str], root: Path, dry: bool, verify: bool, force: b
             goals.append(f"{n} ~= {meta['version']}")
     else:
         goals += targets
-    plan = solve(goals, u)
+
+    try:
+        plan = solve(goals, u)
+    except RuntimeError:
+        warn("SAT solver failed to find upgrade set, falling back to GitLab fetch...")
+        for dep in targets:
+            built = build_from_gitlab(dep)
+            installpkg(built, root=root, dry_run=dry, verify=verify, force=force)
+        return
+
     upgrades = []
     for p in plan:
         cur = u.installed.get(p.name)
         if not cur or cmp_semver(p.version, cur["version"]) > 0:
             upgrades.append(p)
+
     if not upgrades:
         ok("Nothing to do.")
         return
+
+    # Cleanup services before upgrade
+    for p in upgrades:
+        cur = u.installed.get(p.name)
+        if cur:
+            remove_service_files(p.name, Path(DEFAULT_ROOT))
+
     do_install(upgrades, root, dry, verify, force=force)
-    
+
+
 # =========================== Repo index generation =============================
 def gen_index(repo_dir: Path, base_url: Optional[str], arch_filter: Optional[str] = None):
     """
@@ -1042,6 +1199,52 @@ def _maybe_fetch_source(url: str, dst_dir: Path):
     dst.write_bytes(urlread(url))
 
 # ======================= LPMBUILD =============================================
+def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
+    """
+    Fetch a .lpmbuild script from the configured source repo.
+    Default: https://gitlab.com/lpm-org/packages/-/raw/main/<pkg>/<pkg>.lpmbuild
+    Can be overridden in /etc/lpm/lpm.conf:
+      SRC_REPO=https://gitlab.com/myuser/myrepo/-/raw/main
+    """
+    # Load base repo URL
+    base_url = CONF.get("LPMBUILD_REPO", "https://gitlab.com/lpm-org/packages/-/blob/main/")
+
+    # Build full URL
+    url = f"{base_url}/{pkgname}/{pkgname}.lpmbuild"
+
+    ok(f"Fetching lpmbuild for {pkgname} from {url}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        data = urlread(url)
+    except Exception as e:
+        die(f"Failed to fetch lpmbuild for {pkgname}: {e}")
+    dst.write_bytes(data)
+    return dst
+
+    
+def build_from_gitlab(pkgname: str) -> Path:
+    """
+    Fetch lpmbuild from GitLab, build it if not already cached,
+    and return the cached .zst package path.
+    """
+    cache_pkg = CACHE_DIR / f"{pkgname}.built{EXT}"
+    if cache_pkg.exists():
+        log(f"[cache] Using cached build for {pkgname}: {cache_pkg}")
+        return cache_pkg
+
+    tmp = Path(f"/tmp/lpm-dep-{pkgname}.lpmbuild")
+    fetch_lpmbuild(pkgname, tmp)
+    built = run_lpmbuild(tmp, outdir=CACHE_DIR)
+
+    # Copy to a stable cache filename
+    if built != cache_pkg:
+        try:
+            shutil.copy2(built, cache_pkg)
+        except Exception as e:
+            warn(f"Failed to copy {built} to cache: {e}")
+            return built
+    return cache_pkg
+
 def run_lpmbuild(script: Path, outdir: Optional[Path]=None) -> Path:
     script_path = script.resolve()
     script_dir = script_path.parent
@@ -1057,6 +1260,30 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None) -> Path:
     license_ = scal.get("LICENSE", "")
     if not name or not version:
         die("lpmbuild missing NAME or VERSION")
+
+    # --- Auto-build dependencies before continuing ---
+    seen = set()
+    for dep in arr.get("REQUIRES", []):
+        try:
+            e = parse_dep_expr(dep)
+        except Exception:
+            continue
+        parts = flatten_and(e) if e.kind == "and" else [e]
+        for part in parts:
+            if part.kind == "atom":
+                depname = part.atom.name
+                if depname in seen:
+                    continue
+                seen.add(depname)
+
+                conn = db()
+                installed = db_installed(conn)
+                if depname not in installed:
+                    log(f"[deps] building required package: {depname}")
+                    tmp = Path(f"/tmp/lpm-dep-{depname}.lpmbuild")
+                    fetch_lpmbuild(depname, tmp)
+                    run_lpmbuild(tmp, outdir or script_dir)
+
 
     stagedir = Path(f"/tmp/pkg-{name}")
     buildroot = Path(f"/tmp/build-{name}")
@@ -1119,8 +1346,12 @@ fi
 exit 0
 """)
             install_sh.chmod(0o755)
+
     except Exception as e:
-        warn(f"No install_script in {script.name}: {e}")
+        warn(f"Could not embed install script for {name}: {e}")
+        built = build_from_gitlab(p.name)
+        return installpkg(built, root=root, dry_run=dry, verify=verify, force=force)
+
 
     # --- Package metadata ---
     meta = PkgMeta(
@@ -1302,7 +1533,7 @@ def cmd_fileinstall(a):
 
 def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = False, verify: bool = True, force: bool = False):
     """
-    Production-grade .zst package installer with protected package handling.
+    Production-grade .zst package installer with protected package + dep resolution.
     """
     global PROTECTED
     PROTECTED = load_protected()
@@ -1325,7 +1556,7 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
             die(f"Missing signature: {sig}")
         verify_signature(file, sig)
 
-    # --- Step 3: Read metadata ---
+        # --- Step 3: Read metadata ---
     meta, mani = read_package_meta(file)
     if not meta:
         die(f"Invalid package: {file.name} (no metadata)")
@@ -1339,6 +1570,18 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
         warn(f"{meta.name} is protected (from {PROTECTED_FILE}) and cannot be installed/upgraded without --force")
         return
 
+    # --- Step 3c: Meta-package handler ---
+    # If package has REQUIRES but no manifest payload → treat as meta-package
+    if not mani or all(e["path"].startswith("/.lpm") for e in mani):
+        if meta.requires:
+            log(f"[meta] {meta.name} is a meta-package, resolving deps: {', '.join(meta.requires)}")
+            u = build_universe()
+            plan = solve(meta.requires, u)
+            do_install(plan, root, dry_run, verify, force)
+            ok(f"Installed meta-package {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
+            return
+
+
     # --- Step 4: Dry-run ---
     if dry_run:
         log(f"[dry-run] Would install {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
@@ -1346,7 +1589,7 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
             print(f" -> {e['path']} ({e['size']} bytes)")
         return
 
-    # --- Step 5: Transaction ---
+    # --- Step 5: Transaction (unchanged below) ---
     conn = db()
     with transaction(conn, f"install {meta.name}", dry_run):
         run_hook("pre_install", {
@@ -1359,7 +1602,7 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
         try:
             manifest = extract_tar(file, tmp_root)
 
-            # --- Step 6: Manifest hash validation ---
+            # Validate manifest files
             for e in mani:
                 f = tmp_root / e["path"].lstrip("/")
                 if not f.exists():
@@ -1368,7 +1611,7 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
                 if h != e["sha256"]:
                     die(f"Hash mismatch for {e['path']}: expected {e['sha256']}, got {h}")
 
-            # --- Step 7: Atomic move into root with conflict handling ---
+            # Move into root w/ conflict handling (same as before) ...
             for e in mani:
                 rel = e["path"].lstrip("/")
                 src = tmp_root / rel
@@ -1380,19 +1623,15 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
                     continue
 
                 if dest.exists() or dest.is_symlink():
-                    # Compare hashes to detect reinstall of identical file
                     same = False
                     try:
                         if dest.is_file() and sha256sum(dest) == e["sha256"]:
                             same = True
                     except Exception:
                         pass
-
                     if same:
                         log(f"[skip] {rel} already up-to-date")
                         continue
-
-                    # Prompt user for action
                     while True:
                         resp = input(f"[conflict] {rel} exists. [R]eplace / [S]kip / [A]bort? ").strip().lower()
                         if resp in ("r", "replace"):
@@ -1404,7 +1643,7 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
                         elif resp in ("s", "skip"):
                             log(f"[skip] {rel}")
                             src.unlink(missing_ok=True)
-                            continue  # skip moving this file
+                            continue
                         elif resp in ("a", "abort"):
                             die(f"Aborted install due to conflict at {rel}")
                         else:
@@ -1412,7 +1651,7 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
 
                 shutil.move(str(src), str(dest))
 
-            # --- Step 8: Update DB ---
+            # Update DB
             conn.execute(
                 "REPLACE INTO installed(name,version,release,arch,provides,manifest,install_time) VALUES(?,?,?,?,?,?,?)",
                 (
@@ -1421,7 +1660,7 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
                     meta.release,
                     meta.arch,
                     json.dumps([meta.name] + meta.provides),
-                    json.dumps(mani),  # full manifest entries
+                    json.dumps(mani),
                     int(time.time()),
                 ),
             )
@@ -1429,7 +1668,6 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
                 "INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
                 (int(time.time()), "install", meta.name, None, meta.version, json.dumps(dataclasses.asdict(meta))),
             )
-
         finally:
             shutil.rmtree(tmp_root, ignore_errors=True)
 
@@ -1438,6 +1676,9 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
             "LPM_VERSION": meta.version,
             "LPM_ROOT": str(root),
         })
+        
+        # New: init system service integration
+        handle_service_files(meta.name, root)
 
     ok(f"Installed {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
 
