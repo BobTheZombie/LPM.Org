@@ -825,6 +825,42 @@ def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool):
             run_hook("post_install", {"LPM_PKG":p.name, "LPM_VERSION":p.version, "LPM_ROOT":str(root)})
 
 
+
+def _remove_installed_package(meta: dict, root: Path, dry_run: bool, conn):
+    """Remove files listed in manifest and update installed DB/history."""
+    if dry_run:
+        return
+    name = meta["name"]
+    manifest_entries = meta.get("manifest", [])
+    # Handle both old list-of-paths and new structured manifest
+    if manifest_entries and isinstance(manifest_entries[0], dict):
+        files = [e["path"] for e in manifest_entries]
+    else:
+        files = manifest_entries
+
+    # Remove deepest paths first (dirs last)
+    files = sorted(files, key=lambda s: s.count("/"), reverse=True)
+
+    for f in tqdm(files, desc=f"Removing {name}", unit="file", colour="purple"):
+        p = root / f.lstrip("/")
+        try:
+            if p.is_file() or p.is_symlink():
+                p.unlink(missing_ok=True)
+            elif p.is_dir():
+                try:
+                    p.rmdir()
+                except OSError:
+                    pass
+        except Exception as e:
+            warn(f"rm {p}: {e}")
+
+    conn.execute("DELETE FROM installed WHERE name=?", (name,))
+    conn.execute(
+        "INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
+        (int(time.time()), "remove", name, meta["version"], None, None),
+    )
+
+
 def do_remove(names: List[str], root: Path, dry: bool):
     conn = db()
     installed = db_installed(conn)
@@ -838,35 +874,8 @@ def do_remove(names: List[str], root: Path, dry: bool):
 
             run_hook("pre_remove", {"LPM_PKG": n, "LPM_ROOT": str(root)})
 
-            if not dry:
-                manifest_entries = meta["manifest"]
-                # Handle both old list-of-paths and new structured manifest
-                if manifest_entries and isinstance(manifest_entries[0], dict):
-                    files = [e["path"] for e in manifest_entries]
-                else:
-                    files = manifest_entries
-
-                # Remove deepest paths first (dirs last)
-                files = sorted(files, key=lambda s: s.count("/"), reverse=True)
-
-                for f in tqdm(files, desc=f"Removing {n}", unit="file", colour="purple"):
-                    p = root / f.lstrip("/")
-                    try:
-                        if p.is_file() or p.is_symlink():
-                            p.unlink(missing_ok=True)
-                        elif p.is_dir():
-                            try:
-                                p.rmdir()
-                            except OSError:
-                                pass
-                    except Exception as e:
-                        warn(f"rm {p}: {e}")
-
-                conn.execute("DELETE FROM installed WHERE name=?", (n,))
-                conn.execute(
-                    "INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
-                    (int(time.time()), "remove", n, meta["version"], None, None),
-                )
+            pkg_meta = {"name": n, **meta}
+            _remove_installed_package(pkg_meta, root, dry, conn)
 
             run_hook("post_remove", {"LPM_PKG": n, "LPM_ROOT": str(root)})
 
@@ -1371,45 +1380,15 @@ def removepkg(name: str, root: Path = Path(DEFAULT_ROOT), dry_run: bool = False)
         warn(f"{name} not installed")
         return
     version, manifest_json = row
+    meta = {
+        "name": name,
+        "version": version,
+        "manifest": json.loads(manifest_json) if manifest_json else [],
+    }
 
     with transaction(conn, f"remove {name}", dry_run):
         run_hook("pre_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)})
-
-        if not dry_run:
-            manifest_entries = json.loads(manifest_json) if manifest_json else []
-            if manifest_entries and isinstance(manifest_entries[0], dict):
-                files = [e["path"] for e in manifest_entries]
-            else:
-                files = manifest_entries
-
-            files = sorted(files, key=lambda s: s.count("/"), reverse=True)
-
-            dirs: Set[Path] = set()
-            for f in tqdm(files, desc=f"Removing {name}", unit="file", colour="purple"):
-                p = root / f.lstrip("/")
-                try:
-                    if p.is_file() or p.is_symlink():
-                        p.unlink(missing_ok=True)
-                    elif p.is_dir():
-                        p.rmdir()
-                except Exception as e:
-                    warn(f"rm {p}: {e}")
-                dirs.add(p.parent)
-
-            for d in sorted(dirs, key=lambda s: str(s).count("/"), reverse=True):
-                while d != root:
-                    try:
-                        d.rmdir()
-                    except OSError:
-                        break
-                    d = d.parent
-
-            conn.execute("DELETE FROM installed WHERE name=?", (name,))
-            conn.execute(
-                "INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
-                (int(time.time()), "remove", name, version, None, None),
-            )
-
+        _remove_installed_package(meta, root, dry_run, conn)
         run_hook("post_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)})
 
     ok(f"Removed {name}-{version}")
