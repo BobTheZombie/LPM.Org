@@ -20,6 +20,7 @@ import argparse, contextlib, dataclasses, fnmatch, hashlib, io, json, os, re, sh
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Iterable
+import zstandard as zstd
 
 # =========================== Config / Defaults ================================
 CONF_FILE = Path("/etc/lpm/lpm.conf")      # KEY=VALUE, e.g. ARCH=znver2
@@ -559,43 +560,56 @@ def collect_manifest(stagedir: Path) -> List[Dict[str,str]]:
     mani=[]
     for root,dirs,files in os.walk(stagedir):
         for fn in files:
-            f=Path(root)/fn; rel=f.relative_to(stagedir).as_posix()
-            mani.append({"path":"/"+rel,"sha256":sha256sum(f),"size":f.stat().st_size})
+            if fn in (".lpm-meta.json", ".lpm-manifest.json"):
+                continue
+            f=Path(root)/fn
+            rel=f.relative_to(stagedir).as_posix()
+            mani.append({
+                "path":"/"+rel,
+                "sha256":sha256sum(f),
+                "size":f.stat().st_size
+            })
     return sorted(mani,key=lambda e:e["path"])
+
     
 # =========================== Unified package tar opener =========================
 def open_package_tar(blob: Path, stream: bool = True) -> tarfile.TarFile:
     """
-    Open a .zst (zstd-compressed tarball) safely.
-    Validates that zstd produced output and raises clear errors if not.
+    Open a .zst (tar+zstd) package safely using the zstandard library.
+    Supports both streaming (no size header) and buffered random access.
     """
     if not blob.exists():
         die(f"Package not found: {blob}")
 
-    # Only allow .zst
     if blob.suffix != EXT:
         die(f"{blob} is not a {EXT} archive")
 
-    # Start zstd in decompress mode
-    proc = subprocess.Popen(
-        ["zstd", "-d", "-q", "-c", str(blob)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
-    )
+    # Validate Zstd magic
+    with blob.open("rb") as f:
+        magic = f.read(4)
+    if magic != b"\x28\xb5\x2f\xfd":
+        die(f"{blob} is not a valid {EXT} package (bad magic header)")
 
-    mode = "r|" if stream else "r:*"
+    dctx = zstd.ZstdDecompressor()
 
-    try:
-        tf = tarfile.open(fileobj=proc.stdout, mode=mode)
-        # Peek first member to confirm it’s not empty
-        first = tf.next()
-        if not first:
-            raise tarfile.ReadError("Archive appears empty")
-        tf.members.insert(0, first)  # push back
-        return tf
-    except Exception as e:
-        _, err = proc.communicate(timeout=2)
-        die(f"Failed to open {blob}: {e}\n[zstd stderr] {err.decode().strip()}")
+    if stream:
+        # Stream directly into tarfile (used for extraction)
+        f = blob.open("rb")
+        reader = dctx.stream_reader(f)
+        return tarfile.open(fileobj=reader, mode="r|")
+    else:
+        # Buffer the decompression into memory for random-access tarfile
+        f = blob.open("rb")
+        reader = dctx.stream_reader(f)
+        buf = io.BytesIO()
+        while True:
+            chunk = reader.read(16384)
+            if not chunk:
+                break
+            buf.write(chunk)
+        buf.seek(0)
+        return tarfile.open(fileobj=buf, mode="r:")
+
 
 # =============== BUILDPKG Function ==============================
 def build_package(stagedir: Path, meta: PkgMeta, out: Path, sign=True):
@@ -609,10 +623,20 @@ def build_package(stagedir: Path, meta: PkgMeta, out: Path, sign=True):
     if shutil.which("zstd") is None:
         die("zstd is required to build .zst packages but was not found in PATH")
 
+    # Collect manifest EXCLUDING meta/manifest files
+    mani = []
+    for root, dirs, files in os.walk(stagedir):
+        for fn in files:
+            if fn in (".lpm-meta.json", ".lpm-manifest.json"):
+                continue
+            f = Path(root) / fn
+            rel = f.relative_to(stagedir).as_posix()
+            mani.append({"path": "/" + rel, "sha256": sha256sum(f), "size": f.stat().st_size})
+    mani.sort(key=lambda e: e["path"])
+
     # Write metadata + manifest *into stagedir*
     meta_path = stagedir / ".lpm-meta.json"
     mani_path = stagedir / ".lpm-manifest.json"
-    mani = collect_manifest(stagedir)
     meta_dict = dataclasses.asdict(meta)
 
     with meta_path.open("w", encoding="utf-8") as f:
@@ -648,23 +672,31 @@ def build_package(stagedir: Path, meta: PkgMeta, out: Path, sign=True):
 
     ok(f"Built {out}")
 
-
 # ==================================================================================
-def read_package_meta(blob: Path) -> Tuple[Optional[PkgMeta], List[dict]]:
+def read_package_meta(blob: Path) -> Tuple[PkgMeta, List[dict]]:
     if not str(blob).endswith(EXT):
         warn(f"{blob.name}: not a {EXT} file, attempting anyway")
 
     meta = None
     mani = None
-    with open_package_tar(blob, stream=True) as tf:
-        for m in tf:
-            if m.name == ".lpm-meta.json":
-                f = tf.extractfile(m)
-                meta = PkgMeta.from_dict(json.load(f))
-            elif m.name == ".lpm-manifest.json":
-                f = tf.extractfile(m)
-                mani = json.load(f)
-    return meta, mani or []
+    with open_package_tar(blob, stream=False) as tf:
+        for m in tf.getmembers():
+            name = Path(m.name).name  # normalize (handles './.lpm-meta.json')
+            if name == ".lpm-meta.json":
+                with tf.extractfile(m) as f:
+                    meta = PkgMeta.from_dict(json.load(f))
+            elif name == ".lpm-manifest.json":
+                with tf.extractfile(m) as f:
+                    mani = json.load(f)
+
+    if not meta:
+        die(f"{blob.name}: missing .lpm-meta.json (corrupt package)")
+    if not mani:
+        die(f"{blob.name}: missing .lpm-manifest.json (corrupt package)")
+
+    return meta, mani
+
+
   
 # =========================== Signature verification ===========================
 def _verify_with_key(pubkey: Path, blob: Path, sig: Path) -> bool:
@@ -691,10 +723,14 @@ def verify_signature(blob: Path, sig: Optional[Path]) -> None:
 
 # =========================== Install/Remove/Upgrade ===========================
 def extract_tar(blob: Path, root: Path) -> List[str]:
+    """
+    Extract a .zst package into root using streaming mode.
+    Returns the list of installed file paths.
+    """
     manifest = []
-    with open_package_tar(blob, stream=False) as tf:
-        for m in tqdm(tf.getmembers(), desc=f"Extracting {blob.name}", unit="file", colour="cyan"):
-            if m.name in (".lpm-meta.json", ".lpm-manifest.json"):
+    with open_package_tar(blob, stream=True) as tf:
+        for m in tqdm(tf, desc=f"Extracting {blob.name}", unit="file", colour="cyan"):
+            if Path(m.name).name in (".lpm-meta.json", ".lpm-manifest.json"):
                 continue
             rel = Path(m.name).as_posix().lstrip("/")
             dest = root / rel
@@ -702,15 +738,17 @@ def extract_tar(blob: Path, root: Path) -> List[str]:
                 dest.mkdir(parents=True, exist_ok=True)
             else:
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                tf.extract(m, path=str(root))
+                tf.extract(m, path=str(root), filter="data")
             manifest.append("/" + rel)
 
+    # Run embedded install script if present
     script = root / ".lpm-install.sh"
     if script.exists() and os.access(script, os.X_OK):
         log(f"[lpm] Running embedded install script: {script}")
         subprocess.run([str(script)], check=False)
 
     return manifest
+
 
 def _cache_path_for(url: str) -> Path:
     name = os.path.basename(urllib.parse.urlparse(url).path) or f"lpm{EXT}"
@@ -765,39 +803,73 @@ def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool):
             if verify and not dry:
                 verify_signature(blob, sig)
             meta_in, mani_in = read_package_meta(blob)
-            manifest=[]
             if not dry:
-                manifest=extract_tar(blob, root)
-                if mani_in: manifest=[e["path"] for e in mani_in]
-                conn.execute("REPLACE INTO installed(name,version,release,arch,provides,manifest,install_time) VALUES(?,?,?,?,?,?,?)",
-                    (p.name,p.version,p.release,p.arch,json.dumps([p.name]+p.provides),json.dumps(manifest),int(time.time())))
-                conn.execute("INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
-                    (int(time.time()),"install",p.name,None,p.version,json.dumps(dataclasses.asdict(p))))
+                extract_tar(blob, root)
+                manifest = mani_in or []
+                conn.execute(
+                    "REPLACE INTO installed(name,version,release,arch,provides,manifest,install_time) VALUES(?,?,?,?,?,?,?)",
+                    (
+                        p.name,
+                        p.version,
+                        p.release,
+                        p.arch,
+                        json.dumps([p.name] + p.provides),
+                        json.dumps(manifest),  # full manifest, not just paths
+                        int(time.time()),
+                    ),
+                )
+                conn.execute(
+                    "INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
+                    (int(time.time()), "install", p.name, None, p.version, json.dumps(dataclasses.asdict(p))),
+                )
             run_hook("post_install", {"LPM_PKG":p.name, "LPM_VERSION":p.version, "LPM_ROOT":str(root)})
 
+
 def do_remove(names: List[str], root: Path, dry: bool):
-    conn=db(); installed=db_installed(conn)
-    with transaction(conn,"remove",dry):
+    conn = db()
+    installed = db_installed(conn)
+    with transaction(conn, "remove", dry):
         for n in names:
-            meta=installed.get(n)
-            if not meta: warn(f"{n} not installed"); continue
+            meta = installed.get(n)
+            if not meta:
+                warn(f"{n} not installed")
+                continue
             log(f"==> remove {n}-{meta['version']}")
-            run_hook("pre_remove", {"LPM_PKG":n, "LPM_ROOT":str(root)})
+
+            run_hook("pre_remove", {"LPM_PKG": n, "LPM_ROOT": str(root)})
+
             if not dry:
-                files = sorted(meta["manifest"], key=lambda s:s.count("/"), reverse=True)
+                manifest_entries = meta["manifest"]
+                # Handle both old list-of-paths and new structured manifest
+                if manifest_entries and isinstance(manifest_entries[0], dict):
+                    files = [e["path"] for e in manifest_entries]
+                else:
+                    files = manifest_entries
+
+                # Remove deepest paths first (dirs last)
+                files = sorted(files, key=lambda s: s.count("/"), reverse=True)
+
                 for f in tqdm(files, desc=f"Removing {n}", unit="file", colour="purple"):
                     p = root / f.lstrip("/")
                     try:
-                        if p.is_file() or p.is_symlink(): p.unlink(missing_ok=True)
+                        if p.is_file() or p.is_symlink():
+                            p.unlink(missing_ok=True)
                         elif p.is_dir():
-                            try: p.rmdir()
-                            except OSError: pass
+                            try:
+                                p.rmdir()
+                            except OSError:
+                                pass
                     except Exception as e:
                         warn(f"rm {p}: {e}")
+
                 conn.execute("DELETE FROM installed WHERE name=?", (n,))
-                conn.execute("INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
-                    (int(time.time()),"remove",n,meta["version"],None,None))
-            run_hook("post_remove", {"LPM_PKG":n, "LPM_ROOT":str(root)})
+                conn.execute(
+                    "INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
+                    (int(time.time()), "remove", n, meta["version"], None, None),
+                )
+
+            run_hook("post_remove", {"LPM_PKG": n, "LPM_ROOT": str(root)})
+
 
 def do_upgrade(targets: List[str], root: Path, dry: bool, verify: bool):
     u=build_universe()
@@ -817,29 +889,44 @@ def do_upgrade(targets: List[str], root: Path, dry: bool, verify: bool):
     do_install(upgrades, root, dry, verify)
     
 # =========================== Repo index generation =============================
-def gen_index(repo_dir: Path, base_url: Optional[str], arch_filter: Optional[str]=None):
+def gen_index(repo_dir: Path, base_url: Optional[str], arch_filter: Optional[str] = None):
+    """
+    Generate index.json from all .zst packages in repo_dir.
+    Only reads metadata (no extraction) using buffered mode.
+    """
     repo_dir = repo_dir.resolve()
-    packages=[]
+    packages = []
+
     for p in sorted(repo_dir.glob(f"*{EXT}")):
         try:
             with open_package_tar(p, stream=False) as tf:
-                meta=None
+                meta = None
                 for m in tf.getmembers():
-                    if m.name==".lpm-meta.json":
-                        f=tf.extractfile(m); meta=PkgMeta.from_dict(json.load(f))
+                    name = Path(m.name).name
+                    if name == ".lpm-meta.json":
+                        with tf.extractfile(m) as f:
+                            meta = PkgMeta.from_dict(json.load(f))
                         break
+
                 if not meta:
                     warn(f"{p.name}: missing .lpm-meta.json; skipping")
                     continue
                 if arch_filter and not arch_compatible(meta.arch, arch_filter):
                     continue
+
+                # Fill blob path and size
                 meta.blob = (base_url.rstrip("/") + "/" + p.name) if base_url else ("file://" + str(p))
-                try: meta.size = p.stat().st_size
-                except Exception: pass
+                try:
+                    meta.size = p.stat().st_size
+                except Exception:
+                    pass
+
                 packages.append(dataclasses.asdict(meta))
+
         except Exception as e:
             warn(f"{p.name}: {e}")
-    index={"generated": int(time.time()), "packages": packages}
+
+    index = {"generated": int(time.time()), "packages": packages}
     out = repo_dir / "index.json"
     write_json(out, index)
     ok(f"Wrote {out} with {len(packages)} packages")
@@ -1081,14 +1168,33 @@ def cmd_history(_):
         else: print(f"{t}  remove   {name} ({frm})")
 
 def cmd_verify(a):
-    root=Path(a.root or DEFAULT_ROOT)
-    conn=db(); bad=0
-    for n,manifest_json in conn.execute("SELECT name,manifest FROM installed"):
-        for f in json.loads(manifest_json):
-            if not (root / f.lstrip("/")).exists():
-                print(f"[MISSING] {n}: {f}"); bad+=1
-    if bad==0: ok("All files present")
-    else: warn(f"{bad} missing files")
+    root = Path(a.root or DEFAULT_ROOT)
+    conn = db()
+    bad = 0
+    for n, manifest_json in conn.execute("SELECT name,manifest FROM installed"):
+        mani = json.loads(manifest_json)
+        for entry in mani:
+            path = entry["path"] if isinstance(entry, dict) else entry
+            f = root / path.lstrip("/")
+            if not f.exists():
+                print(f"[MISSING] {n}: {path}")
+                bad += 1
+                continue
+            if isinstance(entry, dict):
+                # Hash + size validation
+                actual_size = f.stat().st_size
+                if actual_size != entry["size"]:
+                    print(f"[SIZE MISMATCH] {n}: {path} expected {entry['size']}, got {actual_size}")
+                    bad += 1
+                actual_hash = sha256sum(f)
+                if actual_hash != entry["sha256"]:
+                    print(f"[HASH MISMATCH] {n}: {path}")
+                    bad += 1
+    if bad == 0:
+        ok("All files validated successfully")
+    else:
+        warn(f"{bad} validation errors")
+
 
 def cmd_pins(a):
     pins=read_json(PIN_FILE)
@@ -1225,7 +1331,7 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
                     meta.release,
                     meta.arch,
                     json.dumps([meta.name] + meta.provides),
-                    json.dumps([e["path"] for e in mani]),
+                    json.dumps(mani),  # full manifest entries
                     int(time.time()),
                 ),
             )
@@ -1233,6 +1339,7 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
                 "INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
                 (int(time.time()), "install", meta.name, None, meta.version, json.dumps(dataclasses.asdict(meta))),
             )
+
 
         finally:
             shutil.rmtree(tmp_root, ignore_errors=True)
