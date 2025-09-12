@@ -603,13 +603,13 @@ def build_package(stagedir: Path, meta: PkgMeta, out: Path, sign=True):
     if not stagedir.is_dir():
         die(f"Stagedir {stagedir} missing")
 
-    if not out.name.endswith(EXT):
-        out = out.with_suffix(EXT)
+    if not out.name.endswith(".zst"):
+        out = out.with_suffix(".zst")
 
     if shutil.which("zstd") is None:
-        die(f"zstd is required to build {EXT} packages but was not found in PATH")
+        die("zstd is required to build .zst packages but was not found in PATH")
 
-    # Write metadata + manifest
+    # Write metadata + manifest *into stagedir*
     meta_path = stagedir / ".lpm-meta.json"
     mani_path = stagedir / ".lpm-manifest.json"
     mani = collect_manifest(stagedir)
@@ -620,21 +620,22 @@ def build_package(stagedir: Path, meta: PkgMeta, out: Path, sign=True):
     with mani_path.open("w", encoding="utf-8") as f:
         json.dump(mani, f, indent=2)
 
-    # --- two-step tar → zstd process ---
-    tmp_tar = stagedir.parent / f"{meta.name}-{meta.version}.tar"
-    try:
-        subprocess.run(
-            ["tar", "--sort=name", "--mtime=@0", "--owner=0", "--group=0",
-             "--numeric-owner", "-cf", str(tmp_tar), "-C", str(stagedir), "."],
-            check=True
-        )
-        subprocess.run(
-            ["zstd", "-q", "-T0", str(tmp_tar), "-o", str(out)],
-            check=True
-        )
-    finally:
-        if tmp_tar.exists():
-            tmp_tar.unlink()
+    # Package with tar + zstd
+    subprocess.run(
+        [
+            "tar",
+            "--zstd",
+            "-cf", str(out),
+            "--sort=name",
+            "--mtime=@0",
+            "--owner=0",
+            "--group=0",
+            "--numeric-owner",
+            "-C", str(stagedir),
+            ".",
+        ],
+        check=True,
+    )
 
     # Sign package if signing key exists
     if sign and SIGN_KEY.exists():
@@ -646,6 +647,7 @@ def build_package(stagedir: Path, meta: PkgMeta, out: Path, sign=True):
         )
 
     ok(f"Built {out}")
+
 
 # ==================================================================================
 def read_package_meta(blob: Path) -> Tuple[Optional[PkgMeta], List[dict]]:
