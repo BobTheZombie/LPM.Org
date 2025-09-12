@@ -39,6 +39,25 @@ for d in (STATE_DIR, CACHE_DIR): d.mkdir(parents=True, exist_ok=True)
 if not REPO_LIST.exists(): REPO_LIST.write_text("[]", encoding="utf-8")
 if not PIN_FILE.exists(): PIN_FILE.write_text(json.dumps({"hold":[],"prefer":{}}, indent=2), encoding="utf-8")
 
+# =========================== Protected packages ===============================
+PROTECTED_FILE = Path("/etc/lpm/protected.json")
+
+def load_protected() -> List[str]:
+    default = ["glibc", "zlib", "lpm"]
+    if not PROTECTED_FILE.exists():
+        try:
+            PROTECTED_FILE.parent.mkdir(parents=True, exist_ok=True)
+            write_json(PROTECTED_FILE, {"protected": default})
+        except Exception:
+            return default
+    try:
+        data = read_json(PROTECTED_FILE)
+        return list(set(data.get("protected", default)))
+    except Exception:
+        return default
+
+PROTECTED = load_protected()
+
 # =========================== Logging/IO utils =================================
 CYAN   = "\033[1;36m"
 PURPLE = "\033[1;35m"
@@ -793,12 +812,19 @@ def transaction(conn: sqlite3.Connection, action: str, dry: bool):
         if not dry: conn.execute("ROLLBACK")
         die(f"[tx] rollback {action}: {e}")
 
-def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool):
-    conn=db(); _installed=db_installed(conn)
-    with transaction(conn,"install",dry):
+def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool, force: bool = False):
+    global PROTECTED
+    PROTECTED = load_protected()
+
+    conn = db(); _installed = db_installed(conn)
+    with transaction(conn, "install", dry):
         for p in pkgs:
+            if p.name in PROTECTED and not force:
+                warn(f"{p.name} is protected (from {PROTECTED_FILE}) and cannot be installed/upgraded without --force")
+                continue
+
             log(f"==> install {p.name}-{p.version}-{p.release}.{p.arch}")
-            run_hook("pre_install", {"LPM_PKG":p.name, "LPM_VERSION":p.version, "LPM_ROOT":str(root)})
+            run_hook("pre_install", {"LPM_PKG": p.name, "LPM_VERSION": p.version, "LPM_ROOT": str(root)})
             blob, sig = fetch_blob(p)
             if verify and not dry:
                 verify_signature(blob, sig)
@@ -814,7 +840,7 @@ def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool):
                         p.release,
                         p.arch,
                         json.dumps([p.name] + p.provides),
-                        json.dumps(manifest),  # full manifest, not just paths
+                        json.dumps(manifest),
                         int(time.time()),
                     ),
                 )
@@ -822,8 +848,7 @@ def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool):
                     "INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
                     (int(time.time()), "install", p.name, None, p.version, json.dumps(dataclasses.asdict(p))),
                 )
-            run_hook("post_install", {"LPM_PKG":p.name, "LPM_VERSION":p.version, "LPM_ROOT":str(root)})
-
+            run_hook("post_install", {"LPM_PKG": p.name, "LPM_VERSION": p.version, "LPM_ROOT": str(root)})
 
 
 def _remove_installed_package(meta: dict, root: Path, dry_run: bool, conn):
@@ -861,41 +886,48 @@ def _remove_installed_package(meta: dict, root: Path, dry_run: bool, conn):
     )
 
 
-def do_remove(names: List[str], root: Path, dry: bool):
+def do_remove(names: List[str], root: Path, dry: bool, force: bool = False):
+    global PROTECTED
+    PROTECTED = load_protected()
+
     conn = db()
     installed = db_installed(conn)
     with transaction(conn, "remove", dry):
         for n in names:
+            if n in PROTECTED and not force:
+                warn(f"{n} is protected (from {PROTECTED_FILE}) and cannot be removed without --force")
+                continue
+
             meta = installed.get(n)
             if not meta:
                 warn(f"{n} not installed")
                 continue
+
             log(f"==> remove {n}-{meta['version']}")
-
             run_hook("pre_remove", {"LPM_PKG": n, "LPM_ROOT": str(root)})
-
             pkg_meta = {"name": n, **meta}
             _remove_installed_package(pkg_meta, root, dry, conn)
-
             run_hook("post_remove", {"LPM_PKG": n, "LPM_ROOT": str(root)})
 
 
-def do_upgrade(targets: List[str], root: Path, dry: bool, verify: bool):
-    u=build_universe()
-    goals=[]
+def do_upgrade(targets: List[str], root: Path, dry: bool, verify: bool, force: bool = False):
+    u = build_universe()
+    goals = []
     if not targets:
-        for n,meta in u.installed.items():
+        for n, meta in u.installed.items():
             goals.append(f"{n} ~= {meta['version']}")
     else:
         goals += targets
     plan = solve(goals, u)
-    upgrades=[]
+    upgrades = []
     for p in plan:
-        cur=u.installed.get(p.name)
-        if not cur or cmp_semver(p.version, cur["version"])>0:
+        cur = u.installed.get(p.name)
+        if not cur or cmp_semver(p.version, cur["version"]) > 0:
             upgrades.append(p)
-    if not upgrades: ok("Nothing to do."); return
-    do_install(upgrades, root, dry, verify)
+    if not upgrades:
+        ok("Nothing to do.")
+        return
+    do_install(upgrades, root, dry, verify, force=force)
     
 # =========================== Repo index generation =============================
 def gen_index(repo_dir: Path, base_url: Optional[str], arch_filter: Optional[str] = None):
@@ -1145,24 +1177,27 @@ def cmd_info(a):
         print(f"Blob:       {p.blob or '-'}")
 
 def cmd_install(a):
-    root=Path(a.root or DEFAULT_ROOT)
-    u=build_universe()
+    root = Path(a.root or DEFAULT_ROOT)
+    u = build_universe()
     goals = a.names
     plan = solve(goals, u)
     log("[plan] install order:")
-    for p in plan: log(f"  - {p.name}-{p.version}")
-    if a.dry_run: return
-    noverify = a.no_verify or os.environ.get("LPM_NO_VERIFY")=="1"
-    do_install(plan, root, a.dry_run, verify=(not noverify))
+    for p in plan: 
+        log(f"  - {p.name}-{p.version}")
+    if a.dry_run:
+        return
+    noverify = a.no_verify or os.environ.get("LPM_NO_VERIFY") == "1"
+    do_install(plan, root, a.dry_run, verify=(not noverify), force=a.force)
+
 
 def cmd_remove(a):
-    root=Path(a.root or DEFAULT_ROOT)
-    do_remove(a.names, root, a.dry_run)
+    root = Path(a.root or DEFAULT_ROOT)
+    do_remove(a.names, root, a.dry_run, force=a.force)
 
 def cmd_upgrade(a):
-    root=Path(a.root or DEFAULT_ROOT)
-    noverify = a.no_verify or os.environ.get("LPM_NO_VERIFY")=="1"
-    do_upgrade(a.names, root, a.dry_run, verify=(not noverify))
+    root = Path(a.root or DEFAULT_ROOT)
+    noverify = a.no_verify or os.environ.get("LPM_NO_VERIFY") == "1"
+    do_upgrade(a.names, root, a.dry_run, verify=(not noverify), force=a.force)
 
 def cmd_list_installed(_):
     conn=db()
@@ -1247,14 +1282,8 @@ def cmd_genindex(a):
 
 def cmd_fileremove(a):
     root = Path(a.root or DEFAULT_ROOT)
-
     for name in a.names:
-        removepkg(
-            name=name,
-            root=root,
-            dry_run=a.dry_run,
-        )
-
+        removepkg(name=name, root=root, dry_run=a.dry_run, force=a.force)
 def cmd_fileinstall(a):
     root = Path(a.root or DEFAULT_ROOT)
 
@@ -1268,13 +1297,16 @@ def cmd_fileinstall(a):
             root=root,
             dry_run=a.dry_run,
             verify=a.verify,
+            force=a.force,
         )
 
+def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = False, verify: bool = True, force: bool = False):
+    """
+    Production-grade .zst package installer with protected package handling.
+    """
+    global PROTECTED
+    PROTECTED = load_protected()
 
-def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = False, verify: bool = True):
-    """
-    Production-grade .zst package installer.
-    """
     # --- Step 1: Validate extension + magic ---
     if file.suffix != EXT:
         die(f"{file.name} is not a {EXT} package")
@@ -1301,6 +1333,11 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
 
     if not arch_compatible(meta.arch, ARCH):
         die(f"Incompatible architecture: {meta.arch} (host: {ARCH})")
+
+    # --- Step 3b: Protected package guard ---
+    if meta.name in PROTECTED and not force:
+        warn(f"{meta.name} is protected (from {PROTECTED_FILE}) and cannot be installed/upgraded without --force")
+        return
 
     # --- Step 4: Dry-run ---
     if dry_run:
@@ -1331,15 +1368,49 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
                 if h != e["sha256"]:
                     die(f"Hash mismatch for {e['path']}: expected {e['sha256']}, got {h}")
 
-            # --- Step 7: Atomic move into root ---
-            for f in manifest:
-                src = tmp_root / f.lstrip("/")
-                dest = root / f.lstrip("/")
+            # --- Step 7: Atomic move into root with conflict handling ---
+            for e in mani:
+                rel = e["path"].lstrip("/")
+                src = tmp_root / rel
+                dest = root / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
+
                 if src.is_dir():
                     dest.mkdir(parents=True, exist_ok=True)
-                else:
-                    shutil.move(str(src), str(dest))
+                    continue
+
+                if dest.exists() or dest.is_symlink():
+                    # Compare hashes to detect reinstall of identical file
+                    same = False
+                    try:
+                        if dest.is_file() and sha256sum(dest) == e["sha256"]:
+                            same = True
+                    except Exception:
+                        pass
+
+                    if same:
+                        log(f"[skip] {rel} already up-to-date")
+                        continue
+
+                    # Prompt user for action
+                    while True:
+                        resp = input(f"[conflict] {rel} exists. [R]eplace / [S]kip / [A]bort? ").strip().lower()
+                        if resp in ("r", "replace"):
+                            if dest.is_file() or dest.is_symlink():
+                                dest.unlink()
+                            elif dest.is_dir():
+                                shutil.rmtree(dest)
+                            break
+                        elif resp in ("s", "skip"):
+                            log(f"[skip] {rel}")
+                            src.unlink(missing_ok=True)
+                            continue  # skip moving this file
+                        elif resp in ("a", "abort"):
+                            die(f"Aborted install due to conflict at {rel}")
+                        else:
+                            print("Please enter R, S, or A.")
+
+                shutil.move(str(src), str(dest))
 
             # --- Step 8: Update DB ---
             conn.execute(
@@ -1359,7 +1430,6 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
                 (int(time.time()), "install", meta.name, None, meta.version, json.dumps(dataclasses.asdict(meta))),
             )
 
-
         finally:
             shutil.rmtree(tmp_root, ignore_errors=True)
 
@@ -1372,19 +1442,23 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
     ok(f"Installed {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
 
 
-def removepkg(name: str, root: Path = Path(DEFAULT_ROOT), dry_run: bool = False):
+def removepkg(name: str, root: Path = Path(DEFAULT_ROOT), dry_run: bool = False, force: bool = False):
+    global PROTECTED
+    PROTECTED = load_protected()
+
+    if name in PROTECTED and not force:
+        warn(f"{name} is protected (from {PROTECTED_FILE}) and cannot be removed without --force")
+        return
+
     conn = db()
     cur = conn.execute("SELECT version, manifest FROM installed WHERE name=?", (name,))
     row = cur.fetchone()
     if not row:
         warn(f"{name} not installed")
         return
+
     version, manifest_json = row
-    meta = {
-        "name": name,
-        "version": version,
-        "manifest": json.loads(manifest_json) if manifest_json else [],
-    }
+    meta = {"name": name, "version": version, "manifest": json.loads(manifest_json) if manifest_json else []}
 
     with transaction(conn, f"remove {name}", dry_run):
         run_hook("pre_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)})
@@ -1393,13 +1467,37 @@ def removepkg(name: str, root: Path = Path(DEFAULT_ROOT), dry_run: bool = False)
 
     ok(f"Removed {name}-{version}")
 
+    
+def cmd_protected(a):
+    current = load_protected()
+    if a.action == "list":
+        print(json.dumps({"protected": current}, indent=2))
+    elif a.action == "add":
+        changed = False
+        for n in a.names:
+            if n not in current:
+                current.append(n)
+                changed = True
+        if changed:
+            write_json(PROTECTED_FILE, {"protected": sorted(current)})
+            ok("Updated protected list")
+        else:
+            log("No changes")
+    elif a.action == "remove":
+        new = [n for n in current if n not in a.names]
+        if new != current:
+            write_json(PROTECTED_FILE, {"protected": sorted(new)})
+            ok("Updated protected list")
+        else:
+            log("No changes")
+
 # =========================== Argparse / main ==================================
 def build_parser()->argparse.ArgumentParser:
     p=argparse.ArgumentParser(prog="lpm", description="Linux Package Manager with SAT solver, signatures, and .lpmbuild")
     sub=p.add_subparsers(dest="cmd", required=True)
 
     sp=sub.add_parser("repolist", help="Show configured repositories"); sp.set_defaults(func=cmd_repolist)
-    sp=sub.add_parser("repoadd", help="Add a repository"); sp.add_argument("name"); sp.add_argument("url"); sp.add_argument("--priority",type=int,default=10); sp.set_defaults(func=cmd_repoadd)
+    sp=sub.add_parser("repoadd", help="Add a repository"); sp.add_argument("name"); sp.add_argument("url");                   sp.add_argument("--priority",type=int,default=10); sp.set_defaults(func=cmd_repoadd)
     sp=sub.add_parser("repodel", help="Remove a repository"); sp.add_argument("name"); sp.set_defaults(func=cmd_repodel)
 
     sp=sub.add_parser("search", help="Search packages"); sp.add_argument("patterns", nargs="*"); sp.set_defaults(func=cmd_search)
@@ -1416,6 +1514,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("names", nargs="+")
     sp.add_argument("--root")
     sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--force", action="store_true", help="override protected package list")
     sp.set_defaults(func=cmd_remove)
 
     sp=sub.add_parser("upgrade", help="Upgrade packages (targets or all)")
@@ -1423,6 +1522,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--root")
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--no-verify", action="store_true", help="skip signature verification (DANGEROUS)")
+    sp.add_argument("--force", action="store_true", help="override protected package list for install/upgrade")
     sp.set_defaults(func=cmd_upgrade)
 
     sp=sub.add_parser("list", help="List installed packages"); sp.set_defaults(func=cmd_list_installed)
@@ -1470,13 +1570,22 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--root")
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--verify", action="store_true", help="verify .sig with trusted keys")
+    sp.add_argument("--force", action="store_true", help="override protected package list for install/upgrade")
     sp.set_defaults(func=cmd_fileinstall)
+
 
     sp=sub.add_parser("removepkg", help="Remove installed package(s)")
     sp.add_argument("names", nargs="+", help="package name(s) to remove")
     sp.add_argument("--root")
     sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--force", action="store_true", help="override protected package list")
     sp.set_defaults(func=cmd_fileremove)
+    
+    sp = sub.add_parser("protected", help="Show or edit protected package list")
+    sp.add_argument("action", choices=["list", "add", "remove"])
+    sp.add_argument("names", nargs="*", help="package names (for add/remove)")
+    sp.set_defaults(func=cmd_protected)
+
 
     return p
 
