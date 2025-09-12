@@ -1235,7 +1235,17 @@ def cmd_buildpkg(a):
 def cmd_genindex(a):
     repo_dir = Path(a.repo_dir)
     gen_index(repo_dir, a.base_url, arch_filter=a.arch)
-    
+
+def cmd_fileremove(a):
+    root = Path(a.root or DEFAULT_ROOT)
+
+    for name in a.names:
+        removepkg(
+            name=name,
+            root=root,
+            dry_run=a.dry_run,
+        )
+
 def cmd_fileinstall(a):
     root = Path(a.root or DEFAULT_ROOT)
 
@@ -1352,6 +1362,58 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
 
     ok(f"Installed {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
 
+
+def removepkg(name: str, root: Path = Path(DEFAULT_ROOT), dry_run: bool = False):
+    conn = db()
+    cur = conn.execute("SELECT version, manifest FROM installed WHERE name=?", (name,))
+    row = cur.fetchone()
+    if not row:
+        warn(f"{name} not installed")
+        return
+    version, manifest_json = row
+
+    with transaction(conn, f"remove {name}", dry_run):
+        run_hook("pre_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)})
+
+        if not dry_run:
+            manifest_entries = json.loads(manifest_json) if manifest_json else []
+            if manifest_entries and isinstance(manifest_entries[0], dict):
+                files = [e["path"] for e in manifest_entries]
+            else:
+                files = manifest_entries
+
+            files = sorted(files, key=lambda s: s.count("/"), reverse=True)
+
+            dirs: Set[Path] = set()
+            for f in tqdm(files, desc=f"Removing {name}", unit="file", colour="purple"):
+                p = root / f.lstrip("/")
+                try:
+                    if p.is_file() or p.is_symlink():
+                        p.unlink(missing_ok=True)
+                    elif p.is_dir():
+                        p.rmdir()
+                except Exception as e:
+                    warn(f"rm {p}: {e}")
+                dirs.add(p.parent)
+
+            for d in sorted(dirs, key=lambda s: str(s).count("/"), reverse=True):
+                while d != root:
+                    try:
+                        d.rmdir()
+                    except OSError:
+                        break
+                    d = d.parent
+
+            conn.execute("DELETE FROM installed WHERE name=?", (name,))
+            conn.execute(
+                "INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
+                (int(time.time()), "remove", name, version, None, None),
+            )
+
+        run_hook("post_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)})
+
+    ok(f"Removed {name}-{version}")
+
 # =========================== Argparse / main ==================================
 def build_parser()->argparse.ArgumentParser:
     p=argparse.ArgumentParser(prog="lpm", description="Linux Package Manager with SAT solver, signatures, and .lpmbuild")
@@ -1430,6 +1492,12 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--verify", action="store_true", help="verify .sig with trusted keys")
     sp.set_defaults(func=cmd_fileinstall)
+
+    sp=sub.add_parser("removepkg", help="Remove installed package(s)")
+    sp.add_argument("names", nargs="+", help="package name(s) to remove")
+    sp.add_argument("--root")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.set_defaults(func=cmd_fileremove)
 
     return p
 
