@@ -98,8 +98,32 @@ class ResolutionError(Exception):
 # Progress bar wrapper
 from tqdm import tqdm
 
-def progress_bar(iterable, desc="Processing", unit="item"):
-    return tqdm(iterable, desc=desc, unit=unit, ncols=80, colour="cyan")
+
+def progress_bar(
+    iterable,
+    *,
+    desc: str = "Processing",
+    unit: str = "item",
+    total: Optional[int] = None,
+    colour: str = "cyan",
+    **kwargs,
+):
+    """Return a ``tqdm`` progress bar with centralized styling.
+
+    Parameters map directly to the underlying ``tqdm`` arguments. Any
+    additional keyword arguments are forwarded as-is, while enforcing a
+    consistent width and default colour.
+    """
+
+    return tqdm(
+        iterable,
+        desc=desc,
+        unit=unit,
+        total=total,
+        ncols=80,
+        colour=colour,
+        **kwargs,
+    )
 
 # ============================ Build Isolation =======================
 def sandboxed_run(func: str, cwd: Path, env: dict, script_path: Path, stagedir: Path, buildroot: Path, srcroot: Path):
@@ -962,7 +986,7 @@ def extract_tar(blob: Path, root: Path) -> List[str]:
     """
     manifest = []
     with open_package_tar(blob, stream=True) as tf:
-        for m in tqdm(tf, desc=f"Extracting {blob.name}", unit="file", colour="cyan"):
+        for m in progress_bar(tf, desc=f"Extracting {blob.name}", unit="file"):
             if Path(m.name).name in (".lpm-meta.json", ".lpm-manifest.json"):
                 continue
             rel = Path(m.name).as_posix().lstrip("/")
@@ -1005,7 +1029,7 @@ def fetch_blob(p: PkgMeta) -> Tuple[Path, Optional[Path]]:
         sig_src = src.with_suffix(src.suffix + ".sig")
         if sig_src.exists(): shutil.copy2(sig_src, sig_dst)
     else:
-        for _ in tqdm(range(1), desc=f"Downloading {p.name}", colour="cyan"):
+        for _ in progress_bar(range(1), desc=f"Downloading {p.name}"):
             data = urlread(url); dst.write_bytes(data)
         try:
             sig_url = url + ".sig"
@@ -1024,7 +1048,12 @@ def fetch_all(pkgs: List[PkgMeta]) -> Dict[str, object]:
     max_workers = min(8, len(pkgs))
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         future_map = {ex.submit(fetch_blob, p): p.name for p in pkgs}
-        for fut in tqdm(as_completed(future_map), total=len(future_map), desc="Fetching", unit="pkg", colour="cyan"):
+        for fut in progress_bar(
+            as_completed(future_map),
+            total=len(future_map),
+            desc="Fetching",
+            unit="pkg",
+        ):
             name = future_map[fut]
             try:
                 results[name] = fut.result()
@@ -1081,7 +1110,12 @@ def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool, force: 
     max_workers = min(8, len(pkgs))
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         future_map = {ex.submit(worker, p): p.name for p in pkgs}
-        for fut in tqdm(as_completed(future_map), total=len(future_map), desc="Installing", unit="pkg", colour="cyan"):
+        for fut in progress_bar(
+            as_completed(future_map),
+            total=len(future_map),
+            desc="Installing",
+            unit="pkg",
+        ):
             try:
                 fut.result()
             except Exception as e:
@@ -1103,7 +1137,7 @@ def _remove_installed_package(meta: dict, root: Path, dry_run: bool, conn):
     # Remove deepest paths first (dirs last)
     files = sorted(files, key=lambda s: s.count("/"), reverse=True)
 
-    for f in tqdm(files, desc=f"Removing {name}", unit="file", colour="purple"):
+    for f in progress_bar(files, desc=f"Removing {name}", unit="file", colour="purple"):
         p = root / f.lstrip("/")
         try:
             if p.is_file() or p.is_symlink():
@@ -1137,7 +1171,13 @@ def do_remove(names: List[str], root: Path, dry: bool, force: bool = False):
     max_workers = min(8, len(names))
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         future_map = {ex.submit(worker, n): n for n in names}
-        for fut in tqdm(as_completed(future_map), total=len(future_map), desc="Removing", unit="pkg", colour="purple"):
+        for fut in progress_bar(
+            as_completed(future_map),
+            total=len(future_map),
+            desc="Removing",
+            unit="pkg",
+            colour="purple",
+        ):
             try:
                 fut.result()
             except Exception as e:
@@ -1454,7 +1494,14 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
             else:
                 max_workers = min(4, len(deps_to_build))
                 with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                    list(tqdm(ex.map(_build_dep, deps_to_build), total=len(deps_to_build), desc="[deps] building", unit="pkg", colour="cyan"))
+                    list(
+                        progress_bar(
+                            ex.map(_build_dep, deps_to_build),
+                            total=len(deps_to_build),
+                            desc="[deps] building",
+                            unit="pkg",
+                        )
+                    )
 
     stagedir = Path(f"/tmp/pkg-{name}")
     buildroot = Path(f"/tmp/build-{name}")
@@ -1865,7 +1912,12 @@ def cmd_verify(a):
 
     with ThreadPoolExecutor(max_workers=min(8, len(pkgs) or 1)) as ex:
         futures = [ex.submit(_verify_pkg, pkg) for pkg in pkgs]
-        for fut in tqdm(as_completed(futures), total=len(futures), desc="Verifying", unit="pkg", colour="cyan"):
+        for fut in progress_bar(
+            as_completed(futures),
+            total=len(futures),
+            desc="Verifying",
+            unit="pkg",
+        ):
             bad += fut.result()
 
     if bad == 0:
@@ -1927,7 +1979,13 @@ def cmd_fileremove(a):
     max_workers = min(8, len(a.names))
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         future_map = {ex.submit(worker, n): n for n in a.names}
-        for fut in tqdm(as_completed(future_map), total=len(future_map), desc="Removing", unit="pkg", colour="purple"):
+        for fut in progress_bar(
+            as_completed(future_map),
+            total=len(future_map),
+            desc="Removing",
+            unit="pkg",
+            colour="purple",
+        ):
             fut.result()
 
 def cmd_fileinstall(a):
@@ -1952,7 +2010,12 @@ def cmd_fileinstall(a):
     max_workers = min(8, len(files))
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         future_map = {ex.submit(worker, f): f for f in files}
-        for fut in tqdm(as_completed(future_map), total=len(future_map), desc="Installing", unit="pkg", colour="cyan"):
+        for fut in progress_bar(
+            as_completed(future_map),
+            total=len(future_map),
+            desc="Installing",
+            unit="pkg",
+        ):
             fut.result()
 
 def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = False, verify: bool = True, force: bool = False):
