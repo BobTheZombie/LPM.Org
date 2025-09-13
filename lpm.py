@@ -1879,9 +1879,7 @@ def cmd_build(a):
 def cmd_buildpkg(a):
     out = run_lpmbuild(a.script, a.outdir, build_deps=not a.no_deps)
     if out and out.exists():
-        # Bold purple output
-        print(f"{PURPLE}[OK] Built {out}{RESET}", file=sys.stderr)
-        print(f"{PURPLE}{out}{RESET}")
+        ok(f"Built {out}")
     else:
         die(f"Build failed for {a.script}")
 
