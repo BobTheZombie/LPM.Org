@@ -121,6 +121,8 @@ def progress_bar(
     unit: str = "item",
     total: Optional[int] = None,
     colour: str = "cyan",
+    bar_format: Optional[str] = None,
+    leave: bool = True,
     **kwargs,
 ):
     """Return a ``tqdm`` progress bar with centralized styling.
@@ -137,6 +139,8 @@ def progress_bar(
         total=total,
         ncols=80,
         colour=colour,
+        bar_format=bar_format,
+        leave=leave,
         **kwargs,
     )
 
@@ -1504,8 +1508,15 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
         if deps_to_build:
             if prompt_install:
                 total = len(deps_to_build)
-                for idx, dep in enumerate(progress_bar(deps_to_build, desc="[deps] building", unit="pkg"), start=1):
-                    _build_dep(dep, idx, total)
+                with progress_bar(
+                    deps_to_build,
+                    unit="pkg",
+                    bar_format="[ {n}/{total} ] {desc}",
+                    leave=True,
+                ) as pbar:
+                    for idx, dep in enumerate(pbar, start=1):
+                        pbar.set_description(f"[deps] {dep}")
+                        _build_dep(dep, idx, total)
             else:
                 max_workers = min(4, len(deps_to_build))
                 with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -1515,6 +1526,8 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
                             total=len(deps_to_build),
                             desc="[deps] building",
                             unit="pkg",
+                            bar_format="[ {n}/{total} ] {desc}",
+                            leave=True,
                         )
                     )
 
@@ -1550,11 +1563,19 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
     def run_func(func: str, cwd: Path):
         sandboxed_run(func, cwd, env, script_path, stagedir, buildroot, srcroot)
 
-    for fn in ("prepare", "build", "install"):
-        try:
-            run_func(fn, srcroot)
-        except subprocess.CalledProcessError as e:
-            die(f"{script.name}: function '{fn}' failed with code {e.returncode}")
+    phases = ("prepare", "build", "install")
+    with progress_bar(
+        phases,
+        unit="phase",
+        bar_format="[ {n}/{total} ] {desc}",
+        leave=True,
+    ) as pbar:
+        for phase in pbar:
+            pbar.set_description(phase)
+            try:
+                run_func(phase, srcroot)
+            except subprocess.CalledProcessError as e:
+                die(f"{script.name}: function '{phase}' failed with code {e.returncode}")
 
     # --- Generate or capture install script ---
     install_sh = stagedir / ".lpm-install.sh"
