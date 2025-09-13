@@ -640,14 +640,20 @@ def solve(goals: List[str], universe: Universe) -> List[PkgMeta]:
 # =========================== Hooks =============================================
 def run_hook(hook: str, env: Dict[str,str]):
     path = HOOK_DIR / hook
-    if path.exists() and os.access(path, os.X_OK):
-        subprocess.run([str(path)], env={**os.environ, **env}, check=True)
+    if path.exists():
+        if path.suffix == ".py":
+            subprocess.run([sys.executable, str(path)], env={**os.environ, **env}, check=True)
+        elif os.access(path, os.X_OK):
+            subprocess.run([str(path)], env={**os.environ, **env}, check=True)
 
     dpath = HOOK_DIR / f"{hook}.d"
     if dpath.is_dir():
         for script in sorted(dpath.iterdir()):
-            if script.is_file() and os.access(script, os.X_OK):
-                subprocess.run([str(script)], env={**os.environ, **env}, check=True)
+            if script.is_file():
+                if script.suffix == ".py":
+                    subprocess.run([sys.executable, str(script)], env={**os.environ, **env}, check=True)
+                elif os.access(script, os.X_OK):
+                    subprocess.run([str(script)], env={**os.environ, **env}, check=True)
         
 # =========================== Service File Handling =============================
 def handle_service_files(pkg_name: str, root: Path):

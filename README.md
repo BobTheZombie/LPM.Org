@@ -100,6 +100,12 @@ creating a new snapshot. You can trigger cleanup manually with
 Run `lpm bootstrap /path/to/root --include vim openssh` to create a
 chroot‑ready filesystem tree with verified packages.
 
+## Hooks
+
+Hook scripts placed in `/usr/share/lpm/hooks` or within `<hook>.d` directories
+run at key points during package operations. These hooks may be either shell or
+Python scripts, with Python hooks executed using the current Python interpreter.
+
 ## Solver heuristics
 
 The resolver uses a CDCL SAT solver with VSIDS‑style variable scoring and phase
