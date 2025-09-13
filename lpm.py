@@ -876,11 +876,17 @@ def collect_manifest(stagedir: Path) -> List[Dict[str,object]]:
                 continue
             f=Path(root)/fn
             rel=f.relative_to(stagedir).as_posix()
-            entry={
-                "path":"/"+rel,
-                "sha256":sha256sum(f),
-                "size":f.stat().st_size
-            }
+            entry={"path":"/"+rel}
+            if f.is_symlink():
+                target=os.readlink(f)
+                st=os.lstat(f)
+                entry["link"]=target
+                entry["sha256"]=hashlib.sha256(target.encode()).hexdigest()
+                entry["size"]=st.st_size
+                mani.append(entry)
+                continue
+            entry["sha256"]=sha256sum(f)
+            entry["size"]=f.stat().st_size
             syms=_extract_symbols(f)
             if syms:
                 entry["symbols"]=syms
