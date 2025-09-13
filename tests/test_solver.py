@@ -3,7 +3,7 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from lpm import CNF, cdcl_solve
+from src import CNF, CDCLSolver
 
 
 def test_conflicting_packages_unsat():
@@ -18,7 +18,8 @@ def test_conflicting_packages_unsat():
     # require A and C simultaneously
     cnf.add_clause([a])
     cnf.add_clause([c])
-    res = cdcl_solve(cnf, set(), set())
+    solver = CDCLSolver()
+    res = solver.solve(cnf, set(), set())
     assert not res.sat
 
 
@@ -32,7 +33,8 @@ def test_dependency_resolution():
     # B conflicts C
     cnf.add_clause([-b, -c])
     cnf.add_clause([a])
-    res = cdcl_solve(cnf, set(), set())
+    solver = CDCLSolver()
+    res = solver.solve(cnf, set(), set())
     assert res.sat
     assert res.assign[a]
     # exactly one of b or c is installed

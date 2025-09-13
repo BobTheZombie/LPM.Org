@@ -3,7 +3,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from lpm import CNF, cdcl_solve
+from src import CNF, CDCLSolver
 
 
 def chain(n):
@@ -19,7 +19,8 @@ def run():
     for size in (50, 100, 150):
         cnf = chain(size)
         start = time.time()
-        cdcl_solve(cnf, set(), set())
+        solver = CDCLSolver()
+        solver.solve(cnf, set(), set())
         dur = time.time() - start
         print(f"chain {size}: {dur:.4f}s")
 
