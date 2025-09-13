@@ -350,6 +350,8 @@ class PkgMeta:
     blob: Optional[str] = None
     repo: str = ""
     prio: int = 10
+    kernel: bool = False
+    mkinitcpio_preset: Optional[str] = None
     @staticmethod
     def from_dict(d: dict, repo_name="(local)", prio=0) -> "PkgMeta":
         return PkgMeta(
@@ -358,7 +360,8 @@ class PkgMeta:
             license=d.get("license",""), requires=d.get("requires",[]), conflicts=d.get("conflicts",[]),
             obsoletes=d.get("obsoletes",[]), provides=d.get("provides",[]), recommends=d.get("recommends",[]),
             suggests=d.get("suggests",[]), size=d.get("size",0), sha256=d.get("sha256"), blob=d.get("blob"),
-            repo=repo_name, prio=prio)
+            repo=repo_name, prio=prio, kernel=d.get("kernel", False),
+            mkinitcpio_preset=d.get("mkinitcpio_preset"))
 
 # =========================== Repos ============================================
 @dataclass
@@ -733,6 +736,12 @@ def run_hook(hook: str, env: Dict[str,str]):
     path = HOOK_DIR / hook
     if path.exists() and os.access(path, os.X_OK):
         subprocess.run([str(path)], env={**os.environ, **env}, check=True)
+
+    dpath = HOOK_DIR / f"{hook}.d"
+    if dpath.is_dir():
+        for script in sorted(dpath.iterdir()):
+            if script.is_file() and os.access(script, os.X_OK):
+                subprocess.run([str(script)], env={**os.environ, **env}, check=True)
         
 # =========================== Service File Handling =============================
 def handle_service_files(pkg_name: str, root: Path):
@@ -1119,13 +1128,23 @@ def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool, force: 
             tmp = Path(f"/tmp/lpm-dep-{p.name}.lpmbuild")
             fetch_lpmbuild(p.name, tmp)
             built = run_lpmbuild(tmp)
-            installpkg(built, root=root, dry_run=dry, verify=verify, force=force)
+            meta = installpkg(built, root=root, dry_run=dry, verify=verify, force=force)
         else:
             if res is None:
                 blob, sig = fetch_blob(p)
             else:
                 blob, sig = res
-            installpkg(blob, root=root, dry_run=dry, verify=verify, force=force)
+            meta = installpkg(blob, root=root, dry_run=dry, verify=verify, force=force)
+
+        if not dry and meta and getattr(meta, "kernel", False):
+            run_hook(
+                "kernel_install",
+                {
+                    "LPM_PKG": meta.name,
+                    "LPM_VERSION": meta.version,
+                    "LPM_PRESET": meta.mkinitcpio_preset or "",
+                },
+            )
 
     max_workers = min(8, len(pkgs))
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -1208,7 +1227,16 @@ def do_upgrade(targets: List[str], root: Path, dry: bool, verify: bool, force: b
         warn("SAT solver failed to find upgrade set, falling back to GitLab fetch...")
         for dep in targets:
             built = build_from_gitlab(dep)
-            installpkg(built, root=root, dry_run=dry, verify=verify, force=force)
+            meta = installpkg(built, root=root, dry_run=dry, verify=verify, force=force)
+            if not dry and meta and getattr(meta, "kernel", False):
+                run_hook(
+                    "kernel_install",
+                    {
+                        "LPM_PKG": meta.name,
+                        "LPM_VERSION": meta.version,
+                        "LPM_PRESET": meta.mkinitcpio_preset or "",
+                    },
+                )
         return
 
     upgrades = []
@@ -1305,7 +1333,7 @@ _emit_array() {{
     printf "\\n"
   fi
 }}
-for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE CFLAGS; do _emit_scalar "$v"; done
+for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE CFLAGS KERNEL MKINITCPIO_PRESET; do _emit_scalar "$v"; done
 for a in REQUIRES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS; do _emit_array "$a"; done
 """
 
@@ -1411,6 +1439,8 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None) -> Path:
     summary = scal.get("SUMMARY", "")
     url = scal.get("URL", "")
     license_ = scal.get("LICENSE", "")
+    kernel = scal.get("KERNEL", "").lower() == "true"
+    mkinitcpio_preset = scal.get("MKINITCPIO_PRESET") or None
     if not name or not version:
         die("lpmbuild missing NAME or VERSION")
 
@@ -1524,6 +1554,8 @@ exit 0
         obsoletes=arr.get("OBSOLETES", []),
         recommends=arr.get("RECOMMENDS", []),
         suggests=arr.get("SUGGESTS", []),
+        kernel=kernel,
+        mkinitcpio_preset=mkinitcpio_preset,
     )
 
     outdir = script_dir if outdir is None else outdir
@@ -1939,7 +1971,7 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
     # --- Step 3b: Protected package guard ---
     if meta.name in PROTECTED and not force:
         warn(f"{meta.name} is protected (from {PROTECTED_FILE}) and cannot be installed/upgraded without --force")
-        return
+        return meta
 
     # --- Step 3c: Meta-package handler ---
     # If package has REQUIRES but no manifest payload → treat as meta-package
@@ -1950,7 +1982,7 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
             plan = solve(meta.requires, u)
             do_install(plan, root, dry_run, verify, force)
             ok(f"Installed meta-package {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
-            return
+            return meta
 
 
     # --- Step 4: Dry-run ---
@@ -1958,7 +1990,7 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
         log(f"[dry-run] Would install {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
         for e in mani:
             print(f" -> {e['path']} ({e['size']} bytes)")
-        return
+        return meta
 
     # --- Step 5: Transaction (unchanged below) ---
     conn = db()
@@ -2052,6 +2084,7 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
         handle_service_files(meta.name, root)
 
     ok(f"Installed {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
+    return meta
 
 
 def removepkg(name: str, root: Path = Path(DEFAULT_ROOT), dry_run: bool = False, force: bool = False):
