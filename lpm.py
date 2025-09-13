@@ -123,6 +123,7 @@ def progress_bar(
     colour: str = "cyan",
     bar_format: Optional[str] = None,
     leave: bool = True,
+    mode: str = "bar",
     **kwargs,
 ):
     """Return a ``tqdm`` progress bar with centralized styling.
@@ -130,7 +131,22 @@ def progress_bar(
     Parameters map directly to the underlying ``tqdm`` arguments. Any
     additional keyword arguments are forwarded as-is, while enforcing a
     consistent width and default colour.
+
+    Args:
+        iterable: Iterable to wrap.
+        desc: Description shown alongside the progress bar.
+        unit: Unit of measurement for each iteration.
+        total: Expected number of items.
+        colour: Colour of the bar (if displayed).
+        bar_format: Custom ``tqdm`` ``bar_format`` string.
+        leave: Whether to keep the progress bar after completion.
+        mode: ``"bar"`` for the standard ``tqdm`` bar or ``"ninja"`` for
+            Ninja-style output that disables the graphical bar and displays
+            ``"[ n/total ] desc"``.
     """
+
+    if mode == "ninja":
+        bar_format = bar_format or "[ {n}/{total} ] {desc}"
 
     return tqdm(
         iterable,
@@ -1504,14 +1520,13 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
                 is_dep=True,
                 build_deps=True,
             )
-
         if deps_to_build:
             if prompt_install:
                 total = len(deps_to_build)
                 with progress_bar(
                     deps_to_build,
                     unit="pkg",
-                    bar_format="[ {n}/{total} ] {desc}",
+                    mode="ninja",
                     leave=True,
                 ) as pbar:
                     for idx, dep in enumerate(pbar, start=1):
@@ -1526,7 +1541,7 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
                             total=len(deps_to_build),
                             desc="[deps] building",
                             unit="pkg",
-                            bar_format="[ {n}/{total} ] {desc}",
+                            mode="ninja",
                             leave=True,
                         )
                     )
@@ -1567,7 +1582,7 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
     with progress_bar(
         phases,
         unit="phase",
-        bar_format="[ {n}/{total} ] {desc}",
+        mode="ninja",
         leave=True,
     ) as pbar:
         for phase in pbar:
