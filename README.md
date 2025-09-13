@@ -22,3 +22,15 @@ creating a new snapshot. You can trigger cleanup manually with
 
 Run `lpm bootstrap /path/to/root --include vim openssh` to create a chroot-ready
 filesystem tree with verified packages.
+
+## Solver Heuristics
+
+The resolver uses a CDCL SAT solver with VSIDS-style variable scoring and phase
+saving. Variable and clause activity decay factors default to `0.95` and
+`0.999` respectively, tuned from benchmarks on common dependency sets. Package
+repositories can influence decision making by adding `"bias"` and `"decay"`
+fields to entries in `repos.json`.
+
+A small benchmark harness is provided at `benchmarks/solver_bench.py`. Run
+`python benchmarks/solver_bench.py` to measure resolution speed with the default
+tuning.

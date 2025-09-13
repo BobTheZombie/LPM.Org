@@ -351,36 +351,41 @@ class PkgMeta:
     blob: Optional[str] = None
     repo: str = ""
     prio: int = 10
+    # Heuristic tuning
+    bias: float = 1.0
+    decay: float = 0.95
     kernel: bool = False
     mkinitcpio_preset: Optional[str] = None
     @staticmethod
-    def from_dict(d: dict, repo_name="(local)", prio=0) -> "PkgMeta":
+    def from_dict(d: dict, repo_name="(local)", prio=0, bias: float = 1.0, decay: float = 0.95) -> "PkgMeta":
         return PkgMeta(
             name=d["name"], version=d["version"], release=d.get("release","1"),
             arch=d.get("arch","noarch"), summary=d.get("summary",""), url=d.get("url",""),
             license=d.get("license",""), requires=d.get("requires",[]), conflicts=d.get("conflicts",[]),
             obsoletes=d.get("obsoletes",[]), provides=d.get("provides",[]), recommends=d.get("recommends",[]),
             suggests=d.get("suggests",[]), size=d.get("size",0), sha256=d.get("sha256"), blob=d.get("blob"),
-            repo=repo_name, prio=prio, kernel=d.get("kernel", False),
+            repo=repo_name, prio=prio, bias=bias, decay=decay, kernel=d.get("kernel", False),
             mkinitcpio_preset=d.get("mkinitcpio_preset"))
 
 # =========================== Repos ============================================
 @dataclass
-class Repo: 
+class Repo:
     name: str
     url: str
     priority: int=10
+    bias: float=1.0
+    decay: float=0.95
 
-def list_repos() -> List[Repo]: 
+def list_repos() -> List[Repo]:
     return [Repo(**r) for r in read_json(REPO_LIST)]
 
 def save_repos(rs: List[Repo]): 
     write_json(REPO_LIST, [dataclasses.asdict(r) for r in rs])
 
-def add_repo(name,url,priority=10):
+def add_repo(name,url,priority=10,bias=1.0,decay=0.95):
     rs=list_repos()
     if any(r.name==name for r in rs): die(f"repo {name} exists")
-    rs.append(Repo(name,url,priority)); save_repos(rs); ok(f"Added repo {name}")
+    rs.append(Repo(name,url,priority,bias,decay)); save_repos(rs); ok(f"Added repo {name}")
 
 def del_repo(name):
     save_repos([r for r in list_repos() if r.name!=name]); ok(f"Removed repo {name}")
@@ -388,7 +393,7 @@ def del_repo(name):
 def fetch_repo_index(repo: Repo) -> List[PkgMeta]:
     idx_url = repo.url.rstrip("/") + "/index.json"
     j = json.loads(urlread(idx_url).decode("utf-8"))
-    return [PkgMeta.from_dict(p, repo.name, repo.priority) for p in j.get("packages",[])]
+    return [PkgMeta.from_dict(p, repo.name, repo.priority, repo.bias, repo.decay) for p in j.get("packages",[])]
 
 def load_universe() -> Dict[str, List[PkgMeta]]:
     out: Dict[str,List[PkgMeta]] = {}
@@ -630,7 +635,9 @@ def luby(i: int) -> int:
     return luby(i - (1 << (k - 1)) + 1)
 
 
-def cdcl_solve(cnf: CNF, prefer_true: Set[int], prefer_false: Set[int]) -> SATResult:
+def cdcl_solve(cnf: CNF, prefer_true: Set[int], prefer_false: Set[int],
+               bias: Optional[Dict[int,float]] = None,
+               decay_map: Optional[Dict[int,float]] = None) -> SATResult:
     """CDCL SAT solver with non-chronological backtracking and restarts."""
 
     nvars = cnf.next_var - 1
@@ -643,9 +650,29 @@ def cdcl_solve(cnf: CNF, prefer_true: Set[int], prefer_false: Set[int]) -> SATRe
     # Implication graph nodes for each variable
     imp_graph: Dict[int, Implication] = {i: Implication() for i in range(1, nvars + 1)}
 
+    # Variable activity and phase saving
+    bias = bias or {}
+    decay_map = decay_map or {}
+    var_activity: Dict[int,float] = {i: bias.get(i, 0.0) for i in range(1, nvars + 1)}
+    saved_phase: Dict[int,bool] = {}
+    var_inc = 1.0
+    var_decay_conf = float(CONF.get("VSIDS_VAR_DECAY", "0.95"))
+    def bump_var(v: int):
+        var_activity[v] += var_inc
+        if var_activity[v] > 1e100:
+            for k in var_activity:
+                var_activity[k] *= 1e-100
+            var_inc *= 1e-100
+    def decay_var_activity():
+        nonlocal var_inc
+        var_inc /= var_decay_conf
+        for v in var_activity:
+            factor = decay_map.get(v, var_decay_conf)
+            var_activity[v] *= factor
+
     # Clause activity management
     cla_inc = 1.0
-    cla_decay = 0.999
+    cla_decay = float(CONF.get("VSIDS_CLAUSE_DECAY", "0.999"))
 
     def bump_clause(ci: Optional[int]):
         if ci is not None:
@@ -680,6 +707,7 @@ def cdcl_solve(cnf: CNF, prefer_true: Set[int], prefer_false: Set[int]) -> SATRe
         if assigns[v] is not None:
             return
         assigns[v] = val
+        saved_phase[v] = val
         levels[v] = current_level()
         reason[v] = rsn
         trail.append(lit)
@@ -732,13 +760,15 @@ def cdcl_solve(cnf: CNF, prefer_true: Set[int], prefer_false: Set[int]) -> SATRe
         return None
 
     def pick_branch_var() -> int:
-        for v in range(1, nvars + 1):
-            if assigns[v] is None:
-                return v
-        return 0
+        unassigned = [v for v in range(1, nvars + 1) if assigns[v] is None]
+        if not unassigned:
+            return 0
+        return max(unassigned, key=lambda v: var_activity[v])
 
     def analyze(conflict_idx: int) -> Tuple[List[int], int]:
         bump_clause(conflict_idx)
+        for lit in cnf.clauses[conflict_idx]:
+            bump_var(abs(lit))
         seen: Set[int] = set()
         learnt: List[int] = []
         counter = 0
@@ -747,6 +777,7 @@ def cdcl_solve(cnf: CNF, prefer_true: Set[int], prefer_false: Set[int]) -> SATRe
         while True:
             for lit in clause:
                 v = abs(lit)
+                bump_var(v)
                 node = imp_graph[v]
                 if v not in seen and node.level > 0:
                     seen.add(v)
@@ -762,6 +793,9 @@ def cdcl_solve(cnf: CNF, prefer_true: Set[int], prefer_false: Set[int]) -> SATRe
             v = abs(lit)
             clause_idx = imp_graph[v].reason
             bump_clause(clause_idx)
+            if clause_idx is not None:
+                for l in cnf.clauses[clause_idx]:
+                    bump_var(abs(l))
             clause = imp_graph[v].preds.copy() if clause_idx is not None else []
             counter -= 1
             if counter <= 0:
@@ -770,6 +804,8 @@ def cdcl_solve(cnf: CNF, prefer_true: Set[int], prefer_false: Set[int]) -> SATRe
         back_lvl = 0
         if len(learnt) > 1:
             back_lvl = max(imp_graph[abs(l)].level for l in learnt[:-1])
+        for lit in learnt:
+            bump_var(abs(lit))
         return learnt, back_lvl
 
     def backtrack(level: int) -> None:
@@ -800,6 +836,7 @@ def cdcl_solve(cnf: CNF, prefer_true: Set[int], prefer_false: Set[int]) -> SATRe
             backtrack(back_lvl)
             enqueue(learnt[0], ci)
             decay_clause_activity()
+            decay_var_activity()
             if conflicts % 200 == 0:
                 reduce_db()
             if conflicts >= restart_limit:
@@ -812,9 +849,11 @@ def cdcl_solve(cnf: CNF, prefer_true: Set[int], prefer_false: Set[int]) -> SATRe
                 final = {var: (assigns[var] if assigns[var] is not None else False) for var in assigns}
                 return SATResult(True, final)
             trail_lim.append(len(trail))
-            lit = v
-            if v in prefer_false and v not in prefer_true:
-                lit = -v
+            phase = saved_phase.get(v)
+            if phase is None:
+                lit = -v if v in prefer_false and v not in prefer_true else v
+            else:
+                lit = v if phase else -v
             enqueue(lit, None)
 
 # =========================== Resolver encoding =================================
@@ -827,11 +866,17 @@ def expr_to_cnf_disj(u: Universe, e: DepExpr, cnf: CNF, var_of: Dict[Tuple[str,s
     else:
         die("expr_to_cnf_disj called on AND unexpectedly")
 
-def encode_resolution(u: Universe, goals: List[DepExpr]) -> Tuple[CNF, Dict[Tuple[str,str],int], Set[int], Set[int]]:
+def encode_resolution(u: Universe, goals: List[DepExpr]) -> Tuple[CNF, Dict[Tuple[str,str],int], Set[int], Set[int], Dict[int,float], Dict[int,float]]:
     cnf = CNF()
     var_of: Dict[Tuple[str,str],int] = {}
+    bias_map: Dict[int,float] = {}
+    decay_map: Dict[int,float] = {}
     for name,lst in u.candidates_by_name.items():
-        for p in lst: var_of[(p.name,p.version)] = cnf.new_var(f"{p.name}=={p.version}")
+        for p in lst:
+            v = cnf.new_var(f"{p.name}=={p.version}")
+            var_of[(p.name,p.version)] = v
+            bias_map[v] = p.bias
+            decay_map[v] = p.decay
     # At-most-one per name
     for name,lst in u.candidates_by_name.items():
         for i in range(len(lst)):
@@ -909,12 +954,12 @@ def encode_resolution(u: Universe, goals: List[DepExpr]) -> Tuple[CNF, Dict[Tupl
             if not disj: die("No provider for goal")
             cnf.add(disj)
 
-    return cnf, var_of, prefer_true, prefer_false
+    return cnf, var_of, prefer_true, prefer_false, bias_map, decay_map
 
 def solve(goals: List[str], universe: Universe) -> List[PkgMeta]:
     goal_exprs = [parse_dep_expr(s) for s in goals]
-    cnf, var_of, ptrue, pfalse = encode_resolution(universe, goal_exprs)
-    res = cdcl_solve(cnf, ptrue, pfalse)
+    cnf, var_of, ptrue, pfalse, bias_map, decay_map = encode_resolution(universe, goal_exprs)
+    res = cdcl_solve(cnf, ptrue, pfalse, bias_map, decay_map)
     if not res.sat: raise RuntimeError("Unsatisfiable dependency set")
     inv: Dict[int,Tuple[str,str]] = {v:k for k,v in var_of.items()}
     chosen: Dict[str,PkgMeta] = {}
