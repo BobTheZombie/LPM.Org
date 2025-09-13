@@ -1430,8 +1430,11 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
                     if depname not in installed:
                         deps_to_build.append(depname)
 
-        def _build_dep(depname: str):
-            log(f"[deps] building required package: {depname}")
+        def _build_dep(depname: str, idx: Optional[int] = None, total: Optional[int] = None):
+            if idx is not None and total is not None:
+                log(f"[deps] ({idx}/{total}) building required package: {depname}")
+            else:
+                log(f"[deps] building required package: {depname}")
             tmp = Path(f"/tmp/lpm-dep-{depname}.lpmbuild")
             fetch_lpmbuild(depname, tmp)
             return run_lpmbuild(
@@ -1445,8 +1448,9 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
 
         if deps_to_build:
             if prompt_install:
-                for dep in deps_to_build:
-                    _build_dep(dep)
+                total = len(deps_to_build)
+                for idx, dep in enumerate(progress_bar(deps_to_build, desc="[deps] building", unit="pkg"), start=1):
+                    _build_dep(dep, idx, total)
             else:
                 max_workers = min(4, len(deps_to_build))
                 with ThreadPoolExecutor(max_workers=max_workers) as ex:
