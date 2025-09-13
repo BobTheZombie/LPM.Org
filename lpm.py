@@ -90,6 +90,21 @@ def ok(msg: str):
 def warn(msg: str):
     print(f"{CYAN}[WARN]{RESET} {msg}", file=sys.stderr)
 
+def print_build_summary(meta: PkgMeta, out: Path, duration: float, deps: int):
+    """Print a Meson-like build summary table."""
+    rows = [
+        ("Name", meta.name),
+        ("Version", meta.version),
+        ("Arch", meta.arch),
+        ("Output", out),
+        ("Build time", f"{duration:.2f}s"),
+        ("Dependencies", deps),
+    ]
+    width = max(len(k) for k, _ in rows)
+    print("\nSummary")
+    for k, v in rows:
+        print(f"  {k:<{width}} {v}")
+
 # Specific exception for dependency resolution failures
 class ResolutionError(Exception):
     """Raised when dependency resolution fails."""
@@ -1960,8 +1975,12 @@ def cmd_build(a):
     prompt_install_pkg(out, default=a.install_default)
 
 def cmd_buildpkg(a):
+    start = time.time()
     out = run_lpmbuild(a.script, a.outdir, build_deps=not a.no_deps, prompt_default=a.install_default)
+    duration = time.time() - start
     if out and out.exists():
+        meta, _ = read_package_meta(out)
+        print_build_summary(meta, out, duration, len(meta.requires))
         ok(f"Built {out}")
     else:
         die(f"Build failed for {a.script}")
