@@ -28,6 +28,7 @@ CONF_FILE = Path("/etc/lpm/lpm.conf")      # KEY=VALUE, e.g. ARCH=znver2
 STATE_DIR = Path(os.environ.get("LPM_STATE_DIR", "/var/lib/lpm"))
 DB_PATH   = STATE_DIR / "state.db"
 CACHE_DIR = STATE_DIR / "cache"
+SNAPSHOT_DIR = STATE_DIR / "snapshots"
 REPO_LIST = STATE_DIR / "repos.json"       # [{"name":"core","url":"file:///srv/repo","priority":10}, ...]
 PIN_FILE  = STATE_DIR / "pins.json"        # {"hold":["pkg"], "prefer":{"pkg":"~=3.3"}}
 HOOK_DIR  = Path("/usr/share/lpm/hooks")
@@ -36,7 +37,7 @@ TRUST_DIR = Path("/etc/lpm/trust")                     # dir of *.pem public key
 DEFAULT_ROOT = "/"
 UMASK = 0o22
 os.umask(UMASK)
-for d in (STATE_DIR, CACHE_DIR): d.mkdir(parents=True, exist_ok=True)
+for d in (STATE_DIR, CACHE_DIR, SNAPSHOT_DIR): d.mkdir(parents=True, exist_ok=True)
 if not REPO_LIST.exists(): REPO_LIST.write_text("[]", encoding="utf-8")
 if not PIN_FILE.exists(): PIN_FILE.write_text(json.dumps({"hold":[],"prefer":{}}, indent=2), encoding="utf-8")
 
@@ -413,6 +414,12 @@ CREATE TABLE IF NOT EXISTS history(
   to_ver TEXT,
   details TEXT
 );
+CREATE TABLE IF NOT EXISTS snapshots(
+  id INTEGER PRIMARY KEY,
+  ts INTEGER NOT NULL,
+  tag TEXT NOT NULL,
+  archive TEXT NOT NULL
+);
 """
 def db() -> sqlite3.Connection:
     c = sqlite3.connect(str(DB_PATH))
@@ -424,6 +431,45 @@ def db_installed(conn) -> Dict[str,dict]:
     for r in conn.execute("SELECT name,version,release,arch,provides,manifest FROM installed"):
         res[r[0]]={"version":r[1],"release":r[2],"arch":r[3],"provides":json.loads(r[4]),"manifest":json.loads(r[5])}
     return res
+
+# =========================== Snapshots =====================================
+def create_snapshot(tag: str, files: Iterable[Path]) -> str:
+    ts = int(time.time())
+    safe_tag = re.sub(r"[^A-Za-z0-9._-]", "_", tag)
+    archive = SNAPSHOT_DIR / f"{ts}-{safe_tag}.tar.zst"
+    cctx = zstd.ZstdCompressor()
+    with archive.open("wb") as f:
+        with cctx.stream_writer(f) as compressor:
+            with tarfile.open(fileobj=compressor, mode="w|") as tf:
+                for p in files:
+                    p = Path(p)
+                    if not p.exists():
+                        continue
+                    arcname = p.as_posix().lstrip("/")
+                    tf.add(str(p), arcname=arcname)
+    conn = db()
+    conn.execute("INSERT INTO snapshots(ts, tag, archive) VALUES(?,?,?)", (ts, tag, str(archive)))
+    conn.commit()
+    conn.close()
+    return str(archive)
+
+
+def restore_snapshot(archive: Path) -> None:
+    archive = Path(archive)
+    dctx = zstd.ZstdDecompressor()
+    with archive.open("rb") as f:
+        with dctx.stream_reader(f) as reader:
+            with tarfile.open(fileobj=reader, mode="r|") as tf:
+                for m in tf:
+                    dest = Path("/") / m.name
+                    if dest.exists():
+                        if dest.is_dir():
+                            if not m.isdir():
+                                shutil.rmtree(dest)
+                        else:
+                            dest.unlink()
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    tf.extract(m, path="/", filter="data")
 
 # =========================== Universe / Providers =============================
 @dataclass
