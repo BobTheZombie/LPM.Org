@@ -1235,7 +1235,7 @@ _emit_array() {{
     printf "\\n"
   fi
 }}
-for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE; do _emit_scalar "$v"; done
+for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE CFLAGS; do _emit_scalar "$v"; done
 for a in REQUIRES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS; do _emit_array "$a"; done
 """
 
@@ -1393,7 +1393,9 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None) -> Path:
         "SRCROOT": str(srcroot),
     })
 
-    flags = f"{OPT_LEVEL} -march={MARCH} -mtune={MTUNE}"
+    base_flags = f"{OPT_LEVEL} -march={MARCH} -mtune={MTUNE} -pipe -fPIC"
+    extra_cflags = " ".join(filter(None, [env.get("CFLAGS", "").strip(), scal.get("CFLAGS", "").strip()]))
+    flags = f"{base_flags} {extra_cflags}".strip()
     env["CFLAGS"] = flags
     env["CXXFLAGS"] = flags
     env["LDFLAGS"] = OPT_LEVEL
