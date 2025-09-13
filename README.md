@@ -17,3 +17,8 @@ LPM stores filesystem snapshots in `/var/lib/lpm/snapshots`. Configure
 (default `10`). Older entries beyond the limit are automatically pruned after
 creating a new snapshot. You can trigger cleanup manually with
 `lpm snapshots --prune`.
+
+## Bootstrap
+
+Run `lpm bootstrap /path/to/root --include vim openssh` to create a chroot-ready
+filesystem tree with verified packages.
