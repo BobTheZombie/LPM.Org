@@ -992,7 +992,7 @@ def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool, force: 
             warn(f"Could not fetch {p.name} from repos ({res}), trying GitLab fallback...")
             tmp = Path(f"/tmp/lpm-dep-{p.name}.lpmbuild")
             fetch_lpmbuild(p.name, tmp)
-            built = run_lpmbuild(tmp)
+            built = run_lpmbuild(tmp, prompt_install=False, is_dep=True)
             meta = installpkg(built, root=root, dry_run=dry, verify=verify, force=force)
         else:
             if res is None:
@@ -1280,7 +1280,7 @@ def build_from_gitlab(pkgname: str) -> Path:
 
     tmp = Path(f"/tmp/lpm-dep-{pkgname}.lpmbuild")
     fetch_lpmbuild(pkgname, tmp)
-    built = run_lpmbuild(tmp, outdir=CACHE_DIR)
+    built = run_lpmbuild(tmp, outdir=CACHE_DIR, prompt_install=False, is_dep=True)
 
     # Copy to a stable cache filename
     if built != cache_pkg:
@@ -1291,7 +1291,20 @@ def build_from_gitlab(pkgname: str) -> Path:
             return built
     return cache_pkg
 
-def run_lpmbuild(script: Path, outdir: Optional[Path]=None) -> Path:
+
+def prompt_install_pkg(blob: Path, kind: str = "package") -> None:
+    """Prompt the user to install a built package."""
+    try:
+        meta, _ = read_package_meta(blob)
+        desc = f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}"
+    except Exception:
+        desc = blob.name
+    resp = input(f"Install {kind} {desc}? [y/N] ").strip().lower()
+    if resp in {"y", "yes"}:
+        installpkg(blob)
+
+
+def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: bool = True, is_dep: bool = False) -> Path:
     script_path = script.resolve()
     script_dir = script_path.parent
 
@@ -1334,12 +1347,16 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None) -> Path:
         log(f"[deps] building required package: {depname}")
         tmp = Path(f"/tmp/lpm-dep-{depname}.lpmbuild")
         fetch_lpmbuild(depname, tmp)
-        run_lpmbuild(tmp, outdir or script_dir)
+        return run_lpmbuild(tmp, outdir or script_dir, prompt_install=prompt_install, is_dep=True)
 
     if deps_to_build:
-        max_workers = min(4, len(deps_to_build))
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            list(tqdm(ex.map(_build_dep, deps_to_build), total=len(deps_to_build), desc="[deps] building", unit="pkg", colour="cyan"))
+        if prompt_install:
+            for dep in deps_to_build:
+                _build_dep(dep)
+        else:
+            max_workers = min(4, len(deps_to_build))
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                list(tqdm(ex.map(_build_dep, deps_to_build), total=len(deps_to_build), desc="[deps] building", unit="pkg", colour="cyan"))
 
     stagedir = Path(f"/tmp/pkg-{name}")
     buildroot = Path(f"/tmp/build-{name}")
@@ -1426,6 +1443,8 @@ exit 0
     outdir = script_dir if outdir is None else outdir
     out = outdir / f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}"
     build_package(stagedir, meta, out, sign=True)
+    if prompt_install:
+        prompt_install_pkg(out, kind="dependency" if is_dep else "package")
     return out
 
 # =========================== CLI commands =====================================
@@ -1788,6 +1807,7 @@ def cmd_build(a):
     )
     out = Path(a.output or f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}")
     build_package(stagedir, meta, out, sign=(not a.no_sign))
+    prompt_install_pkg(out)
 
 def cmd_buildpkg(a):
     out = run_lpmbuild(a.script, a.outdir)
