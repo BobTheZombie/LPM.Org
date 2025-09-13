@@ -123,6 +123,49 @@ def load_conf(path: Path) -> Dict[str,str]:
 CONF = load_conf(CONF_FILE)
 ARCH = CONF.get("ARCH", os.uname().machine if hasattr(os, "uname") else "x86_64")
 
+# --- Optimization level (-O2 etc.) ---
+OPT_LEVEL = CONF.get("OPT_LEVEL", "-O2")
+if OPT_LEVEL not in ("-Os", "-O2", "-O3", "-Ofast"):
+    OPT_LEVEL = "-O2"
+
+
+def _detect_cpu() -> Tuple[str, str, str, str]:
+    """Return (march, mtune, vendor, family)."""
+    vendor = family = ""  # defaults
+    try:
+        with open("/proc/cpuinfo", "r", encoding="utf-8") as f:
+            for line in f:
+                if not vendor and line.startswith("vendor_id"):
+                    vendor = line.split(":", 1)[1].strip()
+                elif not family and line.startswith("cpu family"):
+                    family = line.split(":", 1)[1].strip()
+                if vendor and family:
+                    break
+    except Exception:
+        pass
+
+    march = mtune = "generic"
+    try:
+        fam = int(family)
+    except Exception:
+        fam = None
+
+    if vendor == "AuthenticAMD":
+        if fam and fam >= 25:
+            march = mtune = "znver4"
+        elif fam and fam >= 24:
+            march = mtune = "znver3"
+        elif fam and fam >= 23:
+            march = mtune = "znver2"
+    elif vendor == "GenuineIntel":
+        if fam and fam >= 6:
+            march = mtune = "x86-64-v3"
+
+    return march, mtune, vendor, family
+
+
+MARCH, MTUNE, CPU_VENDOR, CPU_FAMILY = _detect_cpu()
+
 # ================ Init System Detection ===============================================
 def detect_init_system() -> str:
     """
@@ -1349,6 +1392,12 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None) -> Path:
         "BUILDROOT": str(buildroot),
         "SRCROOT": str(srcroot),
     })
+
+    flags = f"{OPT_LEVEL} -march={MARCH} -mtune={MTUNE}"
+    env["CFLAGS"] = flags
+    env["CXXFLAGS"] = flags
+    env["LDFLAGS"] = OPT_LEVEL
+    log(f"[opt] vendor={CPU_VENDOR} family={CPU_FAMILY} -> {flags}")
 
     # Auto-fetch source if URL provided
     _maybe_fetch_source(url, srcroot)
