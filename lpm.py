@@ -349,20 +349,44 @@ CREATE TABLE IF NOT EXISTS snapshots(
 """
 def db() -> sqlite3.Connection:
     c = sqlite3.connect(str(DB_PATH))
-    c.execute("PRAGMA journal_mode=WAL"); c.executescript(SCHEMA)
+    c.execute("PRAGMA journal_mode=WAL")
+    c.executescript(SCHEMA)
+    cols = [r[1] for r in c.execute("PRAGMA table_info(installed)")]
+    if "symbols" not in cols:
+        c.execute("ALTER TABLE installed ADD COLUMN symbols TEXT NOT NULL DEFAULT '[]'")
+        c.commit()
     return c
 
 def db_installed(conn) -> Dict[str,dict]:
-    res={}
-    for r in conn.execute("SELECT name,version,release,arch,provides,symbols,manifest FROM installed"):
-        res[r[0]]={
-            "version":r[1],
-            "release":r[2],
-            "arch":r[3],
-            "provides":json.loads(r[4]),
-            "symbols":json.loads(r[5]),
-            "manifest":json.loads(r[6])
-        }
+    res = {}
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(installed)")]
+    has_symbols = "symbols" in cols
+    if has_symbols:
+        rows = conn.execute(
+            "SELECT name,version,release,arch,provides,symbols,manifest FROM installed"
+        )
+        for r in rows:
+            res[r[0]] = {
+                "version": r[1],
+                "release": r[2],
+                "arch": r[3],
+                "provides": json.loads(r[4]),
+                "symbols": json.loads(r[5]) if r[5] else [],
+                "manifest": json.loads(r[6]),
+            }
+    else:
+        rows = conn.execute(
+            "SELECT name,version,release,arch,provides,manifest FROM installed"
+        )
+        for r in rows:
+            res[r[0]] = {
+                "version": r[1],
+                "release": r[2],
+                "arch": r[3],
+                "provides": json.loads(r[4]),
+                "symbols": [],
+                "manifest": json.loads(r[5]),
+            }
     return res
 
 # =========================== Snapshots =====================================
