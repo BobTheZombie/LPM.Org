@@ -24,7 +24,28 @@ from typing import Dict, List, Optional, Set, Tuple, Iterable
 from collections import deque
 import zstandard as zstd
 
-from src.config import *  # noqa: F401,F403
+from src.config import (
+    ARCH,
+    CACHE_DIR,
+    CONF,
+    CPU_FAMILY,
+    CPU_VENDOR,
+    DB_PATH,
+    DEFAULT_ROOT,
+    HOOK_DIR,
+    MAX_LEARNT_CLAUSES,
+    MAX_SNAPSHOTS,
+    MARCH,
+    MTUNE,
+    OPT_LEVEL,
+    PIN_FILE,
+    REPO_LIST,
+    SIGN_KEY,
+    SNAPSHOT_DIR,
+    TRUST_DIR,
+    detect_init_system,
+    initialize_state,
+)
 initialize_state()
 from src.fs import read_json, write_json, urlread
 from src.solver import CNF, CDCLSolver
