@@ -1699,12 +1699,58 @@ def cmd_list_installed(_):
     for n,v,r,a in conn.execute("SELECT name,version,release,arch FROM installed ORDER BY name"):
         print(f"{n:30} {v}-{r}.{a}")
 
+def cmd_snapshots(a):
+    conn = db()
+    if a.delete:
+        for sid in a.delete:
+            row = conn.execute("SELECT archive FROM snapshots WHERE id=?", (sid,)).fetchone()
+            if row:
+                try:
+                    Path(row[0]).unlink(missing_ok=True)
+                except Exception as e:
+                    warn(f"rm {row[0]}: {e}")
+                conn.execute("DELETE FROM snapshots WHERE id=?", (sid,))
+        conn.commit()
+
+    rows = list(conn.execute("SELECT id,ts,tag,archive FROM snapshots ORDER BY id DESC"))
+    if not rows:
+        print("No snapshots found")
+    else:
+        for sid, ts, tag, archive in rows:
+            t = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+            print(f"{sid:4} {t} {tag} {archive}")
+
+def cmd_rollback(a):
+    conn = db()
+    if a.snapshot_id is not None:
+        row = conn.execute("SELECT id,tag,archive FROM snapshots WHERE id=?", (a.snapshot_id,)).fetchone()
+        if not row:
+            die(f"snapshot {a.snapshot_id} not found")
+    else:
+        row = conn.execute("SELECT id,tag,archive FROM snapshots ORDER BY id DESC LIMIT 1").fetchone()
+        if not row:
+            die("no snapshots available")
+    sid, tag, archive = row
+    restore_snapshot(Path(archive))
+    conn.execute(
+        "INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
+        (int(time.time()), "rollback", tag, None, None, archive),
+    )
+    conn.commit()
+    ok(f"Rolled back to snapshot {sid} ({tag})")
+
 def cmd_history(_):
     conn=db()
     for ts,act,name,frm,to in conn.execute("SELECT ts,action,name,from_ver,to_ver FROM history ORDER BY id DESC LIMIT 200"):
         t=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
-        if act=="install": print(f"{t}  install  {name} -> {to}")
-        else: print(f"{t}  remove   {name} ({frm})")
+        if act=="install":
+            print(f"{t}  install  {name} -> {to}")
+        elif act=="remove":
+            print(f"{t}  remove   {name} ({frm})")
+        elif act=="rollback":
+            print(f"{t}  rollback {name}")
+        else:
+            print(f"{t}  {act}  {name}")
 
 def cmd_verify(a):
     root = Path(a.root or DEFAULT_ROOT)
@@ -2062,6 +2108,8 @@ def build_parser()->argparse.ArgumentParser:
     sp.set_defaults(func=cmd_upgrade)
 
     sp=sub.add_parser("list", help="List installed packages"); sp.set_defaults(func=cmd_list_installed)
+    sp=sub.add_parser("snapshots", help="List snapshots"); sp.add_argument("--delete", type=int, nargs="*", help="snapshot IDs to delete"); sp.set_defaults(func=cmd_snapshots)
+    sp=sub.add_parser("rollback", help="Restore from snapshot"); sp.add_argument("snapshot_id", nargs="?", type=int, help="snapshot ID (default latest)"); sp.set_defaults(func=cmd_rollback)
     sp=sub.add_parser("history", help="Show last transactions"); sp.set_defaults(func=cmd_history)
     sp=sub.add_parser("verify", help="Verify installed files exist"); sp.add_argument("--root"); sp.set_defaults(func=cmd_verify)
 
