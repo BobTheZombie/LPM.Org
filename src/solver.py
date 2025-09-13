@@ -4,7 +4,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
-from .config import CONF
+from .config import CONF, MAX_LEARNT_CLAUSES
 
 
 class CNF:
@@ -18,6 +18,7 @@ class CNF:
         self.watch_list: Dict[int, List[int]] = {}
         self.watchers: List[Tuple[int, int]] = []
         self.activity: List[float] = []
+        self.lbd: List[int] = []
         self.learnts: Set[int] = set()
 
     def new_var(self, name: str) -> int:
@@ -29,10 +30,11 @@ class CNF:
         self.varname[v] = name
         return v
 
-    def add_clause(self, clause: List[int], learnt: bool = False) -> int:
+    def add_clause(self, clause: List[int], learnt: bool = False, lbd: int = 0) -> int:
         idx = len(self.clauses)
         self.clauses.append(clause)
         self.activity.append(0.0)
+        self.lbd.append(lbd)
         if learnt:
             self.learnts.add(idx)
         if not clause:
@@ -71,6 +73,7 @@ class CNF:
         self.clauses[idx] = []
         self.watchers[idx] = (0, 0)
         self.activity[idx] = 0.0
+        self.lbd[idx] = 0
         self.learnts.discard(idx)
 
 
@@ -123,6 +126,7 @@ class CDCLSolver:
         self.var_decay_conf = float(CONF.get("VSIDS_VAR_DECAY", "0.95"))
         self.cla_inc = 1.0
         self.cla_decay = float(CONF.get("VSIDS_CLAUSE_DECAY", "0.999"))
+        self.max_learnts = MAX_LEARNT_CLAUSES
 
     def solve(self, assumptions: List[int]) -> SATResult:
         """Solve the stored CNF instance under optional assumptions."""
@@ -146,6 +150,7 @@ class CDCLSolver:
         var_inc = self.var_inc
         var_decay_conf = self.var_decay_conf
         decay_map = self.decay_map
+        max_learnts = self.max_learnts
 
         def bump_var(v: int) -> None:
             nonlocal var_inc
@@ -175,11 +180,11 @@ class CDCLSolver:
 
         def reduce_db() -> None:
             learnts = [idx for idx in cnf.learnts if cnf.clauses[idx]]
-            if len(learnts) <= 20:
+            if len(learnts) <= max_learnts:
                 return
-            learnts.sort(key=lambda idx: cnf.activity[idx])
+            learnts.sort(key=lambda idx: (cnf.lbd[idx], -cnf.activity[idx]))
             reasons = set(reason.values())
-            for idx in learnts[: len(learnts) // 2]:
+            for idx in learnts[max_learnts:]:
                 if idx not in reasons and len(cnf.clauses[idx]) > 2:
                     cnf.remove_clause(idx)
 
@@ -339,13 +344,14 @@ class CDCLSolver:
                     self.cla_inc = cla_inc
                     return SATResult(False, {v: False for v in assigns}, core_clause)
                 learnt, back_lvl = analyze(confl)
-                ci = cnf.add_clause(learnt, learnt=True)
+                lbd = len({levels[abs(l)] for l in learnt})
+                ci = cnf.add_clause(learnt, learnt=True, lbd=lbd)
                 bump_clause(ci)
                 backtrack(back_lvl)
                 enqueue(learnt[0], ci)
                 decay_clause_activity()
                 decay_var_activity()
-                if conflicts % 200 == 0:
+                if len(cnf.learnts) > max_learnts:
                     reduce_db()
                 if conflicts >= restart_limit:
                     restart_count += 1
