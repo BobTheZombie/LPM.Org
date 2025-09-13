@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -20,21 +21,24 @@ def write_json(p: Path, obj: Any) -> None:
     tmp.replace(p)
 
 
-def urlread(url: str) -> bytes:
-    with urllib.request.urlopen(url) as r:
-        total = int(r.headers.get("content-length", 0) or 0)
-        if total == 0:
-            return r.read()
-        chunk_size = 1 << 14
-        data = bytearray()
-        with tqdm(total=total, desc="Downloading", unit="B", unit_scale=True, ncols=80, colour="cyan") as bar:
-            while True:
-                chunk = r.read(chunk_size)
-                if not chunk:
-                    break
-                data.extend(chunk)
-                bar.update(len(chunk))
-        return bytes(data)
+def urlread(url: str, timeout: float | None = 10) -> bytes:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            total = int(r.headers.get("content-length", 0) or 0)
+            if total == 0:
+                return r.read()
+            chunk_size = 1 << 14
+            data = bytearray()
+            with tqdm(total=total, desc="Downloading", unit="B", unit_scale=True, ncols=80, colour="cyan") as bar:
+                while True:
+                    chunk = r.read(chunk_size)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                    bar.update(len(chunk))
+            return bytes(data)
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Failed to read URL {url}") from e
 
 
 __all__ = ["read_json", "write_json", "urlread"]
