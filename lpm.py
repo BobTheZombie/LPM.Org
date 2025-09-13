@@ -89,6 +89,11 @@ def ok(msg: str):
 def warn(msg: str):
     print(f"{CYAN}[WARN]{RESET} {msg}", file=sys.stderr)
 
+# Specific exception for dependency resolution failures
+class ResolutionError(Exception):
+    """Raised when dependency resolution fails."""
+    pass
+
 # Progress bar wrapper
 from tqdm import tqdm
 
@@ -535,11 +540,13 @@ def encode_resolution(u: Universe, goals: List[DepExpr]) -> Tuple[CNF, Dict[Tupl
         if g.kind=="and":
             for part in flatten_and(g):
                 disj = expr_to_cnf_disj(u, part, cnf, var_of)
-                if not disj: die("No provider for goal part")
+                if not disj:
+                    raise ResolutionError("No provider for goal part")
                 cnf.add(disj)
         else:
             disj = expr_to_cnf_disj(u, g, cnf, var_of)
-            if not disj: die("No provider for goal")
+            if not disj:
+                raise ResolutionError("No provider for goal")
             cnf.add(disj)
 
     return cnf, var_of, prefer_true, prefer_false, bias_map, decay_map
@@ -563,7 +570,9 @@ def solve(goals: List[str], universe: Universe) -> List[PkgMeta]:
     inv: Dict[int,Tuple[str,str]] = {v:k for k,v in var_of.items()}
     if not res.sat:
         names = sorted({inv.get(abs(l))[0] for l in (res.unsat_core or []) if abs(l) in inv})
-        raise RuntimeError("Unsatisfiable dependency set involving: " + ", ".join(names))
+        raise ResolutionError(
+            "Unsatisfiable dependency set involving: " + ", ".join(names)
+        )
     chosen: Dict[str,PkgMeta] = {}
     for vid,val in res.assign.items():
         if not val: continue
@@ -1079,7 +1088,7 @@ def do_upgrade(targets: List[str], root: Path, dry: bool, verify: bool, force: b
 
     try:
         plan = solve(goals, u)
-    except RuntimeError:
+    except ResolutionError:
         warn("SAT solver failed to find upgrade set, falling back to GitLab fetch...")
         for dep in targets:
             built = build_from_gitlab(dep)
@@ -1460,7 +1469,10 @@ def cmd_install(a):
     root = Path(a.root or DEFAULT_ROOT)
     u = build_universe()
     goals = a.names
-    plan = solve(goals, u)
+    try:
+        plan = solve(goals, u)
+    except ResolutionError as e:
+        die(f"dependency resolution failed: {e}")
     log("[plan] install order:")
     for p in plan:
         log(f"  - {p.name}-{p.version}")
@@ -1516,7 +1528,7 @@ def cmd_bootstrap(a):
     pkgs = base_pkgs + list(a.include or [])
     try:
         plan = solve(pkgs, build_universe())
-    except Exception as e:
+    except ResolutionError as e:
         die(f"dependency resolution failed: {e}")
 
     log("[plan] bootstrap install order:")
@@ -1581,7 +1593,7 @@ def cmd_upgrade(a):
 
     try:
         plan = solve(goals, u)
-    except RuntimeError:
+    except ResolutionError:
         warn("SAT solver failed to find upgrade set, falling back to GitLab fetch...")
         for dep in a.names:
             built = build_from_gitlab(dep)
@@ -1872,7 +1884,10 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
         if meta.requires:
             log(f"[meta] {meta.name} is a meta-package, resolving deps: {', '.join(meta.requires)}")
             u = build_universe()
-            plan = solve(meta.requires, u)
+            try:
+                plan = solve(meta.requires, u)
+            except ResolutionError as e:
+                raise ResolutionError(f"{meta.name}: {e}")
             do_install(plan, root, dry_run, verify, force)
             ok(f"Installed meta-package {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
             return meta
@@ -2137,7 +2152,10 @@ def build_parser()->argparse.ArgumentParser:
 
 def main(argv=None):
     args=build_parser().parse_args(argv)
-    args.func(args)
+    try:
+        args.func(args)
+    except ResolutionError as e:
+        die(f"dependency resolution failed: {e}")
 
 if __name__=="__main__":
     main()
