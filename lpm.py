@@ -49,6 +49,7 @@ from src.config import (
 )
 initialize_state()
 from src.fs import read_json, write_json, urlread
+from src.installgen import generate_install_script
 from src.solver import CNF, CDCLSolver
 
 # =========================== Protected packages ===============================
@@ -1633,17 +1634,14 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
                 f.write("\ninstall_script \"$@\"\n")
             install_sh.chmod(0o755)
         else:
+            script = generate_install_script(stagedir)
             with install_sh.open("w", encoding="utf-8") as f:
-                f.write(f"""#!/bin/sh
-set -e
-echo "[lpm] Running default install script for {name}-{version}"
-if command -v ldconfig >/dev/null 2>&1; then
-    echo "[lpm] Running ldconfig"
-    ldconfig || true
-fi
-exit 0
-""")
+                f.write("#!/bin/sh\nset -e\n")
+                f.write(script)
+                if not script.endswith("\n"):
+                    f.write("\n")
             install_sh.chmod(0o755)
+
 
     except Exception as e:
         warn(f"Could not embed install script for {name}: {e}")
