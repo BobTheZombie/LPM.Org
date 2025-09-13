@@ -57,6 +57,12 @@ try:
 except ValueError:
     MAX_SNAPSHOTS = 10
 
+# --- SAT solver learnt clause limit ---
+try:
+    MAX_LEARNT_CLAUSES = max(1, int(CONF.get("MAX_LEARNT_CLAUSES", "200")))
+except ValueError:
+    MAX_LEARNT_CLAUSES = 200
+
 
 def _detect_cpu() -> Tuple[str, str, str, str]:
     """Return (march, mtune, vendor, family)."""
@@ -128,6 +134,7 @@ __all__ = [
     "ARCH",
     "OPT_LEVEL",
     "MAX_SNAPSHOTS",
+    "MAX_LEARNT_CLAUSES",
     "MARCH",
     "MTUNE",
     "CPU_VENDOR",
