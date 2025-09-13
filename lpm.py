@@ -547,6 +547,10 @@ class CNF:
         # Watched literal data structures
         self.watch_list: Dict[int, List[int]] = {}
         self.watchers: List[Tuple[int, int]] = []
+        # Clause activity for database reduction
+        self.activity: List[float] = []
+        # Indices of learnt clauses
+        self.learnts: Set[int] = set()
 
     def new_var(self, name: str) -> int:
         if name in self.namevar:
@@ -557,9 +561,12 @@ class CNF:
         self.varname[v] = name
         return v
 
-    def add_clause(self, clause: List[int]) -> int:
+    def add_clause(self, clause: List[int], learnt: bool = False) -> int:
         idx = len(self.clauses)
         self.clauses.append(clause)
+        self.activity.append(0.0)
+        if learnt:
+            self.learnts.add(idx)
         if not clause:
             self.watchers.append((0, 0))
             return idx
@@ -580,11 +587,37 @@ class CNF:
             if clause:
                 self.add_clause(clause)
 
+    def remove_clause(self, idx: int) -> None:
+        clause = self.clauses[idx]
+        if not clause:
+            return
+        w1, w2 = self.watchers[idx]
+        if w1 in self.watch_list and idx in self.watch_list[w1]:
+            self.watch_list[w1].remove(idx)
+            if not self.watch_list[w1]:
+                del self.watch_list[w1]
+        if w2 in self.watch_list and idx in self.watch_list[w2]:
+            self.watch_list[w2].remove(idx)
+            if not self.watch_list[w2]:
+                del self.watch_list[w2]
+        self.clauses[idx] = []
+        self.watchers[idx] = (0, 0)
+        self.activity[idx] = 0.0
+        self.learnts.discard(idx)
+
 
 class SATResult:
     def __init__(self, sat: bool, assign: Dict[int, bool]):
         self.sat = sat
         self.assign = assign
+
+
+@dataclass
+class Implication:
+    """Node in the implication graph."""
+    level: int = 0
+    reason: Optional[int] = None
+    preds: List[int] = field(default_factory=list)
 
 
 def luby(i: int) -> int:
@@ -607,6 +640,30 @@ def cdcl_solve(cnf: CNF, prefer_true: Set[int], prefer_false: Set[int]) -> SATRe
     trail: List[int] = []
     trail_lim: List[int] = []
     queue = deque()
+    # Implication graph nodes for each variable
+    imp_graph: Dict[int, Implication] = {i: Implication() for i in range(1, nvars + 1)}
+
+    # Clause activity management
+    cla_inc = 1.0
+    cla_decay = 0.999
+
+    def bump_clause(ci: Optional[int]):
+        if ci is not None:
+            cnf.activity[ci] += cla_inc
+
+    def decay_clause_activity():
+        nonlocal cla_inc
+        cla_inc /= cla_decay
+
+    def reduce_db():
+        learnts = [idx for idx in cnf.learnts if cnf.clauses[idx]]
+        if len(learnts) <= 20:
+            return
+        learnts.sort(key=lambda idx: cnf.activity[idx])
+        reasons = set(reason.values())
+        for idx in learnts[:len(learnts)//2]:
+            if idx not in reasons and len(cnf.clauses[idx]) > 2:
+                cnf.remove_clause(idx)
 
     def current_level() -> int:
         return len(trail_lim)
@@ -627,6 +684,13 @@ def cdcl_solve(cnf: CNF, prefer_true: Set[int], prefer_false: Set[int]) -> SATRe
         reason[v] = rsn
         trail.append(lit)
         queue.append(lit)
+        node = imp_graph[v]
+        node.level = levels[v]
+        node.reason = rsn
+        if rsn is not None:
+            node.preds = [l for l in cnf.clauses[rsn] if abs(l) != v]
+        else:
+            node.preds = []
 
     # Initialize with unit clauses
     for i, cl in enumerate(cnf.clauses):
@@ -674,17 +738,19 @@ def cdcl_solve(cnf: CNF, prefer_true: Set[int], prefer_false: Set[int]) -> SATRe
         return 0
 
     def analyze(conflict_idx: int) -> Tuple[List[int], int]:
+        bump_clause(conflict_idx)
         seen: Set[int] = set()
         learnt: List[int] = []
         counter = 0
-        clause = cnf.clauses[conflict_idx]
+        clause = cnf.clauses[conflict_idx][:]
         i = len(trail) - 1
         while True:
             for lit in clause:
                 v = abs(lit)
-                if v not in seen and levels[v] > 0:
+                node = imp_graph[v]
+                if v not in seen and node.level > 0:
                     seen.add(v)
-                    if levels[v] == current_level():
+                    if node.level == current_level():
                         counter += 1
                     else:
                         learnt.append(lit)
@@ -694,15 +760,16 @@ def cdcl_solve(cnf: CNF, prefer_true: Set[int], prefer_false: Set[int]) -> SATRe
                 if abs(lit) in seen:
                     break
             v = abs(lit)
-            clause_idx = reason[v]
-            clause = cnf.clauses[clause_idx] if clause_idx is not None else []
+            clause_idx = imp_graph[v].reason
+            bump_clause(clause_idx)
+            clause = imp_graph[v].preds.copy() if clause_idx is not None else []
             counter -= 1
             if counter <= 0:
                 learnt.append(-lit)
                 break
         back_lvl = 0
         if len(learnt) > 1:
-            back_lvl = max(levels[abs(l)] for l in learnt[:-1])
+            back_lvl = max(imp_graph[abs(l)].level for l in learnt[:-1])
         return learnt, back_lvl
 
     def backtrack(level: int) -> None:
@@ -714,6 +781,7 @@ def cdcl_solve(cnf: CNF, prefer_true: Set[int], prefer_false: Set[int]) -> SATRe
                 assigns[v] = None
                 reason[v] = None
                 levels[v] = 0
+                imp_graph[v] = Implication()
             queue.clear()
 
     conflicts = 0
@@ -727,9 +795,13 @@ def cdcl_solve(cnf: CNF, prefer_true: Set[int], prefer_false: Set[int]) -> SATRe
             if current_level() == 0:
                 return SATResult(False, {v: False for v in assigns})
             learnt, back_lvl = analyze(confl)
-            ci = cnf.add_clause(learnt)
+            ci = cnf.add_clause(learnt, learnt=True)
+            bump_clause(ci)
             backtrack(back_lvl)
             enqueue(learnt[0], ci)
+            decay_clause_activity()
+            if conflicts % 200 == 0:
+                reduce_db()
             if conflicts >= restart_limit:
                 restart_count += 1
                 restart_limit = luby(restart_count) * 100
