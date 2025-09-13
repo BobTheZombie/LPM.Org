@@ -66,6 +66,11 @@ try:
 except ValueError:
     MAX_LEARNT_CLAUSES = 200
 
+# --- Default response for install prompts ---
+INSTALL_PROMPT_DEFAULT = CONF.get("INSTALL_PROMPT_DEFAULT", "n").lower()
+if INSTALL_PROMPT_DEFAULT not in ("y", "n"):
+    INSTALL_PROMPT_DEFAULT = "n"
+
 
 def _detect_cpu() -> Tuple[str, str, str, str]:
     """Return (march, mtune, vendor, family)."""
@@ -139,6 +144,7 @@ __all__ = [
     "OPT_LEVEL",
     "MAX_SNAPSHOTS",
     "MAX_LEARNT_CLAUSES",
+    "INSTALL_PROMPT_DEFAULT",
     "MARCH",
     "MTUNE",
     "CPU_VENDOR",

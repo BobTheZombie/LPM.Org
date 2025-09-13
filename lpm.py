@@ -34,6 +34,7 @@ from src.config import (
     DEFAULT_ROOT,
     HOOK_DIR,
     MAX_LEARNT_CLAUSES,
+    INSTALL_PROMPT_DEFAULT,
     MAX_SNAPSHOTS,
     MARCH,
     MTUNE,
@@ -1358,19 +1359,38 @@ def build_from_gitlab(pkgname: str) -> Path:
     return cache_pkg
 
 
-def prompt_install_pkg(blob: Path, kind: str = "package") -> None:
-    """Prompt the user to install a built package."""
+def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str] = None) -> None:
+    """Prompt the user to install a built package.
+
+    Parameters
+    ----------
+    blob : Path
+        Path to the built package file.
+    kind : str
+        Human readable kind of object (package/dependency).
+    default : Optional[str]
+        Default answer if the user just presses Enter. If ``None`` the
+        configuration value ``INSTALL_PROMPT_DEFAULT`` is used. Accepts
+        ``"y"`` or ``"n"``.
+    """
     try:
         meta, _ = read_package_meta(blob)
         desc = f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}"
     except Exception:
         desc = blob.name
-    resp = input(f"Install {kind} {desc}? [y/N] ").strip().lower()
+
+    if default is None:
+        default = INSTALL_PROMPT_DEFAULT
+    default = "y" if str(default).lower() in {"y", "yes"} else "n"
+    choices = "[Y/n]" if default == "y" else "[y/N]"
+    resp = input(f"{CYAN}[PROMPT]{RESET} Install {kind} {desc}? {choices} ").strip().lower()
+    if not resp:
+        resp = default
     if resp in {"y", "yes"}:
         installpkg(blob)
 
 
-def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: bool = True, is_dep: bool = False, build_deps: bool = True) -> Path:
+def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: bool = True, prompt_default: Optional[str] = None, is_dep: bool = False, build_deps: bool = True) -> Path:
     script_path = script.resolve()
     script_dir = script_path.parent
 
@@ -1414,7 +1434,14 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
             log(f"[deps] building required package: {depname}")
             tmp = Path(f"/tmp/lpm-dep-{depname}.lpmbuild")
             fetch_lpmbuild(depname, tmp)
-            return run_lpmbuild(tmp, outdir or script_dir, prompt_install=prompt_install, is_dep=True, build_deps=True)
+            return run_lpmbuild(
+                tmp,
+                outdir or script_dir,
+                prompt_install=prompt_install,
+                prompt_default=prompt_default,
+                is_dep=True,
+                build_deps=True,
+            )
 
         if deps_to_build:
             if prompt_install:
@@ -1511,7 +1538,7 @@ exit 0
     out = outdir / f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}"
     build_package(stagedir, meta, out, sign=True)
     if prompt_install:
-        prompt_install_pkg(out, kind="dependency" if is_dep else "package")
+        prompt_install_pkg(out, kind="dependency" if is_dep else "package", default=prompt_default)
     return out
 
 # =========================== CLI commands =====================================
@@ -1874,10 +1901,10 @@ def cmd_build(a):
     )
     out = Path(a.output or f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}")
     build_package(stagedir, meta, out, sign=(not a.no_sign))
-    prompt_install_pkg(out)
+    prompt_install_pkg(out, default=a.install_default)
 
 def cmd_buildpkg(a):
-    out = run_lpmbuild(a.script, a.outdir, build_deps=not a.no_deps)
+    out = run_lpmbuild(a.script, a.outdir, build_deps=not a.no_deps, prompt_default=a.install_default)
     if out and out.exists():
         ok(f"Built {out}")
     else:
@@ -2193,12 +2220,14 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--suggests", nargs="*", default=[])
     sp.add_argument("--output", help=f"output {EXT} file")
     sp.add_argument("--no-sign", action="store_true", help="do not sign even if key exists")
+    sp.add_argument("--install-default", choices=["y", "n"], help="default answer for install prompt")
     sp.set_defaults(func=cmd_build)
 
     sp=sub.add_parser("buildpkg", help=f"Build a {EXT} package from a .lpmbuild script")
     sp.add_argument("script", type=Path)
     sp.add_argument("--outdir", default=Path.cwd(), type=Path)
     sp.add_argument("--no-deps", action="store_true", help="do not fetch or build dependencies")
+    sp.add_argument("--install-default", choices=["y", "n"], help="default answer for install prompt")
     sp.set_defaults(func=cmd_buildpkg)
 
     sp=sub.add_parser("genindex", help=f"Generate index.json for a repo directory of {EXT} files")
