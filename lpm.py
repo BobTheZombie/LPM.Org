@@ -253,6 +253,7 @@ class PkgMeta:
     conflicts: List[str] = field(default_factory=list)
     obsoletes: List[str] = field(default_factory=list)
     provides: List[str] = field(default_factory=list)
+    symbols: List[str] = field(default_factory=list)
     recommends: List[str] = field(default_factory=list)
     suggests: List[str] = field(default_factory=list)
     size: int = 0
@@ -271,7 +272,7 @@ class PkgMeta:
             name=d["name"], version=d["version"], release=d.get("release","1"),
             arch=d.get("arch","noarch"), summary=d.get("summary",""), url=d.get("url",""),
             license=d.get("license",""), requires=d.get("requires",[]), conflicts=d.get("conflicts",[]),
-            obsoletes=d.get("obsoletes",[]), provides=d.get("provides",[]), recommends=d.get("recommends",[]),
+            obsoletes=d.get("obsoletes",[]), provides=d.get("provides",[]), symbols=d.get("symbols",[]), recommends=d.get("recommends",[]),
             suggests=d.get("suggests",[]), size=d.get("size",0), sha256=d.get("sha256"), blob=d.get("blob"),
             repo=repo_name, prio=prio, bias=bias, decay=decay, kernel=d.get("kernel", False),
             mkinitcpio_preset=d.get("mkinitcpio_preset"))
@@ -326,6 +327,7 @@ CREATE TABLE IF NOT EXISTS installed(
   release TEXT NOT NULL,
   arch TEXT NOT NULL,
   provides TEXT NOT NULL,
+  symbols TEXT NOT NULL,
   manifest TEXT NOT NULL,
   install_time INTEGER NOT NULL
 );
@@ -352,8 +354,15 @@ def db() -> sqlite3.Connection:
 
 def db_installed(conn) -> Dict[str,dict]:
     res={}
-    for r in conn.execute("SELECT name,version,release,arch,provides,manifest FROM installed"):
-        res[r[0]]={"version":r[1],"release":r[2],"arch":r[3],"provides":json.loads(r[4]),"manifest":json.loads(r[5])}
+    for r in conn.execute("SELECT name,version,release,arch,provides,symbols,manifest FROM installed"):
+        res[r[0]]={
+            "version":r[1],
+            "release":r[2],
+            "arch":r[3],
+            "provides":json.loads(r[4]),
+            "symbols":json.loads(r[5]),
+            "manifest":json.loads(r[6])
+        }
     return res
 
 # =========================== Snapshots =====================================
@@ -722,7 +731,29 @@ def sha256sum(p: Path) -> str:
         for c in iter(lambda: f.read(1<<20), b""): h.update(c)
     return h.hexdigest()
 
-def collect_manifest(stagedir: Path) -> List[Dict[str,str]]:
+def _extract_symbols(p: Path) -> List[str]:
+    try:
+        with p.open("rb") as f:
+            if f.read(4) != b"\x7fELF":
+                return []
+        res = subprocess.run(
+            ["nm", "-D", "--defined-only", str(p)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        syms = []
+        for line in res.stdout.splitlines():
+            parts = line.strip().split()
+            if len(parts) >= 3:
+                sym = parts[-1]
+                if not sym.startswith("_"):
+                    syms.append(sym)
+        return sorted(set(syms))
+    except Exception:
+        return []
+
+def collect_manifest(stagedir: Path) -> List[Dict[str,object]]:
     mani=[]
     for root,dirs,files in os.walk(stagedir):
         for fn in files:
@@ -730,11 +761,15 @@ def collect_manifest(stagedir: Path) -> List[Dict[str,str]]:
                 continue
             f=Path(root)/fn
             rel=f.relative_to(stagedir).as_posix()
-            mani.append({
+            entry={
                 "path":"/"+rel,
                 "sha256":sha256sum(f),
                 "size":f.stat().st_size
-            })
+            }
+            syms=_extract_symbols(f)
+            if syms:
+                entry["symbols"]=syms
+            mani.append(entry)
     return sorted(mani,key=lambda e:e["path"])
 
     
@@ -789,16 +824,9 @@ def build_package(stagedir: Path, meta: PkgMeta, out: Path, sign=True):
     if shutil.which("zstd") is None:
         die("zstd is required to build .zst packages but was not found in PATH")
 
-    # Collect manifest EXCLUDING meta/manifest files
-    mani = []
-    for root, dirs, files in os.walk(stagedir):
-        for fn in files:
-            if fn in (".lpm-meta.json", ".lpm-manifest.json"):
-                continue
-            f = Path(root) / fn
-            rel = f.relative_to(stagedir).as_posix()
-            mani.append({"path": "/" + rel, "sha256": sha256sum(f), "size": f.stat().st_size})
-    mani.sort(key=lambda e: e["path"])
+    # Collect manifest including exported symbols
+    mani = collect_manifest(stagedir)
+    meta.symbols = sorted({s for e in mani for s in e.get("symbols", [])})
 
     # Write metadata + manifest *into stagedir*
     meta_path = stagedir / ".lpm-meta.json"
@@ -1984,13 +2012,14 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
 
             # Update DB
             conn.execute(
-                "REPLACE INTO installed(name,version,release,arch,provides,manifest,install_time) VALUES(?,?,?,?,?,?,?)",
+                "REPLACE INTO installed(name,version,release,arch,provides,symbols,manifest,install_time) VALUES(?,?,?,?,?,?,?,?)",
                 (
                     meta.name,
                     meta.version,
                     meta.release,
                     meta.arch,
                     json.dumps([meta.name] + meta.provides),
+                    json.dumps(meta.symbols),
                     json.dumps(mani),
                     int(time.time()),
                 ),
