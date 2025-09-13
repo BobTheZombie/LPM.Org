@@ -119,6 +119,13 @@ LPM ships with several hooks that run after a package is installed:
 Each hook checks for the presence of its corresponding tool and exits quietly
 if it is not installed.
 
+### Kernel installation hook
+
+When a package flagged as a kernel is installed, LPM invokes the `kernel_install`
+hook. The default Python implementation regenerates the initramfs using
+`mkinitcpio` and, if available, updates bootloader entries via `bootctl` or
+`grub-mkconfig`.
+
 ## Solver heuristics
 
 The resolver uses a CDCL SAT solver with VSIDS‑style variable scoring and phase
