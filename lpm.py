@@ -137,7 +137,42 @@ def detect_init_system() -> str:
             return "openrc"
         return "sysv"
     return "unknown"
+    
+    
+# ============================ Build Isolation =======================
+def sandboxed_run(func: str, cwd: Path, env: dict, script_path: Path, stagedir: Path, buildroot: Path, srcroot: Path):
+    """
+    Run build function inside sandbox depending on SANDBOX_MODE.
+    Supports: none, fakeroot, bwrap.
+    """
+    mode = CONF.get("SANDBOX_MODE", "none").lower()
 
+    if mode == "fakeroot":
+        cmd = ["fakeroot", "bash", "-c", f'set -e; source "{script_path}"; {func}']
+        subprocess.run(cmd, check=True, env=env, cwd=str(cwd))
+        return
+
+    if mode == "bwrap":
+        # bwrap isolates FS: read-only root, only bind staging/build/src dirs
+        cmd = [
+            "bwrap",
+            "--ro-bind", "/", "/",
+            "--bind", str(stagedir), "/pkgdir",
+            "--bind", str(buildroot), "/build",
+            "--bind", str(srcroot), "/src",
+            "--dev", "/dev",
+            "--proc", "/proc",
+            "--unshare-all",
+            "--share-net",             # allow networking (remove for full isolation)
+            "--die-with-parent",
+            "bash", "-c", f'set -e; cd /src; source "{script_path.name}"; {func}'
+        ]
+        subprocess.run(cmd, check=True, env=env, cwd=str(cwd))
+        return
+
+    # Default: no sandbox
+    cmd = ["bash", "-c", f'set -e; source "{script_path}"; {func}']
+    subprocess.run(cmd, check=True, env=env, cwd=str(cwd))
 
 # ================ PACKAGING  ================
 # Hard-locked to .zst
@@ -1146,10 +1181,15 @@ _emit_scalar() {{
 }}
 _emit_array() {{
   n="$1"
-  eval "arr=(\\${{${{n}}[@]}})"
-  printf "__ARRAY__ %s\\n" "$n"
-  for x in "${{arr[@]}}"; do printf "%s\\0" "$x"; done
-  printf "\\n"
+  if declare -p "$n" 2>/dev/null | grep -q 'declare -a'; then
+    eval "arr=(\\${{${{n}}[@]}})"
+    printf "__ARRAY__ %s\\n" "$n"
+    for x in "${{arr[@]}}"; do printf "%s\\0" "$x"; done
+    printf "\\n"
+  else
+    printf "__ARRAY__ %s\\n" "$n"
+    printf "\\n"
+  fi
 }}
 for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE; do _emit_scalar "$v"; done
 for a in REQUIRES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS; do _emit_array "$a"; done
@@ -1204,13 +1244,11 @@ def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
     Fetch a .lpmbuild script from the configured source repo.
     Default: https://gitlab.com/lpm-org/packages/-/raw/main/<pkg>/<pkg>.lpmbuild
     Can be overridden in /etc/lpm/lpm.conf:
-      SRC_REPO=https://gitlab.com/myuser/myrepo/-/raw/main
+      LPMBUILD_REPO=https://gitlab.com/myuser/myrepo/-/raw/main
     """
-    # Load base repo URL
-    base_url = CONF.get("LPMBUILD_REPO", "https://gitlab.com/lpm-org/packages/-/blob/main/")
+    base_url = CONF.get("LPMBUILD_REPO", "https://gitlab.com/lpm-org/packages/-/raw/main")
 
-    # Build full URL
-    url = f"{base_url}/{pkgname}/{pkgname}.lpmbuild"
+    url = f"{base_url.rstrip('/')}/{pkgname}/{pkgname}.lpmbuild"
 
     ok(f"Fetching lpmbuild for {pkgname} from {url}")
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1220,6 +1258,7 @@ def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
         die(f"Failed to fetch lpmbuild for {pkgname}: {e}")
     dst.write_bytes(data)
     return dst
+
 
     
 def build_from_gitlab(pkgname: str) -> Path:
@@ -1284,7 +1323,6 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None) -> Path:
                     fetch_lpmbuild(depname, tmp)
                     run_lpmbuild(tmp, outdir or script_dir)
 
-
     stagedir = Path(f"/tmp/pkg-{name}")
     buildroot = Path(f"/tmp/build-{name}")
     srcroot   = Path(f"/tmp/src-{name}")
@@ -1305,12 +1343,9 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None) -> Path:
     # Auto-fetch source if URL provided
     _maybe_fetch_source(url, srcroot)
 
-    # Run build functions
+    # --- Run build functions inside sandbox ---
     def run_func(func: str, cwd: Path):
-        subprocess.run(
-            ["bash","-c", f'set -e; source "{script_path}"; {func}'],
-            check=True, env=env, cwd=str(cwd)
-        )
+        sandboxed_run(func, cwd, env, script_path, stagedir, buildroot, srcroot)
 
     for fn in ("prepare", "build", "install"):
         try:
@@ -1321,7 +1356,6 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None) -> Path:
     # --- Generate or capture install script ---
     install_sh = stagedir / ".lpm-install.sh"
     try:
-        # If user defined install_script() in .lpmbuild, dump it
         custom = subprocess.run(
             ["bash", "-c", f'source "{script_path}"; declare -f install_script'],
             capture_output=True, text=True
@@ -1330,11 +1364,10 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None) -> Path:
             log(f"[lpm] Embedding custom install_script() from {script.name}")
             with install_sh.open("w", encoding="utf-8") as f:
                 f.write("#!/bin/sh\nset -e\n")
-                f.write(custom.stdout)   # function body
+                f.write(custom.stdout)
                 f.write("\ninstall_script \"$@\"\n")
             install_sh.chmod(0o755)
         else:
-            # No custom script → write default
             with install_sh.open("w", encoding="utf-8") as f:
                 f.write(f"""#!/bin/sh
 set -e
@@ -1349,9 +1382,6 @@ exit 0
 
     except Exception as e:
         warn(f"Could not embed install script for {name}: {e}")
-        built = build_from_gitlab(p.name)
-        return installpkg(built, root=root, dry_run=dry, verify=verify, force=force)
-
 
     # --- Package metadata ---
     meta = PkgMeta(
@@ -1504,8 +1534,13 @@ def cmd_build(a):
     build_package(stagedir, meta, out, sign=(not a.no_sign))
 
 def cmd_buildpkg(a):
-    out=run_lpmbuild(a.script, a.outdir)
-    print(out)
+    out = run_lpmbuild(a.script, a.outdir)
+    if out and out.exists():
+        # Bold purple output
+        print(f"{PURPLE}[OK] Built {out}{RESET}", file=sys.stderr)
+        print(f"{PURPLE}{out}{RESET}")
+    else:
+        die(f"Build failed for {a.script}")
 
 def cmd_genindex(a):
     repo_dir = Path(a.repo_dir)
