@@ -75,9 +75,10 @@ class CNF:
 
 
 class SATResult:
-    def __init__(self, sat: bool, assign: Dict[int, bool]):
+    def __init__(self, sat: bool, assign: Dict[int, bool], unsat_core: Optional[List[int]] = None):
         self.sat = sat
         self.assign = assign
+        self.unsat_core = unsat_core
 
 
 @dataclass
@@ -321,10 +322,22 @@ class CDCLSolver:
             if confl is not None:
                 conflicts += 1
                 if current_level() == 0:
-                    # update shared state before returning
+                    core_clause = cnf.clauses[confl][:]
+                    changed = True
+                    while changed:
+                        changed = False
+                        for lit in list(core_clause):
+                            v = abs(lit)
+                            rsn = reason[v]
+                            if rsn is not None and len(cnf.clauses[rsn]) > 1:
+                                core_clause.remove(lit)
+                                for l in cnf.clauses[rsn]:
+                                    if abs(l) != v and l not in core_clause:
+                                        core_clause.append(l)
+                                changed = True
                     self.var_inc = var_inc
                     self.cla_inc = cla_inc
-                    return SATResult(False, {v: False for v in assigns})
+                    return SATResult(False, {v: False for v in assigns}, core_clause)
                 learnt, back_lvl = analyze(confl)
                 ci = cnf.add_clause(learnt, learnt=True)
                 bump_clause(ci)
@@ -344,7 +357,7 @@ class CDCLSolver:
                     self.var_inc = var_inc
                     self.cla_inc = cla_inc
                     final = {var: (assigns[var] if assigns[var] is not None else False) for var in assigns}
-                    return SATResult(True, final)
+                    return SATResult(True, final, None)
                 trail_lim.append(len(trail))
                 phase = saved_phase.get(v)
                 if phase is None:
