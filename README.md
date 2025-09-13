@@ -63,8 +63,8 @@ arguments and optional flags.
   [--provides PKG ...] [--conflicts PKG ...] [--obsoletes PKG ...]
   [--recommends PKG ...] [--suggests PKG ...] [--output FILE] [--no-sign]`
   – build an `.lpm` package from a staged root.
-- `lpm buildpkg SCRIPT [--outdir PATH]` – run a `.lpmbuild` script to produce a
-  package.
+- `lpm buildpkg SCRIPT [--outdir PATH] [--no-deps]` – run a `.lpmbuild` script to
+  produce a package.
 - `lpm genindex REPO_DIR [--base-url URL] [--arch ARCH]` – generate an
   `index.json` for a directory of packages.
 - `lpm installpkg FILE... [--root PATH] [--dry-run] [--verify] [--force]`

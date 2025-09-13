@@ -1052,7 +1052,7 @@ def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool, force: 
             warn(f"Could not fetch {p.name} from repos ({res}), trying GitLab fallback...")
             tmp = Path(f"/tmp/lpm-dep-{p.name}.lpmbuild")
             fetch_lpmbuild(p.name, tmp)
-            built = run_lpmbuild(tmp, prompt_install=False, is_dep=True)
+            built = run_lpmbuild(tmp, prompt_install=False, is_dep=True, build_deps=True)
             meta = installpkg(built, root=root, dry_run=dry, verify=verify, force=force)
         else:
             if res is None:
@@ -1340,7 +1340,7 @@ def build_from_gitlab(pkgname: str) -> Path:
 
     tmp = Path(f"/tmp/lpm-dep-{pkgname}.lpmbuild")
     fetch_lpmbuild(pkgname, tmp)
-    built = run_lpmbuild(tmp, outdir=CACHE_DIR, prompt_install=False, is_dep=True)
+    built = run_lpmbuild(tmp, outdir=CACHE_DIR, prompt_install=False, is_dep=True, build_deps=True)
 
     # Copy to a stable cache filename
     if built != cache_pkg:
@@ -1364,7 +1364,7 @@ def prompt_install_pkg(blob: Path, kind: str = "package") -> None:
         installpkg(blob)
 
 
-def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: bool = True, is_dep: bool = False) -> Path:
+def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: bool = True, is_dep: bool = False, build_deps: bool = True) -> Path:
     script_path = script.resolve()
     script_dir = script_path.parent
 
@@ -1383,40 +1383,41 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
         die("lpmbuild missing NAME or VERSION")
 
     # --- Auto-build dependencies before continuing ---
-    seen = set()
-    deps_to_build: List[str] = []
-    for dep in arr.get("REQUIRES", []):
-        try:
-            e = parse_dep_expr(dep)
-        except Exception:
-            continue
-        parts = flatten_and(e) if e.kind == "and" else [e]
-        for part in parts:
-            if part.kind == "atom":
-                depname = part.atom.name
-                if depname in seen:
-                    continue
-                seen.add(depname)
+    if build_deps:
+        seen = set()
+        deps_to_build: List[str] = []
+        for dep in arr.get("REQUIRES", []):
+            try:
+                e = parse_dep_expr(dep)
+            except Exception:
+                continue
+            parts = flatten_and(e) if e.kind == "and" else [e]
+            for part in parts:
+                if part.kind == "atom":
+                    depname = part.atom.name
+                    if depname in seen:
+                        continue
+                    seen.add(depname)
 
-                conn = db()
-                installed = db_installed(conn)
-                if depname not in installed:
-                    deps_to_build.append(depname)
+                    conn = db()
+                    installed = db_installed(conn)
+                    if depname not in installed:
+                        deps_to_build.append(depname)
 
-    def _build_dep(depname: str):
-        log(f"[deps] building required package: {depname}")
-        tmp = Path(f"/tmp/lpm-dep-{depname}.lpmbuild")
-        fetch_lpmbuild(depname, tmp)
-        return run_lpmbuild(tmp, outdir or script_dir, prompt_install=prompt_install, is_dep=True)
+        def _build_dep(depname: str):
+            log(f"[deps] building required package: {depname}")
+            tmp = Path(f"/tmp/lpm-dep-{depname}.lpmbuild")
+            fetch_lpmbuild(depname, tmp)
+            return run_lpmbuild(tmp, outdir or script_dir, prompt_install=prompt_install, is_dep=True, build_deps=True)
 
-    if deps_to_build:
-        if prompt_install:
-            for dep in deps_to_build:
-                _build_dep(dep)
-        else:
-            max_workers = min(4, len(deps_to_build))
-            with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                list(tqdm(ex.map(_build_dep, deps_to_build), total=len(deps_to_build), desc="[deps] building", unit="pkg", colour="cyan"))
+        if deps_to_build:
+            if prompt_install:
+                for dep in deps_to_build:
+                    _build_dep(dep)
+            else:
+                max_workers = min(4, len(deps_to_build))
+                with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    list(tqdm(ex.map(_build_dep, deps_to_build), total=len(deps_to_build), desc="[deps] building", unit="pkg", colour="cyan"))
 
     stagedir = Path(f"/tmp/pkg-{name}")
     buildroot = Path(f"/tmp/build-{name}")
@@ -1870,7 +1871,7 @@ def cmd_build(a):
     prompt_install_pkg(out)
 
 def cmd_buildpkg(a):
-    out = run_lpmbuild(a.script, a.outdir)
+    out = run_lpmbuild(a.script, a.outdir, build_deps=not a.no_deps)
     if out and out.exists():
         # Bold purple output
         print(f"{PURPLE}[OK] Built {out}{RESET}", file=sys.stderr)
@@ -2193,6 +2194,7 @@ def build_parser()->argparse.ArgumentParser:
     sp=sub.add_parser("buildpkg", help=f"Build a {EXT} package from a .lpmbuild script")
     sp.add_argument("script", type=Path)
     sp.add_argument("--outdir", default=Path.cwd(), type=Path)
+    sp.add_argument("--no-deps", action="store_true", help="do not fetch or build dependencies")
     sp.set_defaults(func=cmd_buildpkg)
 
     sp=sub.add_parser("genindex", help=f"Generate index.json for a repo directory of {EXT} files")
