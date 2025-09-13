@@ -69,3 +69,24 @@ def test_ldconfig_only_for_real_root(tmp_path, monkeypatch):
     log.write_text("")
     lpm.run_hook("post_install", {"LPM_ROOT": str(tmp_path)})
     assert "ldconfig" not in log.read_text().splitlines()
+
+
+def test_kernel_install_hook(tmp_path, monkeypatch):
+    hook_dir = Path(__file__).resolve().parent.parent / "usr/share/lpm/hooks"
+    monkeypatch.setattr(lpm, "HOOK_DIR", hook_dir)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "log"
+    for name in ("mkinitcpio", "bootctl", "grub-mkconfig"):
+        p = bin_dir / name
+        p.write_text(f"#!/bin/sh\necho {name} \"$@\" >> {log}\n")
+        p.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    lpm.run_hook("kernel_install", {"LPM_PRESET": "test"})
+
+    calls = log.read_text().splitlines()
+    assert "mkinitcpio -p test" in calls
+    assert "bootctl update" in calls
+    assert "grub-mkconfig -o /boot/grub/grub.cfg" in calls
