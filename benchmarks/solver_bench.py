@@ -19,8 +19,8 @@ def run():
     for size in (50, 100, 150):
         cnf = chain(size)
         start = time.time()
-        solver = CDCLSolver()
-        solver.solve(cnf, set(), set())
+        solver = CDCLSolver(cnf)
+        solver.solve([])
         dur = time.time() - start
         print(f"chain {size}: {dur:.4f}s")
 
