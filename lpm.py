@@ -129,6 +129,12 @@ OPT_LEVEL = CONF.get("OPT_LEVEL", "-O2")
 if OPT_LEVEL not in ("-Os", "-O2", "-O3", "-Ofast"):
     OPT_LEVEL = "-O2"
 
+# --- Snapshot retention ---
+try:
+    MAX_SNAPSHOTS = max(0, int(CONF.get("MAX_SNAPSHOTS", "10")))
+except ValueError:
+    MAX_SNAPSHOTS = 10
+
 
 def _detect_cpu() -> Tuple[str, str, str, str]:
     """Return (march, mtune, vendor, family)."""
@@ -451,6 +457,7 @@ def create_snapshot(tag: str, files: Iterable[Path]) -> str:
     conn.execute("INSERT INTO snapshots(ts, tag, archive) VALUES(?,?,?)", (ts, tag, str(archive)))
     conn.commit()
     conn.close()
+    prune_snapshots(MAX_SNAPSHOTS)
     return str(archive)
 
 
@@ -470,6 +477,23 @@ def restore_snapshot(archive: Path) -> None:
                             dest.unlink()
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     tf.extract(m, path="/", filter="data")
+
+def prune_snapshots(limit: int = MAX_SNAPSHOTS) -> None:
+    if limit <= 0:
+        return
+    conn = db()
+    rows = list(conn.execute("SELECT id,archive FROM snapshots ORDER BY id DESC"))
+    if len(rows) <= limit:
+        conn.close()
+        return
+    for sid, archive in rows[limit:]:
+        try:
+            Path(archive).unlink(missing_ok=True)
+        except Exception as e:
+            warn(f"rm {archive}: {e}")
+        conn.execute("DELETE FROM snapshots WHERE id=?", (sid,))
+    conn.commit()
+    conn.close()
 
 # =========================== Universe / Providers =============================
 @dataclass
@@ -1700,8 +1724,8 @@ def cmd_list_installed(_):
         print(f"{n:30} {v}-{r}.{a}")
 
 def cmd_snapshots(a):
-    conn = db()
     if a.delete:
+        conn = db()
         for sid in a.delete:
             row = conn.execute("SELECT archive FROM snapshots WHERE id=?", (sid,)).fetchone()
             if row:
@@ -1711,8 +1735,14 @@ def cmd_snapshots(a):
                     warn(f"rm {row[0]}: {e}")
                 conn.execute("DELETE FROM snapshots WHERE id=?", (sid,))
         conn.commit()
+        conn.close()
 
+    if a.prune:
+        prune_snapshots(MAX_SNAPSHOTS)
+
+    conn = db()
     rows = list(conn.execute("SELECT id,ts,tag,archive FROM snapshots ORDER BY id DESC"))
+    conn.close()
     if not rows:
         print("No snapshots found")
     else:
@@ -2108,7 +2138,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.set_defaults(func=cmd_upgrade)
 
     sp=sub.add_parser("list", help="List installed packages"); sp.set_defaults(func=cmd_list_installed)
-    sp=sub.add_parser("snapshots", help="List snapshots"); sp.add_argument("--delete", type=int, nargs="*", help="snapshot IDs to delete"); sp.set_defaults(func=cmd_snapshots)
+    sp=sub.add_parser("snapshots", help="List snapshots"); sp.add_argument("--delete", type=int, nargs="*", help="snapshot IDs to delete"); sp.add_argument("--prune", action="store_true", help="prune old snapshots"); sp.set_defaults(func=cmd_snapshots)
     sp=sub.add_parser("rollback", help="Restore from snapshot"); sp.add_argument("snapshot_id", nargs="?", type=int, help="snapshot ID (default latest)"); sp.set_defaults(func=cmd_rollback)
     sp=sub.add_parser("history", help="Show last transactions"); sp.set_defaults(func=cmd_history)
     sp=sub.add_parser("verify", help="Verify installed files exist"); sp.add_argument("--root"); sp.set_defaults(func=cmd_verify)
