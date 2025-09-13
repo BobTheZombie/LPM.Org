@@ -17,6 +17,7 @@ License: MIT
 
 from __future__ import annotations
 import argparse, contextlib, dataclasses, fnmatch, hashlib, io, json, os, re, shlex, shutil, sqlite3, subprocess, sys, tarfile, tempfile, time, urllib.parse, urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Iterable
@@ -960,6 +961,23 @@ def fetch_blob(p: PkgMeta) -> Tuple[Path, Optional[Path]]:
             pass
     return dst, (sig_dst if sig_dst.exists() else None)
 
+
+def fetch_all(pkgs: List[PkgMeta]) -> Dict[str, object]:
+    """Fetch all package blobs concurrently."""
+    results: Dict[str, object] = {}
+    if not pkgs:
+        return results
+    max_workers = min(8, len(pkgs))
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        future_map = {ex.submit(fetch_blob, p): p.name for p in pkgs}
+        for fut in tqdm(as_completed(future_map), total=len(future_map), desc="Fetching", unit="pkg", colour="cyan"):
+            name = future_map[fut]
+            try:
+                results[name] = fut.result()
+            except Exception as e:
+                results[name] = e
+    return results
+
 @contextlib.contextmanager
 def transaction(conn: sqlite3.Connection, action: str, dry: bool):
     log(f"[tx] {action}{' (dry-run)' if dry else ''}")
@@ -977,6 +995,8 @@ def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool, force: 
 
     conn = db(); _installed = db_installed(conn)
     with transaction(conn, "install", dry):
+        to_fetch = [p for p in pkgs if not (p.name in PROTECTED and not force)]
+        downloads = fetch_all(to_fetch)
         for p in pkgs:
             if p.name in PROTECTED and not force:
                 warn(f"{p.name} is protected (from {PROTECTED_FILE}) and cannot be installed/upgraded without --force")
@@ -985,14 +1005,17 @@ def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool, force: 
             log(f"==> install {p.name}-{p.version}-{p.release}.{p.arch}")
             run_hook("pre_install", {"LPM_PKG": p.name, "LPM_VERSION": p.version, "LPM_ROOT": str(root)})
 
-            try:
-                blob, sig = fetch_blob(p)
-            except Exception as e:
-                warn(f"Could not fetch {p.name} from repos ({e}), trying GitLab fallback...")
+            res = downloads.get(p.name)
+            if isinstance(res, Exception):
+                warn(f"Could not fetch {p.name} from repos ({res}), trying GitLab fallback...")
                 tmp = Path(f"/tmp/lpm-dep-{p.name}.lpmbuild")
                 fetch_lpmbuild(p.name, tmp)
                 built = run_lpmbuild(tmp)
                 return installpkg(built, root=root, dry_run=dry, verify=verify, force=force)
+            elif res is None:
+                blob, sig = fetch_blob(p)
+            else:
+                blob, sig = res
 
             if verify and not dry:
                 verify_signature(blob, sig)
@@ -1302,6 +1325,7 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None) -> Path:
 
     # --- Auto-build dependencies before continuing ---
     seen = set()
+    deps_to_build: List[str] = []
     for dep in arr.get("REQUIRES", []):
         try:
             e = parse_dep_expr(dep)
@@ -1318,10 +1342,18 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None) -> Path:
                 conn = db()
                 installed = db_installed(conn)
                 if depname not in installed:
-                    log(f"[deps] building required package: {depname}")
-                    tmp = Path(f"/tmp/lpm-dep-{depname}.lpmbuild")
-                    fetch_lpmbuild(depname, tmp)
-                    run_lpmbuild(tmp, outdir or script_dir)
+                    deps_to_build.append(depname)
+
+    def _build_dep(depname: str):
+        log(f"[deps] building required package: {depname}")
+        tmp = Path(f"/tmp/lpm-dep-{depname}.lpmbuild")
+        fetch_lpmbuild(depname, tmp)
+        run_lpmbuild(tmp, outdir or script_dir)
+
+    if deps_to_build:
+        max_workers = min(4, len(deps_to_build))
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            list(tqdm(ex.map(_build_dep, deps_to_build), total=len(deps_to_build), desc="[deps] building", unit="pkg", colour="cyan"))
 
     stagedir = Path(f"/tmp/pkg-{name}")
     buildroot = Path(f"/tmp/build-{name}")
@@ -1475,26 +1507,35 @@ def cmd_history(_):
 def cmd_verify(a):
     root = Path(a.root or DEFAULT_ROOT)
     conn = db()
+    pkgs = [(n, json.loads(mani)) for n, mani in conn.execute("SELECT name,manifest FROM installed")]
     bad = 0
-    for n, manifest_json in conn.execute("SELECT name,manifest FROM installed"):
-        mani = json.loads(manifest_json)
+
+    def _verify_pkg(pkg):
+        n, mani = pkg
+        local_bad = 0
         for entry in mani:
             path = entry["path"] if isinstance(entry, dict) else entry
             f = root / path.lstrip("/")
             if not f.exists():
                 print(f"[MISSING] {n}: {path}")
-                bad += 1
+                local_bad += 1
                 continue
             if isinstance(entry, dict):
-                # Hash + size validation
                 actual_size = f.stat().st_size
                 if actual_size != entry["size"]:
                     print(f"[SIZE MISMATCH] {n}: {path} expected {entry['size']}, got {actual_size}")
-                    bad += 1
+                    local_bad += 1
                 actual_hash = sha256sum(f)
                 if actual_hash != entry["sha256"]:
                     print(f"[HASH MISMATCH] {n}: {path}")
-                    bad += 1
+                    local_bad += 1
+        return local_bad
+
+    with ThreadPoolExecutor(max_workers=min(8, len(pkgs) or 1)) as ex:
+        futures = [ex.submit(_verify_pkg, pkg) for pkg in pkgs]
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="Verifying", unit="pkg", colour="cyan"):
+            bad += fut.result()
+
     if bad == 0:
         ok("All files validated successfully")
     else:
