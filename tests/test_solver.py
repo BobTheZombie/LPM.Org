@@ -21,6 +21,8 @@ def test_conflicting_packages_unsat():
     solver = CDCLSolver(cnf)
     res = solver.solve([])
     assert not res.sat
+    core_names = sorted(cnf.varname[abs(l)] for l in res.unsat_core)
+    assert core_names == ["A", "C"]
 
 
 def test_dependency_resolution():

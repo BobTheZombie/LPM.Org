@@ -527,8 +527,10 @@ def solve(goals: List[str], universe: Universe) -> List[PkgMeta]:
     cnf, var_of, ptrue, pfalse, bias_map, decay_map = encode_resolution(universe, goal_exprs)
     solver = CDCLSolver(cnf, ptrue, pfalse, bias_map, decay_map)
     res = solver.solve([])
-    if not res.sat: raise RuntimeError("Unsatisfiable dependency set")
     inv: Dict[int,Tuple[str,str]] = {v:k for k,v in var_of.items()}
+    if not res.sat:
+        names = sorted({inv.get(abs(l))[0] for l in (res.unsat_core or []) if abs(l) in inv})
+        raise RuntimeError("Unsatisfiable dependency set involving: " + ", ".join(names))
     chosen: Dict[str,PkgMeta] = {}
     for vid,val in res.assign.items():
         if not val: continue
