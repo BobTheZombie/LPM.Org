@@ -1550,22 +1550,149 @@ def cmd_install(a):
     goals = a.names
     plan = solve(goals, u)
     log("[plan] install order:")
-    for p in plan: 
+    for p in plan:
         log(f"  - {p.name}-{p.version}")
     if a.dry_run:
         return
     noverify = a.no_verify or os.environ.get("LPM_NO_VERIFY") == "1"
-    do_install(plan, root, a.dry_run, verify=(not noverify), force=a.force)
+
+    snapshot_id = None
+    snapshot_archive = None
+    try:
+        affected: Set[Path] = set()
+        for p in plan:
+            try:
+                blob, _ = fetch_blob(p)
+                _, mani = read_package_meta(blob)
+                for e in mani:
+                    path = e["path"] if isinstance(e, dict) else e
+                    affected.add(root / path.lstrip("/"))
+            except Exception as e:
+                warn(f"could not prepare snapshot for {p.name}: {e}")
+        tag = "install-" + "-".join([p.name for p in plan])
+        snapshot_archive = create_snapshot(tag, affected)
+        conn = db()
+        row = conn.execute("SELECT id FROM snapshots WHERE archive=?", (snapshot_archive,)).fetchone()
+        conn.close()
+        if row:
+            snapshot_id = row[0]
+    except Exception as e:
+        warn(f"snapshot failed: {e}")
+
+    try:
+        do_install(plan, root, a.dry_run, verify=(not noverify), force=a.force)
+    except SystemExit:
+        if snapshot_id is not None:
+            warn(f"Snapshot {snapshot_id} created at {snapshot_archive} for rollback.")
+        raise
 
 
 def cmd_remove(a):
     root = Path(a.root or DEFAULT_ROOT)
-    do_remove(a.names, root, a.dry_run, force=a.force)
+    snapshot_id = None
+    snapshot_archive = None
+    if not a.dry_run:
+        conn = db()
+        affected: Set[Path] = set()
+        for n in a.names:
+            row = conn.execute("SELECT manifest FROM installed WHERE name=?", (n,)).fetchone()
+            if row:
+                mani = json.loads(row[0])
+                for e in mani:
+                    path = e["path"] if isinstance(e, dict) else e
+                    affected.add(root / path.lstrip("/"))
+        conn.close()
+        tag = "remove-" + "-".join(a.names)
+        snapshot_archive = create_snapshot(tag, affected)
+        conn = db()
+        row = conn.execute("SELECT id FROM snapshots WHERE archive=?", (snapshot_archive,)).fetchone()
+        conn.close()
+        if row:
+            snapshot_id = row[0]
+    try:
+        do_remove(a.names, root, a.dry_run, force=a.force)
+    except SystemExit:
+        if snapshot_id is not None:
+            warn(f"Snapshot {snapshot_id} created at {snapshot_archive} for rollback.")
+        raise
 
 def cmd_upgrade(a):
     root = Path(a.root or DEFAULT_ROOT)
     noverify = a.no_verify or os.environ.get("LPM_NO_VERIFY") == "1"
-    do_upgrade(a.names, root, a.dry_run, verify=(not noverify), force=a.force)
+    dry = a.dry_run
+    force = a.force
+
+    u = build_universe()
+    goals: List[str] = []
+    if not a.names:
+        for n, meta in u.installed.items():
+            goals.append(f"{n} ~= {meta['version']}")
+    else:
+        goals += a.names
+
+    try:
+        plan = solve(goals, u)
+    except RuntimeError:
+        warn("SAT solver failed to find upgrade set, falling back to GitLab fetch...")
+        for dep in a.names:
+            built = build_from_gitlab(dep)
+            installpkg(built, root=root, dry_run=dry, verify=(not noverify), force=force)
+        return
+
+    upgrades: List[PkgMeta] = []
+    for p in plan:
+        cur = u.installed.get(p.name)
+        if not cur or cmp_semver(p.version, cur["version"]) > 0:
+            upgrades.append(p)
+
+    if not upgrades:
+        ok("Nothing to do.")
+        return
+
+    snapshot_id = None
+    snapshot_archive = None
+    if not dry:
+        affected: Set[Path] = set()
+        conn = db()
+        for p in upgrades:
+            row = conn.execute("SELECT manifest FROM installed WHERE name=?", (p.name,)).fetchone()
+            if row:
+                mani = json.loads(row[0])
+                for e in mani:
+                    path = e["path"] if isinstance(e, dict) else e
+                    affected.add(root / path.lstrip("/"))
+        conn.close()
+        for p in upgrades:
+            try:
+                blob, _ = fetch_blob(p)
+                _, mani = read_package_meta(blob)
+                for e in mani:
+                    path = e["path"] if isinstance(e, dict) else e
+                    affected.add(root / path.lstrip("/"))
+            except Exception as e:
+                warn(f"could not prepare snapshot for {p.name}: {e}")
+        tag = "upgrade-" + "-".join([p.name for p in upgrades])
+        snapshot_archive = create_snapshot(tag, affected)
+        conn = db()
+        row = conn.execute("SELECT id FROM snapshots WHERE archive=?", (snapshot_archive,)).fetchone()
+        conn.close()
+        if row:
+            snapshot_id = row[0]
+
+        def svc_worker(p: PkgMeta):
+            cur = u.installed.get(p.name)
+            if cur:
+                remove_service_files(p.name, Path(DEFAULT_ROOT))
+        max_workers = min(8, len(upgrades))
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            list(ex.map(svc_worker, upgrades))
+
+    try:
+        do_install(upgrades, root, dry, verify=(not noverify), force=force)
+    except SystemExit:
+        if snapshot_id is not None:
+            warn(f"Snapshot {snapshot_id} created at {snapshot_archive} for rollback.")
+        raise
 
 def cmd_list_installed(_):
     conn=db()
