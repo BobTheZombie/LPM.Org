@@ -526,7 +526,18 @@ def encode_resolution(u: Universe, goals: List[DepExpr]) -> Tuple[CNF, Dict[Tupl
 def solve(goals: List[str], universe: Universe) -> List[PkgMeta]:
     goal_exprs = [parse_dep_expr(s) for s in goals]
     cnf, var_of, ptrue, pfalse, bias_map, decay_map = encode_resolution(universe, goal_exprs)
-    solver = CDCLSolver(cnf, ptrue, pfalse, bias_map, decay_map)
+    var_decay = float(CONF.get("VSIDS_VAR_DECAY", "0.95"))
+    cla_decay = float(CONF.get("VSIDS_CLAUSE_DECAY", "0.999"))
+    solver = CDCLSolver(
+        cnf,
+        ptrue,
+        pfalse,
+        bias_map,
+        decay_map,
+        var_decay=var_decay,
+        cla_decay=cla_decay,
+        max_learnts=MAX_LEARNT_CLAUSES,
+    )
     res = solver.solve([])
     inv: Dict[int,Tuple[str,str]] = {v:k for k,v in var_of.items()}
     if not res.sat:

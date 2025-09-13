@@ -4,8 +4,6 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
-from .config import CONF, MAX_LEARNT_CLAUSES
-
 
 class CNF:
     """Simple CNF container with watched literal management."""
@@ -113,6 +111,9 @@ class CDCLSolver:
         prefer_false: Optional[Set[int]] = None,
         bias: Optional[Dict[int, float]] = None,
         decay_map: Optional[Dict[int, float]] = None,
+        var_decay: float = 0.95,
+        cla_decay: float = 0.999,
+        max_learnts: int = 200,
     ) -> None:
         self.cnf = cnf
         self.prefer_true = prefer_true or set()
@@ -123,10 +124,10 @@ class CDCLSolver:
         self.var_activity: Dict[int, float] = {i: bias.get(i, 0.0) for i in range(1, nvars + 1)}
         self.saved_phase: Dict[int, bool] = {}
         self.var_inc = 1.0
-        self.var_decay_conf = float(CONF.get("VSIDS_VAR_DECAY", "0.95"))
+        self.var_decay_conf = var_decay
         self.cla_inc = 1.0
-        self.cla_decay = float(CONF.get("VSIDS_CLAUSE_DECAY", "0.999"))
-        self.max_learnts = MAX_LEARNT_CLAUSES
+        self.cla_decay = cla_decay
+        self.max_learnts = max_learnts
 
     def solve(self, assumptions: List[int]) -> SATResult:
         """Solve the stored CNF instance under optional assumptions."""
