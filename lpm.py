@@ -993,55 +993,35 @@ def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool, force: 
     global PROTECTED
     PROTECTED = load_protected()
 
-    conn = db(); _installed = db_installed(conn)
-    with transaction(conn, "install", dry):
-        to_fetch = [p for p in pkgs if not (p.name in PROTECTED and not force)]
-        downloads = fetch_all(to_fetch)
-        for p in pkgs:
-            if p.name in PROTECTED and not force:
-                warn(f"{p.name} is protected (from {PROTECTED_FILE}) and cannot be installed/upgraded without --force")
-                continue
+    to_fetch = [p for p in pkgs if not (p.name in PROTECTED and not force)]
+    downloads = fetch_all(to_fetch)
 
-            log(f"==> install {p.name}-{p.version}-{p.release}.{p.arch}")
-            run_hook("pre_install", {"LPM_PKG": p.name, "LPM_VERSION": p.version, "LPM_ROOT": str(root)})
-
-            res = downloads.get(p.name)
-            if isinstance(res, Exception):
-                warn(f"Could not fetch {p.name} from repos ({res}), trying GitLab fallback...")
-                tmp = Path(f"/tmp/lpm-dep-{p.name}.lpmbuild")
-                fetch_lpmbuild(p.name, tmp)
-                built = run_lpmbuild(tmp)
-                return installpkg(built, root=root, dry_run=dry, verify=verify, force=force)
-            elif res is None:
+    def worker(p: PkgMeta):
+        if p.name in PROTECTED and not force:
+            warn(f"{p.name} is protected (from {PROTECTED_FILE}) and cannot be installed/upgraded without --force")
+            return
+        res = downloads.get(p.name)
+        if isinstance(res, Exception):
+            warn(f"Could not fetch {p.name} from repos ({res}), trying GitLab fallback...")
+            tmp = Path(f"/tmp/lpm-dep-{p.name}.lpmbuild")
+            fetch_lpmbuild(p.name, tmp)
+            built = run_lpmbuild(tmp)
+            installpkg(built, root=root, dry_run=dry, verify=verify, force=force)
+        else:
+            if res is None:
                 blob, sig = fetch_blob(p)
             else:
                 blob, sig = res
+            installpkg(blob, root=root, dry_run=dry, verify=verify, force=force)
 
-            if verify and not dry:
-                verify_signature(blob, sig)
-
-            meta_in, mani_in = read_package_meta(blob)
-            if not dry:
-                extract_tar(blob, root)
-                manifest = mani_in or []
-                conn.execute(
-                    "REPLACE INTO installed(name,version,release,arch,provides,manifest,install_time) VALUES(?,?,?,?,?,?,?)",
-                    (
-                        p.name,
-                        p.version,
-                        p.release,
-                        p.arch,
-                        json.dumps([p.name] + p.provides),
-                        json.dumps(manifest),
-                        int(time.time()),
-                    ),
-                )
-                conn.execute(
-                    "INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
-                    (int(time.time()), "install", p.name, None, p.version, json.dumps(dataclasses.asdict(p))),
-                )
-
-            run_hook("post_install", {"LPM_PKG": p.name, "LPM_VERSION": p.version, "LPM_ROOT": str(root)})
+    max_workers = min(8, len(pkgs))
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        future_map = {ex.submit(worker, p): p.name for p in pkgs}
+        for fut in tqdm(as_completed(future_map), total=len(future_map), desc="Installing", unit="pkg", colour="cyan"):
+            try:
+                fut.result()
+            except Exception as e:
+                warn(f"install {future_map[fut]}: {e}")
 
 
 def _remove_installed_package(meta: dict, root: Path, dry_run: bool, conn):
@@ -1087,24 +1067,17 @@ def do_remove(names: List[str], root: Path, dry: bool, force: bool = False):
     global PROTECTED
     PROTECTED = load_protected()
 
-    conn = db()
-    installed = db_installed(conn)
-    with transaction(conn, "remove", dry):
-        for n in names:
-            if n in PROTECTED and not force:
-                warn(f"{n} is protected (from {PROTECTED_FILE}) and cannot be removed without --force")
-                continue
+    def worker(n: str):
+        removepkg(name=n, root=root, dry_run=dry, force=force)
 
-            meta = installed.get(n)
-            if not meta:
-                warn(f"{n} not installed")
-                continue
-
-            log(f"==> remove {n}-{meta['version']}")
-            run_hook("pre_remove", {"LPM_PKG": n, "LPM_ROOT": str(root)})
-            pkg_meta = {"name": n, **meta}
-            _remove_installed_package(pkg_meta, root, dry, conn)
-            run_hook("post_remove", {"LPM_PKG": n, "LPM_ROOT": str(root)})
+    max_workers = min(8, len(names))
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        future_map = {ex.submit(worker, n): n for n in names}
+        for fut in tqdm(as_completed(future_map), total=len(future_map), desc="Removing", unit="pkg", colour="purple"):
+            try:
+                fut.result()
+            except Exception as e:
+                warn(f"remove {future_map[fut]}: {e}")
 
 
 def do_upgrade(targets: List[str], root: Path, dry: bool, verify: bool, force: bool = False):
@@ -1136,10 +1109,15 @@ def do_upgrade(targets: List[str], root: Path, dry: bool, verify: bool, force: b
         return
 
     # Cleanup services before upgrade
-    for p in upgrades:
-        cur = u.installed.get(p.name)
-        if cur:
-            remove_service_files(p.name, Path(DEFAULT_ROOT))
+    if upgrades:
+        def svc_worker(p: PkgMeta):
+            cur = u.installed.get(p.name)
+            if cur:
+                remove_service_files(p.name, Path(DEFAULT_ROOT))
+
+        max_workers = min(8, len(upgrades))
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            list(ex.map(svc_worker, upgrades))
 
     do_install(upgrades, root, dry, verify, force=force)
 
@@ -1589,23 +1567,40 @@ def cmd_genindex(a):
 
 def cmd_fileremove(a):
     root = Path(a.root or DEFAULT_ROOT)
-    for name in a.names:
+
+    def worker(name: str):
         removepkg(name=name, root=root, dry_run=a.dry_run, force=a.force)
+
+    max_workers = min(8, len(a.names))
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        future_map = {ex.submit(worker, n): n for n in a.names}
+        for fut in tqdm(as_completed(future_map), total=len(future_map), desc="Removing", unit="pkg", colour="purple"):
+            fut.result()
+
 def cmd_fileinstall(a):
     root = Path(a.root or DEFAULT_ROOT)
 
+    files: List[Path] = []
     for fn in a.files:
         file = Path(fn).resolve()
         if not file.exists():
             die(f"Package file not found: {file}")
+        files.append(file)
 
+    def worker(f: Path):
         installpkg(
-            file=file,
+            file=f,
             root=root,
             dry_run=a.dry_run,
             verify=a.verify,
             force=a.force,
         )
+
+    max_workers = min(8, len(files))
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        future_map = {ex.submit(worker, f): f for f in files}
+        for fut in tqdm(as_completed(future_map), total=len(future_map), desc="Installing", unit="pkg", colour="cyan"):
+            fut.result()
 
 def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = False, verify: bool = True, force: bool = False):
     """
