@@ -1,17 +1,94 @@
 # LPM.Org
+
 The Linux Package Manager
 
-## Optimization
+## Feature Overview
 
-`lpm` can optimize builds based on your CPU and the selected optimization
-level. The `/etc/lpm/lpm.conf` file accepts an `OPT_LEVEL` entry (`-Os`,
-`-O2`, `-O3`, or `-Ofast`). During package builds the manager detects the CPU
-family and automatically sets `-march`/`-mtune` along with `-pipe` and
-`-fPIC` plus the configured optimization level for `CFLAGS` and `CXXFLAGS`
-while `LDFLAGS` uses only the optimization level. Any `CFLAGS` defined in a
-`.lpmbuild` script are appended to the defaults.
+- **SAT solver based dependency resolution** with support for conflicts,
+  provides/obsoletes, package pinning and signature verification.
+- **CPU aware build optimisation** – detects the host processor and sets
+  appropriate `-march`/`-mtune`, `-pipe`, `-fPIC` and optimisation level flags
+  (`OPT_LEVEL` in `/etc/lpm/lpm.conf`).
+- **Filesystem snapshots** stored in `/var/lib/lpm/snapshots` with automatic
+  pruning (`MAX_SNAPSHOTS` in `lpm.conf`) and rollback support.
+- **Bootstrap mode** to build a minimal chroot and populate it with verified
+  packages.
+- **Incremental SAT solver API** available for other tools and benchmarks in
+  `benchmarks/solver_bench.py`.
+- **.lpmbuild scripts** for reproducible package builds and a `build` command to
+  package staged roots.
+
+## Command line interface
+
+`lpm` uses sub‑commands.  Each command listed below shows its required
+arguments and optional flags.
+
+### Repository management
+
+- `lpm repolist` – list configured repositories.
+- `lpm repoadd NAME URL [--priority N]` – add a repository.
+- `lpm repodel NAME` – remove a repository.
+
+### Package discovery
+
+- `lpm search [PATTERN ...]` – search repositories.
+- `lpm info NAME...` – show package metadata.
+
+### Package installation and removal
+
+- `lpm install NAME... [--root PATH] [--dry-run] [--no-verify]`
+- `lpm remove NAME... [--root PATH] [--dry-run] [--force]`
+- `lpm upgrade [NAME ...] [--root PATH] [--dry-run] [--no-verify] [--force]`
+- `lpm list` – list installed packages.
+- `lpm verify [--root PATH]` – verify that installed files exist.
+
+### Snapshot management
+
+- `lpm snapshots [--delete ID ...] [--prune]` – list or manage filesystem
+  snapshots.
+- `lpm rollback [SNAPSHOT_ID]` – restore a snapshot (defaults to latest).
+- `lpm history` – show recent transactions.
+
+### Pins and protected packages
+
+- `lpm pins ACTION [NAMES ...] [--prefs name:constraint ...]` – manage holds
+  and preferred versions.
+- `lpm protected ACTION [NAMES ...]` – view or edit the list of packages that
+  cannot be removed unless `--force` is supplied.
+
+### Building packages and repositories
+
+- `lpm build STAGEDIR --name NAME --version VERSION [--release N] [--arch ARCH]
+  [--summary TEXT] [--url URL] [--license LICENSE] [--requires PKG ...]
+  [--provides PKG ...] [--conflicts PKG ...] [--obsoletes PKG ...]
+  [--recommends PKG ...] [--suggests PKG ...] [--output FILE] [--no-sign]`
+  – build an `.lpm` package from a staged root.
+- `lpm buildpkg SCRIPT [--outdir PATH]` – run a `.lpmbuild` script to produce a
+  package.
+- `lpm genindex REPO_DIR [--base-url URL] [--arch ARCH]` – generate an
+  `index.json` for a directory of packages.
+- `lpm installpkg FILE... [--root PATH] [--dry-run] [--verify] [--force]`
+  – install from local package files.
+- `lpm removepkg NAME... [--root PATH] [--dry-run] [--force]` – remove installed
+  packages by name.
+
+### System bootstrap
+
+- `lpm bootstrap ROOT [--include PKG ...] [--no-verify]` – create a minimal
+  chroot populated with packages.
+
+## Optimisation
+
+`lpm` can optimise builds based on your CPU and the selected optimisation
+level. The `/etc/lpm/lpm.conf` file accepts an `OPT_LEVEL` entry (`-Os`, `-O2`,
+`-O3`, or `-Ofast`). During package builds the manager detects the CPU family
+and automatically sets `-march`/`-mtune` along with `-pipe` and `-fPIC` plus the
+configured optimisation level for `CFLAGS` and `CXXFLAGS` while `LDFLAGS` uses
+only the optimisation level. Any `CFLAGS` defined in a `.lpmbuild` script are
+appended to the defaults.
 
 ## Snapshots
+
 LPM stores filesystem snapshots in `/var/lib/lpm/snapshots`. Configure
 `MAX_SNAPSHOTS` in `/etc/lpm/lpm.conf` to limit how many snapshots are kept
 (default `10`). Older entries beyond the limit are automatically pruned after
@@ -20,22 +97,22 @@ creating a new snapshot. You can trigger cleanup manually with
 
 ## Bootstrap
 
-Run `lpm bootstrap /path/to/root --include vim openssh` to create a chroot-ready
-filesystem tree with verified packages.
+Run `lpm bootstrap /path/to/root --include vim openssh` to create a
+chroot‑ready filesystem tree with verified packages.
 
-## Solver Heuristics
+## Solver heuristics
 
-The resolver uses a CDCL SAT solver with VSIDS-style variable scoring and phase
+The resolver uses a CDCL SAT solver with VSIDS‑style variable scoring and phase
 saving. Variable and clause activity decay factors default to `0.95` and
 `0.999` respectively, tuned from benchmarks on common dependency sets. Package
 repositories can influence decision making by adding `"bias"` and `"decay"`
 fields to entries in `repos.json`.
 
 A small benchmark harness is provided at `benchmarks/solver_bench.py`. Run
-`python benchmarks/solver_bench.py` to measure resolution speed with the default
-tuning.
+`python benchmarks/solver_bench.py` to measure resolution speed with the
+default tuning.
 
-## SAT Solver API
+## SAT solver API
 
 The SAT solver can be reused across multiple solves while retaining learned
 clauses and variable activity. Instantiate `CDCLSolver` with a `CNF` instance
@@ -57,3 +134,4 @@ result_with_assump = solver.solve([v1])  # assume A is true temporarily
 
 Subsequent calls to `solve()` reuse variable activity and learned clauses
 accumulated from previous runs, enabling efficient incremental solving.
+
