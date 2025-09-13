@@ -25,6 +25,7 @@ from collections import deque
 import zstandard as zstd
 
 from src.config import *  # noqa: F401,F403
+initialize_state()
 from src.fs import read_json, write_json, urlread
 from src.solver import CNF, CDCLSolver
 

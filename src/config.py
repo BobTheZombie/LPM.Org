@@ -19,13 +19,16 @@ SIGN_KEY  = Path("/etc/lpm/private/lpm_signing.pem")   # OpenSSL PEM private key
 TRUST_DIR = Path("/etc/lpm/trust")                     # dir of *.pem public keys for verification
 DEFAULT_ROOT = "/"
 UMASK = 0o22
-os.umask(UMASK)
-for d in (STATE_DIR, CACHE_DIR, SNAPSHOT_DIR):
-    d.mkdir(parents=True, exist_ok=True)
-if not REPO_LIST.exists():
-    REPO_LIST.write_text("[]", encoding="utf-8")
-if not PIN_FILE.exists():
-    PIN_FILE.write_text(json.dumps({"hold": [], "prefer": {}}, indent=2), encoding="utf-8")
+
+
+def initialize_state() -> None:
+    os.umask(UMASK)
+    for d in (STATE_DIR, CACHE_DIR, SNAPSHOT_DIR):
+        d.mkdir(parents=True, exist_ok=True)
+    if not REPO_LIST.exists():
+        REPO_LIST.write_text("[]", encoding="utf-8")
+    if not PIN_FILE.exists():
+        PIN_FILE.write_text(json.dumps({"hold": [], "prefer": {}}, indent=2), encoding="utf-8")
 
 
 def load_conf(path: Path) -> Dict[str, str]:
@@ -129,6 +132,7 @@ __all__ = [
     "TRUST_DIR",
     "DEFAULT_ROOT",
     "UMASK",
+    "initialize_state",
     "load_conf",
     "CONF",
     "ARCH",
