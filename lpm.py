@@ -90,7 +90,7 @@ def ok(msg: str):
 def warn(msg: str):
     print(f"{CYAN}[WARN]{RESET} {msg}", file=sys.stderr)
 
-def print_build_summary(meta: PkgMeta, out: Path, duration: float, deps: int):
+def print_build_summary(meta: PkgMeta, out: Path, duration: float, deps: int, phases: int):
     """Print a Meson-like build summary table."""
     rows = [
         ("Name", meta.name),
@@ -99,6 +99,7 @@ def print_build_summary(meta: PkgMeta, out: Path, duration: float, deps: int):
         ("Output", out),
         ("Build time", f"{duration:.2f}s"),
         ("Dependencies", deps),
+        ("Phases", phases),
     ]
     width = max(len(k) for k, _ in rows)
     print("\nSummary")
@@ -114,6 +115,19 @@ class ResolutionError(Exception):
 from tqdm import tqdm
 
 
+class _TrackedTqdm(tqdm):
+    """A ``tqdm`` subclass that records start/end times and completed count."""
+
+    def __enter__(self):
+        self.start_time = time.time()
+        return super().__enter__()
+
+    def __exit__(self, exc_type, exc, tb):
+        self.end_time = time.time()
+        self.completed = self.n
+        return super().__exit__(exc_type, exc, tb)
+
+
 def progress_bar(
     iterable,
     *,
@@ -124,6 +138,7 @@ def progress_bar(
     bar_format: Optional[str] = None,
     leave: bool = True,
     mode: str = "bar",
+    track: bool = False,
     **kwargs,
 ):
     """Return a ``tqdm`` progress bar with centralized styling.
@@ -148,7 +163,9 @@ def progress_bar(
     if mode == "ninja":
         bar_format = bar_format or "[ {n}/{total} ] {desc}"
 
-    return tqdm(
+    cls = _TrackedTqdm if track else tqdm
+
+    return cls(
         iterable,
         desc=desc,
         unit=unit,
@@ -1123,7 +1140,7 @@ def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool, force: 
             warn(f"Could not fetch {p.name} from repos ({res}), trying GitLab fallback...")
             tmp = Path(f"/tmp/lpm-dep-{p.name}.lpmbuild")
             fetch_lpmbuild(p.name, tmp)
-            built = run_lpmbuild(tmp, prompt_install=False, is_dep=True, build_deps=True)
+            built, _, _ = run_lpmbuild(tmp, prompt_install=False, is_dep=True, build_deps=True)
             meta = installpkg(built, root=root, dry_run=dry, verify=verify, force=force)
         else:
             if res is None:
@@ -1422,7 +1439,7 @@ def build_from_gitlab(pkgname: str) -> Path:
 
     tmp = Path(f"/tmp/lpm-dep-{pkgname}.lpmbuild")
     fetch_lpmbuild(pkgname, tmp)
-    built = run_lpmbuild(tmp, outdir=CACHE_DIR, prompt_install=False, is_dep=True, build_deps=True)
+    built, _, _ = run_lpmbuild(tmp, outdir=CACHE_DIR, prompt_install=False, is_dep=True, build_deps=True)
 
     # Copy to a stable cache filename
     if built != cache_pkg:
@@ -1465,7 +1482,7 @@ def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str]
         installpkg(blob)
 
 
-def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: bool = True, prompt_default: Optional[str] = None, is_dep: bool = False, build_deps: bool = True) -> Path:
+def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: bool = True, prompt_default: Optional[str] = None, is_dep: bool = False, build_deps: bool = True) -> Tuple[Path, float, int]:
     script_path = script.resolve()
     script_dir = script_path.parent
 
@@ -1519,7 +1536,7 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
                 prompt_default=prompt_default,
                 is_dep=True,
                 build_deps=True,
-            )
+            )[0]
         if deps_to_build:
             if prompt_install:
                 total = len(deps_to_build)
@@ -1583,7 +1600,8 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
         phases,
         unit="phase",
         mode="ninja",
-        leave=True,
+        leave=False,
+        track=True,
     ) as pbar:
         for phase in pbar:
             pbar.set_description(phase)
@@ -1591,6 +1609,8 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
                 run_func(phase, srcroot)
             except subprocess.CalledProcessError as e:
                 die(f"{script.name}: function '{phase}' failed with code {e.returncode}")
+    phase_count = getattr(pbar, "completed", pbar.n)
+    duration = getattr(pbar, "end_time", time.time()) - getattr(pbar, "start_time", 0.0)
 
     # --- Generate or capture install script ---
     install_sh = stagedir / ".lpm-install.sh"
@@ -1641,7 +1661,7 @@ exit 0
     build_package(stagedir, meta, out, sign=True)
     if prompt_install:
         prompt_install_pkg(out, kind="dependency" if is_dep else "package", default=prompt_default)
-    return out
+    return out, duration, phase_count
 
 # =========================== CLI commands =====================================
 def cmd_repolist(_):
@@ -2011,12 +2031,15 @@ def cmd_build(a):
     prompt_install_pkg(out, default=a.install_default)
 
 def cmd_buildpkg(a):
-    start = time.time()
-    out = run_lpmbuild(a.script, a.outdir, build_deps=not a.no_deps, prompt_default=a.install_default)
-    duration = time.time() - start
+    out, duration, phases = run_lpmbuild(
+        a.script,
+        a.outdir,
+        build_deps=not a.no_deps,
+        prompt_default=a.install_default,
+    )
     if out and out.exists():
         meta, _ = read_package_meta(out)
-        print_build_summary(meta, out, duration, len(meta.requires))
+        print_build_summary(meta, out, duration, len(meta.requires), phases)
         ok(f"Built {out}")
     else:
         die(f"Build failed for {a.script}")
