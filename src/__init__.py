@@ -1,9 +1,8 @@
-from .solver import CNF, SATResult, Implication, CDCLSolver, cdcl_solve
+from .solver import CNF, SATResult, Implication, CDCLSolver
 
 __all__ = [
     "CNF",
     "SATResult",
     "Implication",
     "CDCLSolver",
-    "cdcl_solve",
 ]

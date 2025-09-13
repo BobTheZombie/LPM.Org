@@ -102,16 +102,36 @@ def luby(i: int) -> int:
 class CDCLSolver:
     """Conflict-Driven Clause Learning SAT solver."""
 
-    def solve(
+    def __init__(
         self,
         cnf: CNF,
-        prefer_true: Set[int],
-        prefer_false: Set[int],
+        prefer_true: Optional[Set[int]] = None,
+        prefer_false: Optional[Set[int]] = None,
         bias: Optional[Dict[int, float]] = None,
         decay_map: Optional[Dict[int, float]] = None,
-    ) -> SATResult:
-        """Solve the given CNF instance."""
+    ) -> None:
+        self.cnf = cnf
+        self.prefer_true = prefer_true or set()
+        self.prefer_false = prefer_false or set()
+        self.decay_map = decay_map or {}
+        bias = bias or {}
         nvars = cnf.next_var - 1
+        self.var_activity: Dict[int, float] = {i: bias.get(i, 0.0) for i in range(1, nvars + 1)}
+        self.saved_phase: Dict[int, bool] = {}
+        self.var_inc = 1.0
+        self.var_decay_conf = float(CONF.get("VSIDS_VAR_DECAY", "0.95"))
+        self.cla_inc = 1.0
+        self.cla_decay = float(CONF.get("VSIDS_CLAUSE_DECAY", "0.999"))
+
+    def solve(self, assumptions: List[int]) -> SATResult:
+        """Solve the stored CNF instance under optional assumptions."""
+        cnf = self.cnf
+        nvars = cnf.next_var - 1
+        # ensure activity arrays cover all variables
+        for v in range(1, nvars + 1):
+            if v not in self.var_activity:
+                self.var_activity[v] = 0.0
+
         assigns: Dict[int, Optional[bool]] = {i: None for i in range(1, nvars + 1)}
         levels: Dict[int, int] = {i: 0 for i in range(1, nvars + 1)}
         reason: Dict[int, Optional[int]] = {i: None for i in range(1, nvars + 1)}
@@ -120,15 +140,14 @@ class CDCLSolver:
         queue = deque()
         imp_graph: Dict[int, Implication] = {i: Implication() for i in range(1, nvars + 1)}
 
-        bias = bias or {}
-        decay_map = decay_map or {}
-        var_activity: Dict[int, float] = {i: bias.get(i, 0.0) for i in range(1, nvars + 1)}
-        saved_phase: Dict[int, bool] = {}
-        var_inc = 1.0
-        var_decay_conf = float(CONF.get("VSIDS_VAR_DECAY", "0.95"))
+        var_activity = self.var_activity
+        saved_phase = self.saved_phase
+        var_inc = self.var_inc
+        var_decay_conf = self.var_decay_conf
+        decay_map = self.decay_map
 
         def bump_var(v: int) -> None:
-            nonlocal var_activity, var_inc
+            nonlocal var_inc
             var_activity[v] += var_inc
             if var_activity[v] > 1e100:
                 for k in var_activity:
@@ -142,8 +161,8 @@ class CDCLSolver:
                 factor = decay_map.get(v, var_decay_conf)
                 var_activity[v] *= factor
 
-        cla_inc = 1.0
-        cla_decay = float(CONF.get("VSIDS_CLAUSE_DECAY", "0.999"))
+        cla_inc = self.cla_inc
+        cla_decay = self.cla_decay
 
         def bump_clause(ci: Optional[int]) -> None:
             if ci is not None:
@@ -194,6 +213,9 @@ class CDCLSolver:
         for i, cl in enumerate(cnf.clauses):
             if len(cl) == 1:
                 enqueue(cl[0], i)
+
+        for lit in assumptions:
+            enqueue(lit, None)
 
         def propagate() -> Optional[int]:
             while queue:
@@ -299,6 +321,9 @@ class CDCLSolver:
             if confl is not None:
                 conflicts += 1
                 if current_level() == 0:
+                    # update shared state before returning
+                    self.var_inc = var_inc
+                    self.cla_inc = cla_inc
                     return SATResult(False, {v: False for v in assigns})
                 learnt, back_lvl = analyze(confl)
                 ci = cnf.add_clause(learnt, learnt=True)
@@ -316,24 +341,15 @@ class CDCLSolver:
             else:
                 v = pick_branch_var()
                 if v == 0:
+                    self.var_inc = var_inc
+                    self.cla_inc = cla_inc
                     final = {var: (assigns[var] if assigns[var] is not None else False) for var in assigns}
                     return SATResult(True, final)
                 trail_lim.append(len(trail))
                 phase = saved_phase.get(v)
                 if phase is None:
-                    lit = -v if v in prefer_false and v not in prefer_true else v
+                    lit = -v if v in self.prefer_false and v not in self.prefer_true else v
                 else:
                     lit = v if phase else -v
                 enqueue(lit, None)
 
-
-def cdcl_solve(
-    cnf: CNF,
-    prefer_true: Set[int],
-    prefer_false: Set[int],
-    bias: Optional[Dict[int, float]] = None,
-    decay_map: Optional[Dict[int, float]] = None,
-) -> SATResult:
-    """Convenience wrapper around :class:`CDCLSolver`."""
-    solver = CDCLSolver()
-    return solver.solve(cnf, prefer_true, prefer_false, bias=bias, decay_map=decay_map)

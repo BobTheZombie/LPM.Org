@@ -34,3 +34,26 @@ fields to entries in `repos.json`.
 A small benchmark harness is provided at `benchmarks/solver_bench.py`. Run
 `python benchmarks/solver_bench.py` to measure resolution speed with the default
 tuning.
+
+## SAT Solver API
+
+The SAT solver can be reused across multiple solves while retaining learned
+clauses and variable activity. Instantiate `CDCLSolver` with a `CNF` instance
+and call `solve()` with an optional list of assumed literals:
+
+```python
+from src import CNF, CDCLSolver
+
+cnf = CNF()
+v1 = cnf.new_var("A")
+v2 = cnf.new_var("B")
+cnf.add_clause([v1, v2])
+cnf.add_clause([-v1, v2])
+
+solver = CDCLSolver(cnf)
+result = solver.solve([])          # solve normally
+result_with_assump = solver.solve([v1])  # assume A is true temporarily
+```
+
+Subsequent calls to `solve()` reuse variable activity and learned clauses
+accumulated from previous runs, enabling efficient incremental solving.

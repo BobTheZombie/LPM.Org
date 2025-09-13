@@ -26,7 +26,7 @@ import zstandard as zstd
 
 from src.config import *  # noqa: F401,F403
 from src.fs import read_json, write_json, urlread
-from src.solver import CNF, CDCLSolver, cdcl_solve
+from src.solver import CNF, CDCLSolver
 
 # =========================== Protected packages ===============================
 PROTECTED_FILE = Path("/etc/lpm/protected.json")
@@ -525,7 +525,8 @@ def encode_resolution(u: Universe, goals: List[DepExpr]) -> Tuple[CNF, Dict[Tupl
 def solve(goals: List[str], universe: Universe) -> List[PkgMeta]:
     goal_exprs = [parse_dep_expr(s) for s in goals]
     cnf, var_of, ptrue, pfalse, bias_map, decay_map = encode_resolution(universe, goal_exprs)
-    res = cdcl_solve(cnf, ptrue, pfalse, bias_map, decay_map)
+    solver = CDCLSolver(cnf, ptrue, pfalse, bias_map, decay_map)
+    res = solver.solve([])
     if not res.sat: raise RuntimeError("Unsatisfiable dependency set")
     inv: Dict[int,Tuple[str,str]] = {v:k for k,v in var_of.items()}
     chosen: Dict[str,PkgMeta] = {}

@@ -18,8 +18,8 @@ def test_conflicting_packages_unsat():
     # require A and C simultaneously
     cnf.add_clause([a])
     cnf.add_clause([c])
-    solver = CDCLSolver()
-    res = solver.solve(cnf, set(), set())
+    solver = CDCLSolver(cnf)
+    res = solver.solve([])
     assert not res.sat
 
 
@@ -33,8 +33,8 @@ def test_dependency_resolution():
     # B conflicts C
     cnf.add_clause([-b, -c])
     cnf.add_clause([a])
-    solver = CDCLSolver()
-    res = solver.solve(cnf, set(), set())
+    solver = CDCLSolver(cnf)
+    res = solver.solve([])
     assert res.sat
     assert res.assign[a]
     # exactly one of b or c is installed
