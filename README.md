@@ -6,5 +6,7 @@ The Linux Package Manager
 `lpm` can optimize builds based on your CPU and the selected optimization
 level. The `/etc/lpm/lpm.conf` file accepts an `OPT_LEVEL` entry (`-Os`,
 `-O2`, `-O3`, or `-Ofast`). During package builds the manager detects the CPU
-family and automatically sets `-march`/`-mtune` along with the configured
-optimization level for `CFLAGS`, `CXXFLAGS`, and `LDFLAGS`.
+family and automatically sets `-march`/`-mtune` along with `-pipe` and
+`-fPIC` plus the configured optimization level for `CFLAGS` and `CXXFLAGS`
+while `LDFLAGS` uses only the optimization level. Any `CFLAGS` defined in a
+`.lpmbuild` script are appended to the defaults.
