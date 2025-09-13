@@ -480,12 +480,20 @@ def encode_resolution(u: Universe, goals: List[DepExpr]) -> Tuple[CNF, Dict[Tupl
             bias_map[v] = p.bias
             decay_map[v] = p.decay
     # At-most-one per name
-    for name,lst in u.candidates_by_name.items():
-        for i in range(len(lst)):
-            vi = var_of[(lst[i].name, lst[i].version)]
-            for j in range(i+1,len(lst)):
-                vj = var_of[(lst[j].name, lst[j].version)]
-                cnf.add([-vi, -vj])
+    for name, lst in u.candidates_by_name.items():
+        vars_for_name = [var_of[(p.name, p.version)] for p in lst]
+        n = len(vars_for_name)
+        if n <= 1:
+            continue
+        # Sequential counter encoding (Sinz 2005) for at-most-one
+        aux = [cnf.new_var(f"amo_{name}_{i}") for i in range(n - 1)]
+        cnf.add([-vars_for_name[0], aux[0]])
+        for i in range(1, n - 1):
+            v = vars_for_name[i]
+            cnf.add([-v, aux[i]])
+            cnf.add([-aux[i - 1], aux[i]])
+            cnf.add([-v, -aux[i - 1]])
+        cnf.add([-vars_for_name[-1], -aux[-1]])
 
     prefer_true: Set[int]=set(); prefer_false: Set[int]=set()
     # Bias: installed, newest
