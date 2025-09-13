@@ -1643,6 +1643,43 @@ def cmd_install(a):
         raise
 
 
+def cmd_bootstrap(a):
+    root = Path(a.root)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        die(f"could not create root {root}: {e}")
+
+    for d in ["dev", "proc", "sys", "tmp", "var", "etc"]:
+        try:
+            (root / d).mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            die(f"could not create {d}: {e}")
+
+    base_pkgs = ["lpm-base", "lpm-core"]
+    pkgs = base_pkgs + list(a.include or [])
+    try:
+        plan = solve(pkgs, build_universe())
+    except Exception as e:
+        die(f"dependency resolution failed: {e}")
+
+    log("[plan] bootstrap install order:")
+    for p in plan:
+        log(f"  - {p.name}-{p.version}")
+
+    try:
+        do_install(plan, root, dry=False, verify=(not a.no_verify), force=False)
+    except SystemExit:
+        raise
+    except Exception as e:
+        die(f"install failed: {e}")
+
+    try:
+        shutil.copy2("/etc/resolv.conf", root / "etc/resolv.conf")
+    except Exception as e:
+        warn(f"could not copy resolv.conf: {e}")
+
+
 def cmd_remove(a):
     root = Path(a.root or DEFAULT_ROOT)
     snapshot_id = None
@@ -2231,7 +2268,6 @@ def build_parser()->argparse.ArgumentParser:
     sp=sub.add_parser("bootstrap", help="Create a base chroot system")
     sp.add_argument("root", help="target directory for the new system")
     sp.add_argument("--include", nargs="*", default=[], help="extra packages to add")
-    sp.add_argument("--arch", default=ARCH, help="override architecture")
     sp.add_argument("--no-verify", action="store_true", help="skip signature verification")
     sp.set_defaults(func=cmd_bootstrap)
 
