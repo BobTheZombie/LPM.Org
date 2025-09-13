@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Iterable
+from collections import deque
 import zstandard as zstd
 
 # =========================== Config / Defaults ================================
@@ -536,77 +537,213 @@ def providers_for(u: Universe, atom: Atom) -> List[PkgMeta]:
 
 # =========================== CNF / SAT ========================================
 class CNF:
-    def __init__(self): 
+    """Simple CNF container with watched literal management."""
+
+    def __init__(self):
         self.clauses: List[List[int]] = []
-        self.next_var=1
-        self.varname: Dict[int,str]={}
-        self.namevar: Dict[str,int]={}
-    def new_var(self, name:str) -> int:
-        if name in self.namevar: return self.namevar[name]
-        v=self.next_var; self.next_var+=1; self.namevar[name]=v; self.varname[v]=name; return v
-    def add(self, *cl: Iterable[int]):
-        for c in cl:
-            c=list(c)
-            if c: self.clauses.append(c)
+        self.next_var = 1
+        self.varname: Dict[int, str] = {}
+        self.namevar: Dict[str, int] = {}
+        # Watched literal data structures
+        self.watch_list: Dict[int, List[int]] = {}
+        self.watchers: List[Tuple[int, int]] = []
+
+    def new_var(self, name: str) -> int:
+        if name in self.namevar:
+            return self.namevar[name]
+        v = self.next_var
+        self.next_var += 1
+        self.namevar[name] = v
+        self.varname[v] = name
+        return v
+
+    def add_clause(self, clause: List[int]) -> int:
+        idx = len(self.clauses)
+        self.clauses.append(clause)
+        if not clause:
+            self.watchers.append((0, 0))
+            return idx
+        if len(clause) == 1:
+            lit = clause[0]
+            self.watchers.append((lit, lit))
+            self.watch_list.setdefault(lit, []).append(idx)
+        else:
+            a, b = clause[0], clause[1]
+            self.watchers.append((a, b))
+            self.watch_list.setdefault(a, []).append(idx)
+            self.watch_list.setdefault(b, []).append(idx)
+        return idx
+
+    def add(self, *clauses: Iterable[int]):
+        for c in clauses:
+            clause = list(c)
+            if clause:
+                self.add_clause(clause)
+
 
 class SATResult:
-    def __init__(self, sat: bool, assign: Dict[int,bool]): 
-        self.sat=sat; self.assign=assign
+    def __init__(self, sat: bool, assign: Dict[int, bool]):
+        self.sat = sat
+        self.assign = assign
 
-def dpll_solve(cnf: CNF, prefer_true: Set[int], prefer_false: Set[int]) -> SATResult:
-    clauses = [list(c) for c in cnf.clauses]
-    nvars = cnf.next_var-1
-    assigns: Dict[int, Optional[bool]] = {i: None for i in range(1, nvars+1)}
 
-    def unit_propagate() -> bool:
-        changed=True
-        while changed:
-            changed=False
-            for cl in clauses:
-                sat=False; unassigned=[]
-                for lit in cl:
-                    v=abs(lit); val=assigns[v]
-                    if val is None: unassigned.append(lit)
-                    elif (val and lit>0) or ((not val) and lit<0): 
-                        sat=True; break
-                if sat: continue
-                if not unassigned: return False
-                if len(unassigned)==1:
-                    lit=unassigned[0]; assigns[abs(lit)]=(lit>0); changed=True
-        return True
+def luby(i: int) -> int:
+    """Return the i-th value of the Luby sequence."""
+    k = 1
+    while (1 << k) - 1 < i:
+        k += 1
+    if i == (1 << k) - 1:
+        return 1 << (k - 1)
+    return luby(i - (1 << (k - 1)) + 1)
 
-    def choose_var() -> int:
-        scores: Dict[int,int]={}
-        for cl in clauses:
-            satisfied=False
-            for lit in cl:
-                v=abs(lit); val=assigns[v]
-                if val is None: scores[v]=scores.get(v,0)+1
-                elif (val and lit>0) or ((not val) and lit<0): 
-                    satisfied=True; break
-            if satisfied: continue
-        cand=[v for v,val in assigns.items() if val is None]
-        if not cand: return 0
-        cand.sort(key=lambda v:(v in prefer_true, -scores.get(v,0), -(v in prefer_false)))
-        return cand[-1] if cand else 0
 
-    def recurse() -> bool:
-        if not unit_propagate(): return False
-        if all(assigns[v] is not None for v in assigns): return True
-        v = choose_var()
-        if v==0: return True
-        order=[True, False]
-        if v in prefer_false and v not in prefer_true: order=[False, True]
-        for val in order:
-            saved=dict(assigns)
-            assigns[v]=val
-            if recurse(): return True
-            assigns.update(saved)
-        return False
+def cdcl_solve(cnf: CNF, prefer_true: Set[int], prefer_false: Set[int]) -> SATResult:
+    """CDCL SAT solver with non-chronological backtracking and restarts."""
 
-    sat = recurse()
-    final = {v: (assigns[v] if assigns[v] is not None else False) for v in assigns}
-    return SATResult(sat, final)
+    nvars = cnf.next_var - 1
+    assigns: Dict[int, Optional[bool]] = {i: None for i in range(1, nvars + 1)}
+    levels: Dict[int, int] = {i: 0 for i in range(1, nvars + 1)}
+    reason: Dict[int, Optional[int]] = {i: None for i in range(1, nvars + 1)}
+    trail: List[int] = []
+    trail_lim: List[int] = []
+    queue = deque()
+
+    def current_level() -> int:
+        return len(trail_lim)
+
+    def value(lit: int) -> Optional[bool]:
+        val = assigns[abs(lit)]
+        if val is None:
+            return None
+        return val if lit > 0 else not val
+
+    def enqueue(lit: int, rsn: Optional[int]) -> None:
+        v = abs(lit)
+        val = lit > 0
+        if assigns[v] is not None:
+            return
+        assigns[v] = val
+        levels[v] = current_level()
+        reason[v] = rsn
+        trail.append(lit)
+        queue.append(lit)
+
+    # Initialize with unit clauses
+    for i, cl in enumerate(cnf.clauses):
+        if len(cl) == 1:
+            enqueue(cl[0], i)
+
+    def propagate() -> Optional[int]:
+        while queue:
+            lit = queue.popleft()
+            for ci in list(cnf.watch_list.get(-lit, [])):
+                clause = cnf.clauses[ci]
+                w1, w2 = cnf.watchers[ci]
+                if w1 == -lit:
+                    other = w2
+                    first = True
+                else:
+                    other = w1
+                    first = False
+                if value(other) is True:
+                    continue
+                found = False
+                for new_lit in clause:
+                    if new_lit == other or new_lit == -lit:
+                        continue
+                    if value(new_lit) is not False:
+                        if first:
+                            cnf.watchers[ci] = (new_lit, other)
+                        else:
+                            cnf.watchers[ci] = (other, new_lit)
+                        cnf.watch_list[-lit].remove(ci)
+                        cnf.watch_list.setdefault(new_lit, []).append(ci)
+                        found = True
+                        break
+                if not found:
+                    if value(other) is False:
+                        return ci
+                    else:
+                        enqueue(other, ci)
+        return None
+
+    def pick_branch_var() -> int:
+        for v in range(1, nvars + 1):
+            if assigns[v] is None:
+                return v
+        return 0
+
+    def analyze(conflict_idx: int) -> Tuple[List[int], int]:
+        seen: Set[int] = set()
+        learnt: List[int] = []
+        counter = 0
+        clause = cnf.clauses[conflict_idx]
+        i = len(trail) - 1
+        while True:
+            for lit in clause:
+                v = abs(lit)
+                if v not in seen and levels[v] > 0:
+                    seen.add(v)
+                    if levels[v] == current_level():
+                        counter += 1
+                    else:
+                        learnt.append(lit)
+            while True:
+                lit = trail[i]
+                i -= 1
+                if abs(lit) in seen:
+                    break
+            v = abs(lit)
+            clause_idx = reason[v]
+            clause = cnf.clauses[clause_idx] if clause_idx is not None else []
+            counter -= 1
+            if counter <= 0:
+                learnt.append(-lit)
+                break
+        back_lvl = 0
+        if len(learnt) > 1:
+            back_lvl = max(levels[abs(l)] for l in learnt[:-1])
+        return learnt, back_lvl
+
+    def backtrack(level: int) -> None:
+        while current_level() > level:
+            start = trail_lim.pop()
+            while len(trail) > start:
+                lit = trail.pop()
+                v = abs(lit)
+                assigns[v] = None
+                reason[v] = None
+                levels[v] = 0
+            queue.clear()
+
+    conflicts = 0
+    restart_count = 1
+    restart_limit = luby(restart_count) * 100
+
+    while True:
+        confl = propagate()
+        if confl is not None:
+            conflicts += 1
+            if current_level() == 0:
+                return SATResult(False, {v: False for v in assigns})
+            learnt, back_lvl = analyze(confl)
+            ci = cnf.add_clause(learnt)
+            backtrack(back_lvl)
+            enqueue(learnt[0], ci)
+            if conflicts >= restart_limit:
+                restart_count += 1
+                restart_limit = luby(restart_count) * 100
+                backtrack(0)
+        else:
+            v = pick_branch_var()
+            if v == 0:
+                final = {var: (assigns[var] if assigns[var] is not None else False) for var in assigns}
+                return SATResult(True, final)
+            trail_lim.append(len(trail))
+            lit = v
+            if v in prefer_false and v not in prefer_true:
+                lit = -v
+            enqueue(lit, None)
 
 # =========================== Resolver encoding =================================
 def expr_to_cnf_disj(u: Universe, e: DepExpr, cnf: CNF, var_of: Dict[Tuple[str,str],int]) -> List[int]:
@@ -705,7 +842,7 @@ def encode_resolution(u: Universe, goals: List[DepExpr]) -> Tuple[CNF, Dict[Tupl
 def solve(goals: List[str], universe: Universe) -> List[PkgMeta]:
     goal_exprs = [parse_dep_expr(s) for s in goals]
     cnf, var_of, ptrue, pfalse = encode_resolution(universe, goal_exprs)
-    res = dpll_solve(cnf, ptrue, pfalse)
+    res = cdcl_solve(cnf, ptrue, pfalse)
     if not res.sat: raise RuntimeError("Unsatisfiable dependency set")
     inv: Dict[int,Tuple[str,str]] = {v:k for k,v in var_of.items()}
     chosen: Dict[str,PkgMeta] = {}
