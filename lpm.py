@@ -2227,7 +2227,14 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--force", action="store_true", help="override protected package list")
     sp.set_defaults(func=cmd_fileremove)
-    
+
+    sp=sub.add_parser("bootstrap", help="Create a base chroot system")
+    sp.add_argument("root", help="target directory for the new system")
+    sp.add_argument("--include", nargs="*", default=[], help="extra packages to add")
+    sp.add_argument("--arch", default=ARCH, help="override architecture")
+    sp.add_argument("--no-verify", action="store_true", help="skip signature verification")
+    sp.set_defaults(func=cmd_bootstrap)
+
     sp = sub.add_parser("protected", help="Show or edit protected package list")
     sp.add_argument("action", choices=["list", "add", "remove"])
     sp.add_argument("names", nargs="*", help="package names (for add/remove)")
