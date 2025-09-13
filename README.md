@@ -106,6 +106,19 @@ Hook scripts placed in `/usr/share/lpm/hooks` or within `<hook>.d` directories
 run at key points during package operations. These hooks may be either shell or
 Python scripts, with Python hooks executed using the current Python interpreter.
 
+### Default post-install hooks
+
+LPM ships with several hooks that run after a package is installed:
+
+- `010-ldconfig.py` – runs `ldconfig` when installing into the real root (`/`).
+- `020-update-desktop-database.py` – refreshes the desktop file database if
+  `update-desktop-database` is available.
+- `030-update-icon-cache.py` – updates icon caches for themes in
+  `/usr/share/icons` using `gtk-update-icon-cache`.
+
+Each hook checks for the presence of its corresponding tool and exits quietly
+if it is not installed.
+
 ## Solver heuristics
 
 The resolver uses a CDCL SAT solver with VSIDS‑style variable scoring and phase
