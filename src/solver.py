@@ -151,6 +151,9 @@ class CDCLSolver:
         var_decay_conf = self.var_decay_conf
         decay_map = self.decay_map
         max_learnts = self.max_learnts
+        # stats for testing/benchmarking
+        self.last_conflicts = 0
+        self.last_restarts = 0
 
         def bump_var(v: int) -> None:
             nonlocal var_inc
@@ -342,6 +345,7 @@ class CDCLSolver:
                                 changed = True
                     self.var_inc = var_inc
                     self.cla_inc = cla_inc
+                    self.last_conflicts = conflicts
                     return SATResult(False, {v: False for v in assigns}, core_clause)
                 learnt, back_lvl = analyze(confl)
                 lbd = len({levels[abs(l)] for l in learnt})
@@ -356,12 +360,14 @@ class CDCLSolver:
                 if conflicts >= restart_limit:
                     restart_count += 1
                     restart_limit = luby(restart_count) * 100
+                    self.last_restarts += 1
                     backtrack(0)
             else:
                 v = pick_branch_var()
                 if v == 0:
                     self.var_inc = var_inc
                     self.cla_inc = cla_inc
+                    self.last_conflicts = conflicts
                     final = {var: (assigns[var] if assigns[var] is not None else False) for var in assigns}
                     return SATResult(True, final, None)
                 trail_lim.append(len(trail))
