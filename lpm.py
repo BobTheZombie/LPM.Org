@@ -1951,6 +1951,18 @@ def cmd_upgrade(a):
             warn(f"Snapshot {snapshot_id} created at {snapshot_archive} for rollback.")
         raise
 
+def cmd_files(a):
+    conn = db()
+    row = conn.execute("SELECT manifest FROM installed WHERE name=?", (a.name,)).fetchone()
+    conn.close()
+    if not row:
+        warn(f"{a.name} not installed")
+        return
+    mani = json.loads(row[0]) if row[0] else []
+    for e in mani:
+        path = e["path"] if isinstance(e, dict) else e
+        print(path)
+
 def cmd_list_installed(_):
     conn=db()
     for n,v,r,a in conn.execute("SELECT name,version,release,arch FROM installed ORDER BY name"):
@@ -2419,6 +2431,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.set_defaults(func=cmd_upgrade)
 
     sp=sub.add_parser("list", help="List installed packages"); sp.set_defaults(func=cmd_list_installed)
+    sp=sub.add_parser("files", help="List files installed by package"); sp.add_argument("name"); sp.set_defaults(func=cmd_files)
     sp=sub.add_parser("snapshots", help="List snapshots"); sp.add_argument("--delete", type=int, nargs="*", help="snapshot IDs to delete"); sp.add_argument("--prune", action="store_true", help="prune old snapshots"); sp.set_defaults(func=cmd_snapshots)
     sp=sub.add_parser("rollback", help="Restore from snapshot"); sp.add_argument("snapshot_id", nargs="?", type=int, help="snapshot ID (default latest)"); sp.set_defaults(func=cmd_rollback)
     sp=sub.add_parser("history", help="Show last transactions"); sp.set_defaults(func=cmd_history)
