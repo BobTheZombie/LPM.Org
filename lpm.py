@@ -406,7 +406,9 @@ CREATE TABLE IF NOT EXISTS installed(
   arch TEXT NOT NULL,
   provides TEXT NOT NULL,
   symbols TEXT NOT NULL,
+  requires TEXT NOT NULL,
   manifest TEXT NOT NULL,
+  explicit INTEGER NOT NULL,
   install_time INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS history(
@@ -432,39 +434,29 @@ def db() -> sqlite3.Connection:
     cols = [r[1] for r in c.execute("PRAGMA table_info(installed)")]
     if "symbols" not in cols:
         c.execute("ALTER TABLE installed ADD COLUMN symbols TEXT NOT NULL DEFAULT '[]'")
-        c.commit()
+    if "requires" not in cols:
+        c.execute("ALTER TABLE installed ADD COLUMN requires TEXT NOT NULL DEFAULT '[]'")
+    if "explicit" not in cols:
+        c.execute("ALTER TABLE installed ADD COLUMN explicit INTEGER NOT NULL DEFAULT 0")
+    c.commit()
     return c
 
 def db_installed(conn) -> Dict[str,dict]:
     res = {}
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(installed)")]
-    has_symbols = "symbols" in cols
-    if has_symbols:
-        rows = conn.execute(
-            "SELECT name,version,release,arch,provides,symbols,manifest FROM installed"
-        )
-        for r in rows:
-            res[r[0]] = {
-                "version": r[1],
-                "release": r[2],
-                "arch": r[3],
-                "provides": json.loads(r[4]),
-                "symbols": json.loads(r[5]) if r[5] else [],
-                "manifest": json.loads(r[6]),
-            }
-    else:
-        rows = conn.execute(
-            "SELECT name,version,release,arch,provides,manifest FROM installed"
-        )
-        for r in rows:
-            res[r[0]] = {
-                "version": r[1],
-                "release": r[2],
-                "arch": r[3],
-                "provides": json.loads(r[4]),
-                "symbols": [],
-                "manifest": json.loads(r[5]),
-            }
+    rows = conn.execute(
+        "SELECT name,version,release,arch,provides,symbols,requires,manifest,explicit FROM installed"
+    )
+    for r in rows:
+        res[r[0]] = {
+            "version": r[1],
+            "release": r[2],
+            "arch": r[3],
+            "provides": json.loads(r[4]),
+            "symbols": json.loads(r[5]) if r[5] else [],
+            "requires": json.loads(r[6]) if r[6] else [],
+            "manifest": json.loads(r[7]),
+            "explicit": bool(r[8]),
+        }
     return res
 
 # =========================== Snapshots =====================================
@@ -943,8 +935,9 @@ def build_package(stagedir: Path, meta: PkgMeta, out: Path, sign=True):
     if not out.name.endswith(".zst"):
         out = out.with_suffix(".zst")
 
-    if shutil.which("zstd") is None:
-        die("zstd is required to build .zst packages but was not found in PATH")
+    use_fallback = shutil.which("zstd") is None
+    if use_fallback:
+        warn("zstd not found in PATH, using Python zstandard library")
 
     # Collect manifest including exported symbols
     mani = collect_manifest(stagedir)
@@ -960,22 +953,44 @@ def build_package(stagedir: Path, meta: PkgMeta, out: Path, sign=True):
     with mani_path.open("w", encoding="utf-8") as f:
         json.dump(mani, f, indent=2)
 
-    # Package with tar + zstd
-    subprocess.run(
-        [
-            "tar",
-            "--zstd",
-            "-cf", str(out),
-            "--sort=name",
-            "--mtime=@0",
-            "--owner=0",
-            "--group=0",
-            "--numeric-owner",
-            "-C", str(stagedir),
-            ".",
-        ],
-        check=True,
-    )
+    # Package with tar + zstd (with Python fallback)
+    if use_fallback:
+        tmp_tar = out.with_suffix(".tar")
+        subprocess.run(
+            [
+                "tar",
+                "-cf", str(tmp_tar),
+                "--sort=name",
+                "--mtime=@0",
+                "--owner=0",
+                "--group=0",
+                "--numeric-owner",
+                "-C", str(stagedir),
+                ".",
+            ],
+            check=True,
+        )
+        with tmp_tar.open("rb") as fi, out.open("wb") as fo:
+            cctx = zstd.ZstdCompressor()
+            with cctx.stream_writer(fo) as compressor:
+                shutil.copyfileobj(fi, compressor)
+        tmp_tar.unlink(missing_ok=True)
+    else:
+        subprocess.run(
+            [
+                "tar",
+                "--zstd",
+                "-cf", str(out),
+                "--sort=name",
+                "--mtime=@0",
+                "--owner=0",
+                "--group=0",
+                "--numeric-owner",
+                "-C", str(stagedir),
+                ".",
+            ],
+            check=True,
+        )
 
     # Sign package if signing key exists
     if sign and SIGN_KEY.exists():
@@ -1131,9 +1146,11 @@ def transaction(conn: sqlite3.Connection, action: str, dry: bool):
         if not dry: conn.execute("ROLLBACK")
         die(f"[tx] rollback {action}: {e}")
 
-def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool, force: bool = False):
+def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool, force: bool = False, explicit: Optional[Set[str]] = None):
     global PROTECTED
     PROTECTED = load_protected()
+
+    explicit = set(explicit or [])
 
     to_fetch = [p for p in pkgs if not (p.name in PROTECTED and not force)]
     downloads = fetch_all(to_fetch)
@@ -1148,13 +1165,13 @@ def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool, force: 
             tmp = Path(f"/tmp/lpm-dep-{p.name}.lpmbuild")
             fetch_lpmbuild(p.name, tmp)
             built, _, _ = run_lpmbuild(tmp, prompt_install=False, is_dep=True, build_deps=True)
-            meta = installpkg(built, root=root, dry_run=dry, verify=verify, force=force)
+            meta = installpkg(built, root=root, dry_run=dry, verify=verify, force=force, explicit=(p.name in explicit))
         else:
             if res is None:
                 blob, sig = fetch_blob(p)
             else:
                 blob, sig = res
-            meta = installpkg(blob, root=root, dry_run=dry, verify=verify, force=force)
+            meta = installpkg(blob, root=root, dry_run=dry, verify=verify, force=force, explicit=(p.name in explicit))
 
         if not dry and meta and getattr(meta, "kernel", False):
             run_hook(
@@ -1258,7 +1275,7 @@ def do_upgrade(targets: List[str], root: Path, dry: bool, verify: bool, force: b
         warn("SAT solver failed to find upgrade set, falling back to GitLab fetch...")
         for dep in targets:
             built = build_from_gitlab(dep)
-            meta = installpkg(built, root=root, dry_run=dry, verify=verify, force=force)
+            meta = installpkg(built, root=root, dry_run=dry, verify=verify, force=force, explicit=True)
             if not dry and meta and getattr(meta, "kernel", False):
                 run_hook(
                     "kernel_install",
@@ -1291,7 +1308,40 @@ def do_upgrade(targets: List[str], root: Path, dry: bool, verify: bool, force: b
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
             list(ex.map(svc_worker, upgrades))
 
-    do_install(upgrades, root, dry, verify, force=force)
+    explicit_names = {n for n, m in u.installed.items() if m.get("explicit")}
+    explicit_names |= set(targets)
+
+    do_install(upgrades, root, dry, verify, force=force, explicit=explicit_names)
+
+
+def autoremove(root: Path, dry: bool) -> None:
+    conn = db()
+    installed = db_installed(conn)
+    conn.close()
+
+    needed: Set[str] = {n for n, m in installed.items() if m.get("explicit")}
+    changed = True
+    while changed:
+        changed = False
+        for n in list(needed):
+            meta = installed.get(n)
+            if not meta:
+                continue
+            for req in meta.get("requires", []):
+                req_name = req.split()[0]
+                for mname, mmeta in installed.items():
+                    if mname in needed:
+                        continue
+                    if req_name == mname or req_name in mmeta.get("provides", []):
+                        if mname not in needed:
+                            needed.add(mname)
+                            changed = True
+
+    to_remove = [n for n in installed.keys() if n not in needed]
+    if not to_remove:
+        ok("Nothing to autoremove.")
+        return
+    do_remove(sorted(to_remove), root, dry, force=False)
 
 
 # =========================== Repo index generation =============================
@@ -1486,7 +1536,7 @@ def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str]
     if not resp:
         resp = default
     if resp in {"y", "yes"}:
-        installpkg(blob)
+        installpkg(blob, explicit=(kind != "dependency"))
 
 
 def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: bool = True, prompt_default: Optional[str] = None, is_dep: bool = False, build_deps: bool = True) -> Tuple[Path, float, int]:
@@ -1743,7 +1793,7 @@ def cmd_install(a):
         warn(f"snapshot failed: {e}")
 
     try:
-        do_install(plan, root, a.dry_run, verify=(not noverify), force=a.force)
+        do_install(plan, root, a.dry_run, verify=(not noverify), force=a.force, explicit=set(a.names))
     except SystemExit:
         if snapshot_id is not None:
             warn(f"Snapshot {snapshot_id} created at {snapshot_archive} for rollback.")
@@ -1775,7 +1825,7 @@ def cmd_bootstrap(a):
         log(f"  - {p.name}-{p.version}")
 
     try:
-        do_install(plan, root, dry=False, verify=(not a.no_verify), force=False)
+        do_install(plan, root, dry=False, verify=(not a.no_verify), force=False, explicit=set(pkgs))
     except SystemExit:
         raise
     except Exception as e:
@@ -1816,6 +1866,11 @@ def cmd_remove(a):
             warn(f"Snapshot {snapshot_id} created at {snapshot_archive} for rollback.")
         raise
 
+
+def cmd_autoremove(a):
+    root = Path(a.root or DEFAULT_ROOT)
+    autoremove(root, a.dry_run)
+
 def cmd_upgrade(a):
     root = Path(a.root or DEFAULT_ROOT)
     noverify = a.no_verify or os.environ.get("LPM_NO_VERIFY") == "1"
@@ -1836,7 +1891,7 @@ def cmd_upgrade(a):
         warn("SAT solver failed to find upgrade set, falling back to GitLab fetch...")
         for dep in a.names:
             built = build_from_gitlab(dep)
-            installpkg(built, root=root, dry_run=dry, verify=(not noverify), force=force)
+            installpkg(built, root=root, dry_run=dry, verify=(not noverify), force=force, explicit=True)
         return
 
     upgrades: List[PkgMeta] = []
@@ -1887,8 +1942,10 @@ def cmd_upgrade(a):
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
             list(ex.map(svc_worker, upgrades))
 
+    explicit_names = {n for n, m in u.installed.items() if m.get("explicit")}
+    explicit_names |= set(a.names)
     try:
-        do_install(upgrades, root, dry, verify=(not noverify), force=force)
+        do_install(upgrades, root, dry, verify=(not noverify), force=force, explicit=explicit_names)
     except SystemExit:
         if snapshot_id is not None:
             warn(f"Snapshot {snapshot_id} created at {snapshot_archive} for rollback.")
@@ -2087,6 +2144,7 @@ def cmd_fileinstall(a):
             dry_run=a.dry_run,
             verify=a.verify,
             force=a.force,
+            explicit=True,
         )
 
     max_workers = min(8, len(files))
@@ -2100,7 +2158,7 @@ def cmd_fileinstall(a):
         ):
             fut.result()
 
-def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = False, verify: bool = True, force: bool = False):
+def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = False, verify: bool = True, force: bool = False, explicit: bool = False):
     """
     Production-grade .zst package installer with protected package + dep resolution.
     """
@@ -2149,7 +2207,7 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
                 plan = solve(meta.requires, u)
             except ResolutionError as e:
                 raise ResolutionError(f"{meta.name}: {e}")
-            do_install(plan, root, dry_run, verify, force)
+            do_install(plan, root, dry_run, verify, force, explicit=set())
             ok(f"Installed meta-package {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
             return meta
 
@@ -2225,7 +2283,7 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
 
             # Update DB
             conn.execute(
-                "REPLACE INTO installed(name,version,release,arch,provides,symbols,manifest,install_time) VALUES(?,?,?,?,?,?,?,?)",
+                "REPLACE INTO installed(name,version,release,arch,provides,symbols,requires,manifest,explicit,install_time) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (
                     meta.name,
                     meta.version,
@@ -2233,7 +2291,9 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
                     meta.arch,
                     json.dumps([meta.name] + meta.provides),
                     json.dumps(meta.symbols),
+                    json.dumps(meta.requires),
                     json.dumps(mani),
+                    1 if explicit else 0,
                     int(time.time()),
                 ),
             )
@@ -2331,6 +2391,11 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--force", action="store_true", help="override protected package list")
     sp.set_defaults(func=cmd_remove)
+
+    sp=sub.add_parser("autoremove", help="Remove unneeded packages")
+    sp.add_argument("--root")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.set_defaults(func=cmd_autoremove)
 
     sp=sub.add_parser("upgrade", help="Upgrade packages (targets or all)")
     sp.add_argument("names", nargs="*")

@@ -18,7 +18,7 @@ def test_desktop_file_triggers_update_desktop_database(tmp_path):
 
     assert (
         script
-        == 'update-desktop-database "${LPM_ROOT:-/}/usr/share/applications"'
+        == 'command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "${LPM_ROOT:-/}/usr/share/applications" || true'
     )
 
 
@@ -32,7 +32,7 @@ def test_icon_theme_triggers_icon_cache_update(tmp_path):
 
     assert (
         script
-        == 'gtk-update-icon-cache "${LPM_ROOT:-/}/usr/share/icons/hicolor"'
+        == 'command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache "${LPM_ROOT:-/}/usr/share/icons/hicolor" || true'
     )
 
 
@@ -44,5 +44,5 @@ def test_shared_library_triggers_ldconfig(tmp_path):
 
     script = generate_install_script(stage)
 
-    assert script == 'if [ "${LPM_ROOT:-/}" = "/" ]; then ldconfig; fi'
+    assert script == '[ "${LPM_ROOT:-/}" = "/" ] && command -v ldconfig >/dev/null 2>&1 && ldconfig || true'
 
