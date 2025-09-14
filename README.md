@@ -107,6 +107,10 @@ configured optimisation level for `CFLAGS` and `CXXFLAGS` while `LDFLAGS` uses
 only the optimisation level. Any `CFLAGS` defined in a `.lpmbuild` script are
 appended to the defaults.
 
+CPU detection can be overridden by specifying `CPU_TYPE` in `lpm.conf`. Set it
+to one of `x86_64v1`, `x86_64v2`, `x86_64v3` or `x86_64v4` (underscores or
+dashes are accepted) to force the corresponding `-march`/`-mtune` values.
+
 For Intel processors the detection now inspects the `model` and `flags` fields
 from `/proc/cpuinfo`, mapping common family 6 CPUs to GCC's
 `x86-64` micro-architecture levels such as `x86-64-v2`, `x86-64-v3` and

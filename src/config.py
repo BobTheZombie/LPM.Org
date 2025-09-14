@@ -135,7 +135,24 @@ def _detect_cpu() -> Tuple[str, str, str, str]:
     return march, mtune, vendor, family
 
 
-MARCH, MTUNE, CPU_VENDOR, CPU_FAMILY = _detect_cpu()
+def _normalize_cpu_type(val: str) -> str | None:
+    """Return canonical dash form for supported x86-64 levels."""
+    normalized = val.lower().replace("_", "").replace("-", "")
+    if normalized in {"x8664v1", "x8664v2", "x8664v3", "x8664v4"}:
+        return f"x86-64-v{normalized[-1]}"
+    return None
+
+
+def _init_cpu_settings() -> Tuple[str, str, str, str]:
+    cpu_type = CONF.get("CPU_TYPE")
+    if cpu_type:
+        norm = _normalize_cpu_type(cpu_type)
+        if norm:
+            return norm, norm, "", ""
+    return _detect_cpu()
+
+
+MARCH, MTUNE, CPU_VENDOR, CPU_FAMILY = _init_cpu_settings()
 
 
 # ================ Init System Detection ===============================================

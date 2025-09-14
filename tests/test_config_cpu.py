@@ -2,6 +2,7 @@ import builtins
 import io
 import os
 import sys
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import src.config as config
@@ -67,3 +68,19 @@ def test_detect_intel_generic(monkeypatch):
     mock_cpuinfo(monkeypatch, CPUINFO_GENERIC)
     march, mtune, vendor, family = config._detect_cpu()
     assert march == mtune == "generic"
+
+
+@pytest.mark.parametrize("decl, expected", [
+    ("x86_64v2", "x86-64-v2"),
+    ("x86-64-v3", "x86-64-v3"),
+])
+def test_cpu_type_override(monkeypatch, decl, expected):
+    def fail_detect() -> tuple[str, str, str, str]:  # pragma: no cover - should not run
+        raise AssertionError("_detect_cpu should not be called")
+
+    monkeypatch.setattr(config, "_detect_cpu", fail_detect)
+    config.CONF["CPU_TYPE"] = decl
+    config.MARCH = config.MTUNE = config.CPU_VENDOR = config.CPU_FAMILY = ""
+    config.MARCH, config.MTUNE, config.CPU_VENDOR, config.CPU_FAMILY = config._init_cpu_settings()
+    assert config.MARCH == config.MTUNE == expected
+    assert config.CPU_VENDOR == config.CPU_FAMILY == ""
