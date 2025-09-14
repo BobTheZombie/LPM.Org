@@ -78,9 +78,18 @@ def _detect_cpu() -> Tuple[str, str, str, str]:
     try:
         with open("/proc/cpuinfo", "r", encoding="utf-8") as f:
             for line in f:
-                if not vendor and line.startswith("vendor_id"):
+                if not vendor and (
+                    line.startswith("vendor_id")
+                    or line.startswith("CPU implementer")
+                    or line.startswith("uarch")
+                    or line.lower().startswith("vendor")
+                ):
                     vendor = line.split(":", 1)[1].strip()
-                elif not family and line.startswith("cpu family"):
+                elif not family and (
+                    line.startswith("cpu family")
+                    or line.startswith("CPU architecture")
+                    or line.startswith("isa")
+                ):
                     family = line.split(":", 1)[1].strip()
                 if vendor and family:
                     break
@@ -103,6 +112,17 @@ def _detect_cpu() -> Tuple[str, str, str, str]:
     elif vendor == "GenuineIntel":
         if fam and fam >= 6:
             march = mtune = "x86-64-v3"
+    elif vendor in ("0x41", "ARM"):
+        if fam and fam >= 9:
+            march = mtune = "armv9-a"
+        elif fam and fam >= 8:
+            march = mtune = "armv8-a"
+        elif fam and fam >= 7:
+            march = mtune = "armv7-a"
+    elif family.startswith("rv64"):
+        march = mtune = "rv64gc"
+    elif family.startswith("rv32"):
+        march = mtune = "rv32gc"
 
     return march, mtune, vendor, family
 
