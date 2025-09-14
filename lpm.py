@@ -2109,6 +2109,17 @@ def cmd_genindex(a):
     repo_dir = Path(a.repo_dir)
     gen_index(repo_dir, a.base_url, arch_filter=a.arch)
 
+def cmd_clean_cache(_):
+    if CACHE_DIR.exists():
+        for p in CACHE_DIR.iterdir():
+            if p.is_dir():
+                shutil.rmtree(p)
+            else:
+                p.unlink()
+        ok("Removed cached blobs")
+    else:
+        log("No cache directory")
+
 def cmd_fileremove(a):
     root = Path(a.root or DEFAULT_ROOT)
 
@@ -2374,6 +2385,8 @@ def build_parser()->argparse.ArgumentParser:
     sp=sub.add_parser("repolist", help="Show configured repositories"); sp.set_defaults(func=cmd_repolist)
     sp=sub.add_parser("repoadd", help="Add a repository"); sp.add_argument("name"); sp.add_argument("url");                   sp.add_argument("--priority",type=int,default=10); sp.set_defaults(func=cmd_repoadd)
     sp=sub.add_parser("repodel", help="Remove a repository"); sp.add_argument("name"); sp.set_defaults(func=cmd_repodel)
+
+    sp=sub.add_parser("clean", help="Remove cached blobs"); sp.set_defaults(func=cmd_clean_cache)
 
     sp=sub.add_parser("search", help="Search packages"); sp.add_argument("patterns", nargs="*"); sp.set_defaults(func=cmd_search)
     sp=sub.add_parser("info", help="Show package info"); sp.add_argument("names", nargs="+"); sp.set_defaults(func=cmd_info)
