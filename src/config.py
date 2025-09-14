@@ -74,7 +74,8 @@ if INSTALL_PROMPT_DEFAULT not in ("y", "n"):
 
 def _detect_cpu() -> Tuple[str, str, str, str]:
     """Return (march, mtune, vendor, family)."""
-    vendor = family = ""  # defaults
+    vendor = family = model = ""
+    flags: set[str] = set()
     try:
         with open("/proc/cpuinfo", "r", encoding="utf-8") as f:
             for line in f:
@@ -82,7 +83,11 @@ def _detect_cpu() -> Tuple[str, str, str, str]:
                     vendor = line.split(":", 1)[1].strip()
                 elif not family and line.startswith("cpu family"):
                     family = line.split(":", 1)[1].strip()
-                if vendor and family:
+                elif not model and line.startswith("model") and line.split(":", 1)[0].strip() == "model":
+                    model = line.split(":", 1)[1].strip()
+                elif not flags and line.startswith("flags"):
+                    flags = set(line.split(":", 1)[1].strip().split())
+                if vendor and family and model and flags:
                     break
     except Exception:
         pass
@@ -90,8 +95,9 @@ def _detect_cpu() -> Tuple[str, str, str, str]:
     march = mtune = "generic"
     try:
         fam = int(family)
+        mod = int(model)
     except Exception:
-        fam = None
+        fam = mod = None
 
     if vendor == "AuthenticAMD":
         if fam and fam >= 25:
@@ -101,8 +107,30 @@ def _detect_cpu() -> Tuple[str, str, str, str]:
         elif fam and fam >= 23:
             march = mtune = "znver2"
     elif vendor == "GenuineIntel":
-        if fam and fam >= 6:
+        intel_fam6_models = {
+            0x55: "x86-64-v4", 0x6A: "x86-64-v4", 0x6C: "x86-64-v4",
+            0x7D: "x86-64-v4", 0x7E: "x86-64-v4", 0x8F: "x86-64-v4",
+            0x9D: "x86-64-v4",
+            0x3C: "x86-64-v3", 0x3F: "x86-64-v3", 0x45: "x86-64-v3",
+            0x46: "x86-64-v3", 0x47: "x86-64-v3", 0x4E: "x86-64-v3",
+            0x5E: "x86-64-v3", 0x8E: "x86-64-v3", 0x9E: "x86-64-v3",
+            0xA5: "x86-64-v3", 0xA6: "x86-64-v3",
+            0x2A: "x86-64-v2", 0x2D: "x86-64-v2", 0x3A: "x86-64-v2",
+            0x3E: "x86-64-v2",
+        }
+        intel_features_v4 = {
+            "avx512f", "avx512cd", "avx512bw", "avx512dq", "avx512vl"
+        }
+        intel_features_v3 = {"avx2", "bmi1", "bmi2", "fma"}
+        intel_features_v2 = {"sse4_2", "popcnt", "cx16"}
+        if fam == 6 and mod in intel_fam6_models:
+            march = mtune = intel_fam6_models[mod]
+        elif intel_features_v4.issubset(flags):
+            march = mtune = "x86-64-v4"
+        elif intel_features_v3.issubset(flags):
             march = mtune = "x86-64-v3"
+        elif intel_features_v2.issubset(flags):
+            march = mtune = "x86-64-v2"
 
     return march, mtune, vendor, family
 
