@@ -42,6 +42,26 @@ arguments and optional flags.
 - `lpm list` – list installed packages.
 - `lpm verify [--root PATH]` – verify that installed files exist.
 
+When building a package, LPM automatically generates a post-install script if
+the `.lpmbuild` script does not provide one. The script inspects the package
+contents and runs common maintenance commands based on what it finds:
+
+- A desktop entry such as
+  ```
+  usr/share/applications/foo.desktop
+  ```
+  triggers `update-desktop-database "$LPM_ROOT/usr/share/applications"`.
+- An icon theme containing
+  ```
+  usr/share/icons/hicolor/index.theme
+  ```
+  triggers `gtk-update-icon-cache "$LPM_ROOT/usr/share/icons/hicolor"`.
+- Shared libraries like
+  ```
+  usr/lib/libfoo.so
+  ```
+  trigger `ldconfig` when installing into the real root (`/`).
+
 ### Snapshot management
 
 - `lpm snapshots [--delete ID ...] [--prune]` – list or manage filesystem
