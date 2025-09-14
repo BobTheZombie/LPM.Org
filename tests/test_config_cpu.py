@@ -2,6 +2,7 @@ import builtins
 import io
 import os
 import sys
+import logging
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -84,3 +85,23 @@ def test_cpu_type_override(monkeypatch, decl, expected):
     config.MARCH, config.MTUNE, config.CPU_VENDOR, config.CPU_FAMILY = config._init_cpu_settings()
     assert config.MARCH == config.MTUNE == expected
     assert config.CPU_VENDOR == config.CPU_FAMILY == ""
+    config.CONF.pop("CPU_TYPE", None)
+
+
+@pytest.mark.parametrize("decl", ["x86-64-v5", "gibberish"])
+def test_cpu_type_invalid_falls_back(monkeypatch, caplog, decl):
+    expected = ("x86-64-v2", "x86-64-v2", "Vendor", "6")
+
+    def fake_detect() -> tuple[str, str, str, str]:
+        return expected
+
+    monkeypatch.setattr(config, "_detect_cpu", fake_detect)
+    config.CONF["CPU_TYPE"] = decl
+    config.MARCH = config.MTUNE = config.CPU_VENDOR = config.CPU_FAMILY = ""
+
+    with caplog.at_level(logging.WARNING):
+        config.MARCH, config.MTUNE, config.CPU_VENDOR, config.CPU_FAMILY = config._init_cpu_settings()
+
+    assert (config.MARCH, config.MTUNE, config.CPU_VENDOR, config.CPU_FAMILY) == expected
+    assert "Unrecognized CPU_TYPE" in caplog.text
+    config.CONF.pop("CPU_TYPE", None)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import logging
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -149,6 +150,7 @@ def _init_cpu_settings() -> Tuple[str, str, str, str]:
         norm = _normalize_cpu_type(cpu_type)
         if norm:
             return norm, norm, "", ""
+        logging.warning("Unrecognized CPU_TYPE %r; falling back to auto-detected CPU settings", cpu_type)
     return _detect_cpu()
 
 
