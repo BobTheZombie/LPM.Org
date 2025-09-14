@@ -109,13 +109,22 @@ appended to the defaults.
 
 CPU detection can be overridden by specifying `CPU_TYPE` in `lpm.conf`. Set it
 to one of `x86_64v1`, `x86_64v2`, `x86_64v3` or `x86_64v4` (underscores or
-dashes are accepted) to force the corresponding `-march`/`-mtune` values.
+dashes are accepted) to force the corresponding `-march`/`-mtune` values and
+build for a generic target regardless of the host CPU. A per-package override
+is also available:
+
+```
+!Override @CPU_TYPE="x86_64v2"
+```
+
+`lpm` validates this setting; an unrecognized `CPU_TYPE` triggers a warning and
+falls back to auto-detected CPU settings. When `CPU_TYPE` is omitted and the CPU
+cannot be matched to a known level, the generic target is used.
 
 For Intel processors the detection now inspects the `model` and `flags` fields
 from `/proc/cpuinfo`, mapping common family 6 CPUs to GCC's
 `x86-64` micro-architecture levels such as `x86-64-v2`, `x86-64-v3` and
-`x86-64-v4`.  If a CPU cannot be matched to a known level the generic target is
-used.
+`x86-64-v4`.
 
 ## Snapshots
 
