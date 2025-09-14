@@ -107,6 +107,12 @@ configured optimisation level for `CFLAGS` and `CXXFLAGS` while `LDFLAGS` uses
 only the optimisation level. Any `CFLAGS` defined in a `.lpmbuild` script are
 appended to the defaults.
 
+For Intel processors the detection now inspects the `model` and `flags` fields
+from `/proc/cpuinfo`, mapping common family 6 CPUs to GCC's
+`x86-64` micro-architecture levels such as `x86-64-v2`, `x86-64-v3` and
+`x86-64-v4`.  If a CPU cannot be matched to a known level the generic target is
+used.
+
 ## Snapshots
 
 LPM stores filesystem snapshots in `/var/lib/lpm/snapshots`. Configure
