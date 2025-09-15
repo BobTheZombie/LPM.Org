@@ -71,21 +71,28 @@ def test_detect_intel_generic(monkeypatch):
     assert march == mtune == "generic"
 
 
-@pytest.mark.parametrize("decl, expected", [
-    ("x86_64v2", "x86-64-v2"),
-    ("x86-64-v3", "x86-64-v3"),
-])
+@pytest.mark.parametrize(
+    "decl, expected",
+    [
+        ("x86_64v1", "x86-64-v1"),
+        ("x86_64v2", "x86-64-v2"),
+        ("x86-64-v3", "x86-64-v3"),
+        ("x86-64-v4", "x86-64-v4"),
+    ],
+)
 def test_cpu_type_override(monkeypatch, decl, expected):
     def fail_detect() -> tuple[str, str, str, str]:  # pragma: no cover - should not run
         raise AssertionError("_detect_cpu should not be called")
 
     monkeypatch.setattr(config, "_detect_cpu", fail_detect)
-    config.CONF["CPU_TYPE"] = decl
-    config.MARCH = config.MTUNE = config.CPU_VENDOR = config.CPU_FAMILY = ""
+    monkeypatch.setitem(config.CONF, "CPU_TYPE", decl)
+    monkeypatch.setattr(config, "MARCH", "")
+    monkeypatch.setattr(config, "MTUNE", "")
+    monkeypatch.setattr(config, "CPU_VENDOR", "")
+    monkeypatch.setattr(config, "CPU_FAMILY", "")
     config.MARCH, config.MTUNE, config.CPU_VENDOR, config.CPU_FAMILY = config._init_cpu_settings()
     assert config.MARCH == config.MTUNE == expected
     assert config.CPU_VENDOR == config.CPU_FAMILY == ""
-    config.CONF.pop("CPU_TYPE", None)
 
 
 @pytest.mark.parametrize("decl", ["x86-64-v5", "gibberish"])
@@ -96,12 +103,14 @@ def test_cpu_type_invalid_falls_back(monkeypatch, caplog, decl):
         return expected
 
     monkeypatch.setattr(config, "_detect_cpu", fake_detect)
-    config.CONF["CPU_TYPE"] = decl
-    config.MARCH = config.MTUNE = config.CPU_VENDOR = config.CPU_FAMILY = ""
+    monkeypatch.setitem(config.CONF, "CPU_TYPE", decl)
+    monkeypatch.setattr(config, "MARCH", "")
+    monkeypatch.setattr(config, "MTUNE", "")
+    monkeypatch.setattr(config, "CPU_VENDOR", "")
+    monkeypatch.setattr(config, "CPU_FAMILY", "")
 
     with caplog.at_level(logging.WARNING):
         config.MARCH, config.MTUNE, config.CPU_VENDOR, config.CPU_FAMILY = config._init_cpu_settings()
 
     assert (config.MARCH, config.MTUNE, config.CPU_VENDOR, config.CPU_FAMILY) == expected
     assert "Unrecognized CPU_TYPE" in caplog.text
-    config.CONF.pop("CPU_TYPE", None)
