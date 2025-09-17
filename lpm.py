@@ -26,6 +26,7 @@ import zstandard as zstd
 
 from src.config import (
     ARCH,
+    ALLOW_LPMBUILD_FALLBACK,
     CACHE_DIR,
     CONF,
     CPU_FAMILY,
@@ -1146,7 +1147,15 @@ def transaction(conn: sqlite3.Connection, action: str, dry: bool):
         if not dry: conn.execute("ROLLBACK")
         die(f"[tx] rollback {action}: {e}")
 
-def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool, force: bool = False, explicit: Optional[Set[str]] = None):
+def do_install(
+    pkgs: List[PkgMeta],
+    root: Path,
+    dry: bool,
+    verify: bool,
+    force: bool = False,
+    explicit: Optional[Set[str]] = None,
+    allow_fallback: bool = ALLOW_LPMBUILD_FALLBACK,
+):
     global PROTECTED
     PROTECTED = load_protected()
 
@@ -1161,17 +1170,38 @@ def do_install(pkgs: List[PkgMeta], root: Path, dry: bool, verify: bool, force: 
             return
         res = downloads.get(p.name)
         if isinstance(res, Exception):
+            if not allow_fallback:
+                die(
+                    f"Failed to fetch {p.name}: {res}. GitLab fallback is disabled. "
+                    "Re-run with --allow-fallback or set ALLOW_LPMBUILD_FALLBACK=1 in lpm.conf"
+                )
             warn(f"Could not fetch {p.name} from repos ({res}), trying GitLab fallback...")
             tmp = Path(f"/tmp/lpm-dep-{p.name}.lpmbuild")
             fetch_lpmbuild(p.name, tmp)
             built, _, _ = run_lpmbuild(tmp, prompt_install=False, is_dep=True, build_deps=True)
-            meta = installpkg(built, root=root, dry_run=dry, verify=verify, force=force, explicit=(p.name in explicit))
+            meta = installpkg(
+                built,
+                root=root,
+                dry_run=dry,
+                verify=verify,
+                force=force,
+                explicit=(p.name in explicit),
+                allow_fallback=allow_fallback,
+            )
         else:
             if res is None:
                 blob, sig = fetch_blob(p)
             else:
                 blob, sig = res
-            meta = installpkg(blob, root=root, dry_run=dry, verify=verify, force=force, explicit=(p.name in explicit))
+            meta = installpkg(
+                blob,
+                root=root,
+                dry_run=dry,
+                verify=verify,
+                force=force,
+                explicit=(p.name in explicit),
+                allow_fallback=allow_fallback,
+            )
 
         if not dry and meta and getattr(meta, "kernel", False):
             run_hook(
@@ -1768,6 +1798,7 @@ def cmd_install(a):
     if a.dry_run:
         return
     noverify = a.no_verify or os.environ.get("LPM_NO_VERIFY") == "1"
+    allow_fallback = ALLOW_LPMBUILD_FALLBACK if a.allow_fallback is None else a.allow_fallback
 
     snapshot_id = None
     snapshot_archive = None
@@ -1793,7 +1824,15 @@ def cmd_install(a):
         warn(f"snapshot failed: {e}")
 
     try:
-        do_install(plan, root, a.dry_run, verify=(not noverify), force=a.force, explicit=set(a.names))
+        do_install(
+            plan,
+            root,
+            a.dry_run,
+            verify=(not noverify),
+            force=a.force,
+            explicit=set(a.names),
+            allow_fallback=allow_fallback,
+        )
     except SystemExit:
         if snapshot_id is not None:
             warn(f"Snapshot {snapshot_id} created at {snapshot_archive} for rollback.")
@@ -1876,6 +1915,7 @@ def cmd_upgrade(a):
     noverify = a.no_verify or os.environ.get("LPM_NO_VERIFY") == "1"
     dry = a.dry_run
     force = a.force
+    allow_fallback = ALLOW_LPMBUILD_FALLBACK if a.allow_fallback is None else a.allow_fallback
 
     u = build_universe()
     goals: List[str] = []
@@ -1888,10 +1928,23 @@ def cmd_upgrade(a):
     try:
         plan = solve(goals, u)
     except ResolutionError:
+        if not allow_fallback:
+            die(
+                "SAT solver could not find an upgrade set and GitLab fallback is disabled. "
+                "Re-run with --allow-fallback or enable ALLOW_LPMBUILD_FALLBACK in lpm.conf"
+            )
         warn("SAT solver failed to find upgrade set, falling back to GitLab fetch...")
         for dep in a.names:
             built = build_from_gitlab(dep)
-            installpkg(built, root=root, dry_run=dry, verify=(not noverify), force=force, explicit=True)
+            installpkg(
+                built,
+                root=root,
+                dry_run=dry,
+                verify=(not noverify),
+                force=force,
+                explicit=True,
+                allow_fallback=allow_fallback,
+            )
         return
 
     upgrades: List[PkgMeta] = []
@@ -1945,7 +1998,15 @@ def cmd_upgrade(a):
     explicit_names = {n for n, m in u.installed.items() if m.get("explicit")}
     explicit_names |= set(a.names)
     try:
-        do_install(upgrades, root, dry, verify=(not noverify), force=force, explicit=explicit_names)
+        do_install(
+            upgrades,
+            root,
+            dry,
+            verify=(not noverify),
+            force=force,
+            explicit=explicit_names,
+            allow_fallback=allow_fallback,
+        )
     except SystemExit:
         if snapshot_id is not None:
             warn(f"Snapshot {snapshot_id} created at {snapshot_archive} for rollback.")
@@ -2181,7 +2242,15 @@ def cmd_fileinstall(a):
         ):
             fut.result()
 
-def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = False, verify: bool = True, force: bool = False, explicit: bool = False):
+def installpkg(
+    file: Path,
+    root: Path = Path(DEFAULT_ROOT),
+    dry_run: bool = False,
+    verify: bool = True,
+    force: bool = False,
+    explicit: bool = False,
+    allow_fallback: bool = ALLOW_LPMBUILD_FALLBACK,
+):
     """
     Production-grade .zst package installer with protected package + dep resolution.
     """
@@ -2230,7 +2299,7 @@ def installpkg(file: Path, root: Path = Path(DEFAULT_ROOT), dry_run: bool = Fals
                 plan = solve(meta.requires, u)
             except ResolutionError as e:
                 raise ResolutionError(f"{meta.name}: {e}")
-            do_install(plan, root, dry_run, verify, force, explicit=set())
+            do_install(plan, root, dry_run, verify, force, explicit=set(), allow_fallback=allow_fallback)
             ok(f"Installed meta-package {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
             return meta
 
@@ -2408,7 +2477,19 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--root")
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--no-verify", action="store_true", help="skip signature verification (DANGEROUS)")
-    sp.set_defaults(func=cmd_install)
+    sp.add_argument(
+        "--allow-fallback",
+        dest="allow_fallback",
+        action="store_true",
+        help="enable GitLab .lpmbuild fallback when repository fetches fail",
+    )
+    sp.add_argument(
+        "--no-fallback",
+        dest="allow_fallback",
+        action="store_false",
+        help="disable GitLab .lpmbuild fallback (overrides configuration)",
+    )
+    sp.set_defaults(func=cmd_install, allow_fallback=None)
 
     sp=sub.add_parser("remove", help="Remove packages")
     sp.add_argument("names", nargs="+")
@@ -2427,8 +2508,20 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--root")
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--no-verify", action="store_true", help="skip signature verification (DANGEROUS)")
+    sp.add_argument(
+        "--allow-fallback",
+        dest="allow_fallback",
+        action="store_true",
+        help="enable GitLab .lpmbuild fallback when the resolver cannot find packages",
+    )
+    sp.add_argument(
+        "--no-fallback",
+        dest="allow_fallback",
+        action="store_false",
+        help="disable GitLab .lpmbuild fallback (overrides configuration)",
+    )
     sp.add_argument("--force", action="store_true", help="override protected package list for install/upgrade")
-    sp.set_defaults(func=cmd_upgrade)
+    sp.set_defaults(func=cmd_upgrade, allow_fallback=None)
 
     sp=sub.add_parser("list", help="List installed packages"); sp.set_defaults(func=cmd_list_installed)
     sp=sub.add_parser("files", help="List files installed by package"); sp.add_argument("name"); sp.set_defaults(func=cmd_files)

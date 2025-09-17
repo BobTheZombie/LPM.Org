@@ -50,6 +50,13 @@ def load_conf(path: Path) -> Dict[str, str]:
 CONF = load_conf(CONF_FILE)
 ARCH = CONF.get("ARCH", os.uname().machine if hasattr(os, "uname") else "x86_64")
 
+
+def _get_bool(key: str, default: bool) -> bool:
+    val = CONF.get(key)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "on"}
+
 # --- Optimization level (-O2 etc.) ---
 OPT_LEVEL = CONF.get("OPT_LEVEL", "-O2")
 if OPT_LEVEL not in ("-Os", "-O2", "-O3", "-Ofast"):
@@ -71,6 +78,9 @@ except ValueError:
 INSTALL_PROMPT_DEFAULT = CONF.get("INSTALL_PROMPT_DEFAULT", "n").lower()
 if INSTALL_PROMPT_DEFAULT not in ("y", "n"):
     INSTALL_PROMPT_DEFAULT = "n"
+
+# --- Hardened install behaviour ---
+ALLOW_LPMBUILD_FALLBACK = _get_bool("ALLOW_LPMBUILD_FALLBACK", False)
 
 
 def _detect_cpu() -> Tuple[str, str, str, str]:
@@ -192,6 +202,7 @@ __all__ = [
     "MAX_SNAPSHOTS",
     "MAX_LEARNT_CLAUSES",
     "INSTALL_PROMPT_DEFAULT",
+    "ALLOW_LPMBUILD_FALLBACK",
     "MARCH",
     "MTUNE",
     "CPU_VENDOR",
