@@ -36,9 +36,9 @@ arguments and optional flags.
 
 ### Package installation and removal
 
-- `lpm install NAME... [--root PATH] [--dry-run] [--no-verify]`
+- `lpm install NAME... [--root PATH] [--dry-run] [--no-verify] [--allow-fallback|--no-fallback]`
 - `lpm remove NAME... [--root PATH] [--dry-run] [--force]`
-- `lpm upgrade [NAME ...] [--root PATH] [--dry-run] [--no-verify] [--force]`
+- `lpm upgrade [NAME ...] [--root PATH] [--dry-run] [--no-verify] [--allow-fallback|--no-fallback] [--force]`
 - `lpm list` – list installed packages.
 - `lpm verify [--root PATH]` – verify that installed files exist.
 
@@ -133,6 +133,13 @@ LPM stores filesystem snapshots in `/var/lib/lpm/snapshots`. Configure
 (default `10`). Older entries beyond the limit are automatically pruned after
 creating a new snapshot. You can trigger cleanup manually with
 `lpm snapshots --prune`.
+
+By default hardened installations disable the GitLab fallback that fetches
+`.lpmbuild` scripts when a repository download fails. Set
+`ALLOW_LPMBUILD_FALLBACK=true` in `/etc/lpm/lpm.conf` to re-enable this
+behaviour globally. You can override the setting per invocation using
+`lpm install ... --allow-fallback` or `--no-fallback`, and the same switches on
+`lpm upgrade`.
 
 ## Bootstrap
 
