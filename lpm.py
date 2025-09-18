@@ -739,13 +739,22 @@ def handle_service_files(pkg_name: str, root: Path):
         return
 
     if init == "systemd":
-        service_dir = root / "usr/lib/systemd/system"
-        if service_dir.exists():
+        service_dirs = [
+            root / "usr/lib/systemd/system",
+            root / "lib/systemd/system",
+        ]
+        unique_units = {}
+
+        for service_dir in service_dirs:
+            if not service_dir.exists():
+                continue
             for svc in service_dir.glob("*.service"):
-                if policy == "auto":
-                    subprocess.run(["systemctl", "enable", "--now", svc.name],
-                                   check=False)
-                log(f"[systemd] Detected service: {svc.name}")
+                log(f"[systemd] Detected service ({service_dir}): {svc.name}")
+                unique_units.setdefault(svc.name, svc)
+
+        if policy == "auto":
+            for unit_name in unique_units:
+                subprocess.run(["systemctl", "enable", "--now", unit_name], check=False)
 
     elif init == "sysv":
         initd = root / "etc/init.d"
@@ -795,13 +804,22 @@ def remove_service_files(pkg_name: str, root: Path):
         return
 
     if init == "systemd":
-        service_dir = root / "usr/lib/systemd/system"
-        if service_dir.exists():
+        service_dirs = [
+            root / "usr/lib/systemd/system",
+            root / "lib/systemd/system",
+        ]
+        unique_units = {}
+
+        for service_dir in service_dirs:
+            if not service_dir.exists():
+                continue
             for svc in service_dir.glob("*.service"):
-                if policy == "auto":
-                    subprocess.run(["systemctl", "disable", "--now", svc.name],
-                                   check=False)
-                log(f"[systemd] Disabled service: {svc.name}")
+                log(f"[systemd] Disabled service ({service_dir}): {svc.name}")
+                unique_units.setdefault(svc.name, svc)
+
+        if policy == "auto":
+            for unit_name in unique_units:
+                subprocess.run(["systemctl", "disable", "--now", unit_name], check=False)
 
     elif init == "sysv":
         initd = root / "etc/init.d"
