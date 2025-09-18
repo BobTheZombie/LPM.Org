@@ -25,8 +25,9 @@ def test_handle_service_files_systemd_multiple_dirs(root, monkeypatch, capsys):
     service_usr = root / "usr/lib/systemd/system/foo.service"
     service_lib_foo = root / "lib/systemd/system/foo.service"
     service_lib_bar = root / "lib/systemd/system/bar.service"
+    timer_lib = root / "lib/systemd/system/baz.timer"
 
-    for svc in (service_usr, service_lib_foo, service_lib_bar):
+    for svc in (service_usr, service_lib_foo, service_lib_bar, timer_lib):
         _create_service(svc)
 
     monkeypatch.setitem(lpm.CONF, "INIT_POLICY", "auto")
@@ -48,10 +49,12 @@ def test_handle_service_files_systemd_multiple_dirs(root, monkeypatch, capsys):
     assert "usr/lib/systemd/system" in err
     assert "lib/systemd/system" in err
     assert err.count("bar.service") == 1
+    assert err.count("baz.timer") == 1
 
     assert calls == [
         ["systemctl", "enable", "--now", "foo.service"],
         ["systemctl", "enable", "--now", "bar.service"],
+        ["systemctl", "enable", "--now", "baz.timer"],
     ]
 
 
@@ -59,8 +62,9 @@ def test_remove_service_files_systemd_multiple_dirs(root, monkeypatch, capsys):
     service_usr = root / "usr/lib/systemd/system/foo.service"
     service_lib_foo = root / "lib/systemd/system/foo.service"
     service_lib_bar = root / "lib/systemd/system/bar.service"
+    timer_lib = root / "lib/systemd/system/baz.timer"
 
-    for svc in (service_usr, service_lib_foo, service_lib_bar):
+    for svc in (service_usr, service_lib_foo, service_lib_bar, timer_lib):
         _create_service(svc)
 
     monkeypatch.setitem(lpm.CONF, "INIT_POLICY", "auto")
@@ -82,10 +86,12 @@ def test_remove_service_files_systemd_multiple_dirs(root, monkeypatch, capsys):
     assert "usr/lib/systemd/system" in err
     assert "lib/systemd/system" in err
     assert err.count("bar.service") == 1
+    assert err.count("baz.timer") == 1
 
     assert calls == [
         ["systemctl", "disable", "--now", "foo.service"],
         ["systemctl", "disable", "--now", "bar.service"],
+        ["systemctl", "disable", "--now", "baz.timer"],
     ]
 
 

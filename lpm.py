@@ -747,6 +747,24 @@ def _is_default_root(root: Path) -> bool:
     return any(root_resolved == candidate for candidate in candidates)
 
 
+SYSTEMD_UNIT_GLOB_PATTERNS = [
+    "*.service",
+    "*.socket",
+    "*.timer",
+    "*.path",
+    "*.target",
+    "*.mount",
+    "*.automount",
+    "*.swap",
+    "*.device",
+    "*.slice",
+    "*.scope",
+    "*.network",
+    "*.netdev",
+    "*.link",
+]
+
+
 def handle_service_files(pkg_name: str, root: Path):
     """
     Detect service files from installed package and register them
@@ -769,9 +787,12 @@ def handle_service_files(pkg_name: str, root: Path):
         for service_dir in service_dirs:
             if not service_dir.exists():
                 continue
-            for svc in service_dir.glob("*.service"):
-                log(f"[systemd] Detected service ({service_dir}): {svc.name}")
-                unique_units.setdefault(svc.name, svc)
+            for pattern in SYSTEMD_UNIT_GLOB_PATTERNS:
+                for svc in service_dir.glob(pattern):
+                    if not svc.is_file():
+                        continue
+                    log(f"[systemd] Detected unit ({service_dir}): {svc.name}")
+                    unique_units.setdefault(svc.name, svc)
 
         if policy == "auto":
             if manage_systemd:
@@ -841,9 +862,12 @@ def remove_service_files(pkg_name: str, root: Path):
         for service_dir in service_dirs:
             if not service_dir.exists():
                 continue
-            for svc in service_dir.glob("*.service"):
-                log(f"[systemd] Disabled service ({service_dir}): {svc.name}")
-                unique_units.setdefault(svc.name, svc)
+            for pattern in SYSTEMD_UNIT_GLOB_PATTERNS:
+                for svc in service_dir.glob(pattern):
+                    if not svc.is_file():
+                        continue
+                    log(f"[systemd] Disabled unit ({service_dir}): {svc.name}")
+                    unique_units.setdefault(svc.name, svc)
 
         if policy == "auto":
             if manage_systemd:
