@@ -5,10 +5,11 @@ import os
 import shutil
 import logging
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Mapping, Tuple
 
 # =========================== Config / Defaults ================================
 CONF_FILE = Path("/etc/lpm/lpm.conf")      # KEY=VALUE, e.g. ARCH=znver2
+TEMPLATE_CONF = Path(__file__).resolve().parent.parent / "etc" / "lpm" / "lpm.conf"
 STATE_DIR = Path(os.environ.get("LPM_STATE_DIR", "/var/lib/lpm"))
 DB_PATH   = STATE_DIR / "state.db"
 CACHE_DIR = STATE_DIR / "cache"
@@ -20,6 +21,19 @@ SIGN_KEY  = Path("/etc/lpm/private/lpm_signing.pem")   # OpenSSL PEM private key
 TRUST_DIR = Path("/etc/lpm/trust")                     # dir of *.pem public keys for verification
 DEFAULT_ROOT = "/"
 UMASK = 0o22
+
+# Module-level configuration cache; populated via _apply_conf()
+CONF: Dict[str, str] = {}
+ARCH = ""
+OPT_LEVEL = "-O2"
+MAX_SNAPSHOTS = 10
+MAX_LEARNT_CLAUSES = 200
+INSTALL_PROMPT_DEFAULT = "n"
+ALLOW_LPMBUILD_FALLBACK = False
+MARCH = "generic"
+MTUNE = "generic"
+CPU_VENDOR = ""
+CPU_FAMILY = ""
 
 
 def initialize_state() -> None:
@@ -46,41 +60,11 @@ def load_conf(path: Path) -> Dict[str, str]:
     return out
 
 
-# ================ CONFIG LOADER:: /etc/lpm/lpm.conf ====
-CONF = load_conf(CONF_FILE)
-ARCH = CONF.get("ARCH", os.uname().machine if hasattr(os, "uname") else "x86_64")
-
-
 def _get_bool(key: str, default: bool) -> bool:
     val = CONF.get(key)
     if val is None:
         return default
     return val.strip().lower() in {"1", "true", "yes", "on"}
-
-# --- Optimization level (-O2 etc.) ---
-OPT_LEVEL = CONF.get("OPT_LEVEL", "-O2")
-if OPT_LEVEL not in ("-Os", "-O2", "-O3", "-Ofast"):
-    OPT_LEVEL = "-O2"
-
-# --- Snapshot retention ---
-try:
-    MAX_SNAPSHOTS = max(0, int(CONF.get("MAX_SNAPSHOTS", "10")))
-except ValueError:
-    MAX_SNAPSHOTS = 10
-
-# --- SAT solver learnt clause limit ---
-try:
-    MAX_LEARNT_CLAUSES = max(1, int(CONF.get("MAX_LEARNT_CLAUSES", "200")))
-except ValueError:
-    MAX_LEARNT_CLAUSES = 200
-
-# --- Default response for install prompts ---
-INSTALL_PROMPT_DEFAULT = CONF.get("INSTALL_PROMPT_DEFAULT", "n").lower()
-if INSTALL_PROMPT_DEFAULT not in ("y", "n"):
-    INSTALL_PROMPT_DEFAULT = "n"
-
-# --- Hardened install behaviour ---
-ALLOW_LPMBUILD_FALLBACK = _get_bool("ALLOW_LPMBUILD_FALLBACK", False)
 
 
 def _detect_cpu() -> Tuple[str, str, str, str]:
@@ -164,8 +148,123 @@ def _init_cpu_settings() -> Tuple[str, str, str, str]:
     return _detect_cpu()
 
 
-MARCH, MTUNE, CPU_VENDOR, CPU_FAMILY = _init_cpu_settings()
+def _apply_conf(conf: Mapping[str, str]) -> None:
+    global CONF, ARCH, OPT_LEVEL, MAX_SNAPSHOTS, MAX_LEARNT_CLAUSES
+    global INSTALL_PROMPT_DEFAULT, ALLOW_LPMBUILD_FALLBACK, MARCH, MTUNE
+    global CPU_VENDOR, CPU_FAMILY
 
+    CONF = dict(conf)
+    ARCH = CONF.get("ARCH", os.uname().machine if hasattr(os, "uname") else "x86_64")
+
+    OPT_LEVEL = CONF.get("OPT_LEVEL", "-O2")
+    if OPT_LEVEL not in ("-Os", "-O2", "-O3", "-Ofast"):
+        OPT_LEVEL = "-O2"
+
+    try:
+        MAX_SNAPSHOTS = max(0, int(CONF.get("MAX_SNAPSHOTS", "10")))
+    except ValueError:
+        MAX_SNAPSHOTS = 10
+
+    try:
+        MAX_LEARNT_CLAUSES = max(1, int(CONF.get("MAX_LEARNT_CLAUSES", "200")))
+    except ValueError:
+        MAX_LEARNT_CLAUSES = 200
+
+    INSTALL_PROMPT_DEFAULT = CONF.get("INSTALL_PROMPT_DEFAULT", "n").lower()
+    if INSTALL_PROMPT_DEFAULT not in ("y", "n"):
+        INSTALL_PROMPT_DEFAULT = "n"
+
+    ALLOW_LPMBUILD_FALLBACK = _get_bool("ALLOW_LPMBUILD_FALLBACK", False)
+
+    MARCH, MTUNE, CPU_VENDOR, CPU_FAMILY = _init_cpu_settings()
+
+
+def _normalize_key(key: str) -> str | None:
+    cleaned = key.strip()
+    if not cleaned:
+        return None
+    normalized = cleaned.upper()
+    if not all(ch.isalnum() or ch == "_" for ch in normalized):
+        return None
+    return normalized
+
+
+def _normalize_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    text = str(value)
+    if "\n" in text or "\r" in text:
+        parts = text.replace("\r", "\n").splitlines()
+        text = " ".join(part.strip() for part in parts if part.strip())
+    return text.strip()
+
+
+def _load_template_lines(path: Path) -> list[str]:
+    try:
+        return path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        pass
+
+    try:
+        return TEMPLATE_CONF.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+
+def save_conf(settings: Mapping[str, object], path: Path = CONF_FILE) -> None:
+    normalized: Dict[str, str] = {}
+    for key, value in settings.items():
+        norm_key = _normalize_key(key)
+        if not norm_key:
+            continue
+        normalized[norm_key] = _normalize_value(value)
+
+    base_lines = _load_template_lines(path)
+    output_lines: list[str] = []
+    used_keys: set[str] = set()
+
+    for raw_line in base_lines:
+        line = raw_line.rstrip("\n")
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            output_lines.append(line)
+            continue
+
+        key_part, _, value_part = line.partition("=")
+        norm_key = _normalize_key(key_part)
+        if norm_key is None:
+            output_lines.append(line)
+            continue
+
+        used_keys.add(norm_key)
+        if norm_key in normalized:
+            output_lines.append(f"{norm_key}={normalized[norm_key]}")
+        else:
+            output_lines.append(f"{norm_key}={value_part.strip()}")
+
+    remaining = sorted(k for k in normalized if k not in used_keys)
+    if remaining:
+        if output_lines and output_lines[-1] != "":
+            output_lines.append("")
+        for key in remaining:
+            output_lines.append(f"{key}={normalized[key]}")
+
+    text = "\n".join(output_lines).rstrip()
+    if text:
+        text += "\n"
+    else:
+        text = "\n"
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+    _apply_conf(load_conf(path))
+
+
+# Initialize globals on import
+_apply_conf(load_conf(CONF_FILE))
 
 # ================ Init System Detection ===============================================
 def detect_init_system() -> str:
@@ -196,6 +295,7 @@ __all__ = [
     "UMASK",
     "initialize_state",
     "load_conf",
+    "save_conf",
     "CONF",
     "ARCH",
     "OPT_LEVEL",
