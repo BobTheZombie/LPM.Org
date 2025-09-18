@@ -727,6 +727,26 @@ def run_hook(hook: str, env: Dict[str,str]):
                     subprocess.run([str(script)], env={**os.environ, **env}, check=True)
         
 # =========================== Service File Handling =============================
+def _is_default_root(root: Path) -> bool:
+    """Return True if ``root`` points at the host root filesystem."""
+
+    root_path = Path(root)
+    try:
+        root_resolved = root_path.resolve(strict=False)
+    except RuntimeError:
+        root_resolved = root_path
+
+    candidates = []
+    for candidate in {DEFAULT_ROOT, "/"}:
+        candidate_path = Path(candidate)
+        try:
+            candidates.append(candidate_path.resolve(strict=False))
+        except RuntimeError:
+            candidates.append(candidate_path)
+
+    return any(root_resolved == candidate for candidate in candidates)
+
+
 def handle_service_files(pkg_name: str, root: Path):
     """
     Detect service files from installed package and register them
@@ -739,6 +759,7 @@ def handle_service_files(pkg_name: str, root: Path):
         return
 
     if init == "systemd":
+        manage_systemd = _is_default_root(root)
         service_dirs = [
             root / "usr/lib/systemd/system",
             root / "lib/systemd/system",
@@ -753,8 +774,14 @@ def handle_service_files(pkg_name: str, root: Path):
                 unique_units.setdefault(svc.name, svc)
 
         if policy == "auto":
-            for unit_name in unique_units:
-                subprocess.run(["systemctl", "enable", "--now", unit_name], check=False)
+            if manage_systemd:
+                for unit_name in unique_units:
+                    subprocess.run(["systemctl", "enable", "--now", unit_name], check=False)
+            elif unique_units:
+                log(
+                    f"[systemd] Skipping systemctl enable for non-default root {root}; "
+                    "deferring init integration"
+                )
 
     elif init == "sysv":
         initd = root / "etc/init.d"
@@ -804,6 +831,7 @@ def remove_service_files(pkg_name: str, root: Path):
         return
 
     if init == "systemd":
+        manage_systemd = _is_default_root(root)
         service_dirs = [
             root / "usr/lib/systemd/system",
             root / "lib/systemd/system",
@@ -818,8 +846,14 @@ def remove_service_files(pkg_name: str, root: Path):
                 unique_units.setdefault(svc.name, svc)
 
         if policy == "auto":
-            for unit_name in unique_units:
-                subprocess.run(["systemctl", "disable", "--now", unit_name], check=False)
+            if manage_systemd:
+                for unit_name in unique_units:
+                    subprocess.run(["systemctl", "disable", "--now", unit_name], check=False)
+            elif unique_units:
+                log(
+                    f"[systemd] Skipping systemctl disable for non-default root {root}; "
+                    "deferring init integration"
+                )
 
     elif init == "sysv":
         initd = root / "etc/init.d"
