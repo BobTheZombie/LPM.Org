@@ -23,6 +23,10 @@ The Linux Package Manager
 `lpm` uses sub‑commands.  Each command listed below shows its required
 arguments and optional flags.
 
+- `lpm setup` – launch the interactive first-run configuration wizard. The
+  wizard also runs automatically the first time `lpm` starts if
+  `/etc/lpm/lpm.conf` is missing.
+
 ### Repository management
 
 - `lpm repolist` – list configured repositories.
@@ -96,6 +100,17 @@ contents and runs common maintenance commands based on what it finds:
 
 - `lpm bootstrap ROOT [--include PKG ...] [--no-verify]` – create a minimal
   chroot populated with packages.
+
+## First run configuration
+
+When `/etc/lpm/lpm.conf` does not exist, `lpm` launches an interactive wizard
+before executing the requested command. The wizard displays build metadata from
+`get_runtime_metadata()`, the detected init system, and CPU tuning information
+derived from the automatic hardware probe. Users can accept the suggested
+values or provide alternatives for key settings such as `ARCH`, init policy,
+default install answers, fallback download policy, and optional CPU overrides.
+The chosen values are written using `save_conf()`, and you can rerun the wizard
+at any time with `lpm setup`.
 
 ## Optimisation
 
