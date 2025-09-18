@@ -24,6 +24,36 @@ from typing import Dict, List, Optional, Set, Tuple, Iterable
 from collections import deque
 import zstandard as zstd
 
+# =========================== Runtime metadata =================================
+_ENV_VERSION = "LPM_VERSION"
+_ENV_BUILD = "LPM_BUILD"
+_ENV_BUILD_DATE = "LPM_BUILD_DATE"
+
+_DEFAULT_VERSION = "0.0.0"
+_DEFAULT_BUILD = "development"
+_DEFAULT_BUILD_DATE = ""
+
+__version__ = os.environ.get(_ENV_VERSION, _DEFAULT_VERSION)
+__build__ = os.environ.get(_ENV_BUILD, _DEFAULT_BUILD)
+__build_date__ = os.environ.get(_ENV_BUILD_DATE, _DEFAULT_BUILD_DATE)
+
+
+def get_runtime_metadata() -> Dict[str, str]:
+    """Return runtime metadata describing the current LPM build.
+
+    The module level ``__version__``, ``__build__``, and ``__build_date__``
+    constants default to static fallback values but can be overridden via the
+    ``LPM_VERSION``, ``LPM_BUILD``, and ``LPM_BUILD_DATE`` environment
+    variables. Importing :mod:`lpm` merely exposes these values without
+    triggering the heavier initialization logic below.
+    """
+
+    return {
+        "version": __version__,
+        "build": __build__,
+        "build_date": __build_date__,
+    }
+
 from src.config import (
     ARCH,
     ALLOW_LPMBUILD_FALLBACK,
