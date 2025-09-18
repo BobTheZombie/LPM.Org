@@ -45,11 +45,15 @@ def test_handle_service_files_systemd_multiple_dirs(root, monkeypatch, capsys):
 
     err = capsys.readouterr().err
 
-    assert err.count("foo.service") == 2
-    assert "usr/lib/systemd/system" in err
-    assert "lib/systemd/system" in err
-    assert err.count("bar.service") == 1
-    assert err.count("baz.timer") == 1
+    assert (
+        "[ Systemd Service Handler ] detected units foo.service, bar.service, baz.timer; activation will follow automatically."
+        in err
+    )
+    assert (
+        "[ Systemd Service Handler ] activating detected units via systemctl enable --now"
+        in err
+    )
+    assert err.count("[ Systemd Service Handler ] detected units") == 1
 
     assert calls == [
         ["systemctl", "enable", "--now", "foo.service"],
@@ -113,7 +117,11 @@ def test_handle_service_files_systemd_non_default_root_skips_systemctl(root, mon
 
     err = capsys.readouterr().err
 
-    assert "foo.service" in err
+    assert (
+        "[ Systemd Service Handler ] detected units foo.service; activation will follow on the target system."
+        in err
+    )
+    assert "[ Systemd Service Handler ] activating detected units" not in err
     assert "Skipping systemctl enable" in err
     assert calls == []
 

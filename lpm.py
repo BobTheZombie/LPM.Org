@@ -791,11 +791,27 @@ def handle_service_files(pkg_name: str, root: Path):
                 for svc in service_dir.glob(pattern):
                     if not svc.is_file():
                         continue
-                    log(f"[systemd] Detected unit ({service_dir}): {svc.name}")
                     unique_units.setdefault(svc.name, svc)
+
+        if unique_units:
+            units_list = ", ".join(unique_units.keys())
+            if policy == "auto":
+                if manage_systemd:
+                    activation_note = "activation will follow automatically."
+                else:
+                    activation_note = "activation will follow on the target system."
+            else:
+                activation_note = "activation requires manual steps."
+            log(
+                f"[ Systemd Service Handler ] detected units {units_list}; {activation_note}"
+            )
 
         if policy == "auto":
             if manage_systemd:
+                if unique_units:
+                    log(
+                        "[ Systemd Service Handler ] activating detected units via systemctl enable --now"
+                    )
                 for unit_name in unique_units:
                     subprocess.run(["systemctl", "enable", "--now", unit_name], check=False)
             elif unique_units:
