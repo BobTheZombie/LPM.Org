@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""Utility for retrieving the LPM version string.
+
+The value is sourced from ``lpm.__version__`` which itself honours the
+``LPM_VERSION`` environment variable (falling back to a static default).
+When the constant is unavailable the script falls back to ``git describe`` to
+mirror the previous behaviour.
+"""
+
 import pathlib
 import re
 import subprocess
