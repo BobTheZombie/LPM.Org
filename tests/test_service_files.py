@@ -31,6 +31,7 @@ def test_handle_service_files_systemd_multiple_dirs(root, monkeypatch, capsys):
 
     monkeypatch.setitem(lpm.CONF, "INIT_POLICY", "auto")
     monkeypatch.setattr(lpm, "detect_init_system", lambda: "systemd")
+    monkeypatch.setattr(lpm, "_is_default_root", lambda root: True)
 
     calls = []
 
@@ -64,6 +65,7 @@ def test_remove_service_files_systemd_multiple_dirs(root, monkeypatch, capsys):
 
     monkeypatch.setitem(lpm.CONF, "INIT_POLICY", "auto")
     monkeypatch.setattr(lpm, "detect_init_system", lambda: "systemd")
+    monkeypatch.setattr(lpm, "_is_default_root", lambda root: True)
 
     calls = []
 
@@ -85,3 +87,49 @@ def test_remove_service_files_systemd_multiple_dirs(root, monkeypatch, capsys):
         ["systemctl", "disable", "--now", "foo.service"],
         ["systemctl", "disable", "--now", "bar.service"],
     ]
+
+
+def test_handle_service_files_systemd_non_default_root_skips_systemctl(root, monkeypatch, capsys):
+    service = root / "lib/systemd/system/foo.service"
+    _create_service(service)
+
+    monkeypatch.setitem(lpm.CONF, "INIT_POLICY", "auto")
+    monkeypatch.setattr(lpm, "detect_init_system", lambda: "systemd")
+
+    calls = []
+
+    def fake_run(cmd, check=False, **kwargs):
+        calls.append(cmd)
+
+    monkeypatch.setattr(lpm.subprocess, "run", fake_run)
+
+    lpm.handle_service_files("dummy", root)
+
+    err = capsys.readouterr().err
+
+    assert "foo.service" in err
+    assert "Skipping systemctl enable" in err
+    assert calls == []
+
+
+def test_remove_service_files_systemd_non_default_root_skips_systemctl(root, monkeypatch, capsys):
+    service = root / "lib/systemd/system/foo.service"
+    _create_service(service)
+
+    monkeypatch.setitem(lpm.CONF, "INIT_POLICY", "auto")
+    monkeypatch.setattr(lpm, "detect_init_system", lambda: "systemd")
+
+    calls = []
+
+    def fake_run(cmd, check=False, **kwargs):
+        calls.append(cmd)
+
+    monkeypatch.setattr(lpm.subprocess, "run", fake_run)
+
+    lpm.remove_service_files("dummy", root)
+
+    err = capsys.readouterr().err
+
+    assert "foo.service" in err
+    assert "Skipping systemctl disable" in err
+    assert calls == []
