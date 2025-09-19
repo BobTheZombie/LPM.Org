@@ -2485,12 +2485,40 @@ def _normalize_pkgbuild_target(name: str) -> Optional[str]:
     return base
 
 
-def _collect_pkgbuild_targets(targets: Iterable[str]) -> List[str]:
+def _collect_pkgbuild_targets(
+    targets: Iterable[str],
+    repo_fetcher: Optional[Callable[[str], str]] = None,
+) -> List[str]:
     seen: Dict[str, None] = {}
     ordered: List[str] = []
 
     for target in targets:
         resolved: List[str] = []
+        if target.startswith("repo:"):
+            if repo_fetcher is None:
+                die("repository targets require a fetcher")
+            repo_name = target.split(":", 1)[1].strip()
+            if not repo_name:
+                die("repository target missing name")
+            try:
+                text = repo_fetcher(repo_name)
+            except Exception as exc:
+                die(f"failed to fetch repository {repo_name}: {exc}")
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError as exc:
+                die(f"invalid repository index repo:{repo_name}: {exc}")
+            resolved = _extract_index_names(parsed)
+            if not resolved:
+                warn(f"repository {repo_name} produced no packages")
+            for name in resolved:
+                base = _normalize_pkgbuild_target(name)
+                if not base:
+                    continue
+                if base not in seen:
+                    seen[base] = None
+                    ordered.append(base)
+            continue
         try:
             text = _read_index_source(target)
         except FileNotFoundError:
@@ -2532,7 +2560,7 @@ def cmd_pkgbuild_export_tar(a):
     if not DEVELOPER_MODE:
         die("pkgbuild-export-tar requires developer mode")
 
-    targets = _collect_pkgbuild_targets(a.targets)
+    targets = _collect_pkgbuild_targets(a.targets, repo_fetcher=arch_compat.fetch_repo_index)
     if not targets:
         die("no packages resolved from inputs")
 
@@ -3071,7 +3099,11 @@ def build_parser()->argparse.ArgumentParser:
 
     sp=sub.add_parser("pkgbuild-export-tar", help="Export Arch PKGBUILDs as .lpmbuild scripts in a tarball (developer mode)")
     sp.add_argument("output", type=Path, help="output tarball path")
-    sp.add_argument("targets", nargs="+", help="Arch package names or repository index paths/URLs")
+    sp.add_argument(
+        "targets",
+        nargs="+",
+        help="Arch package names, repository index paths/URLs, or repo:NAME entries",
+    )
     sp.add_argument("--workspace", type=Path, help="reuse a workspace for converted scripts")
     sp.set_defaults(func=cmd_pkgbuild_export_tar)
 

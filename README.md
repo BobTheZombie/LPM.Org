@@ -93,7 +93,8 @@ contents and runs common maintenance commands based on what it finds:
   helper that fetches Arch Linux PKGBUILDs, converts them to `.lpmbuild`
   scripts (including dependencies), stages them under `packages/<name>` and
   writes the result to an archive at `OUTPUT`. `TARGET` entries can be package
-  names such as `extra/zstd` or paths/URLs to repository `index.json` files.
+  names such as `extra/zstd`, `repo:core` to pull every package from a
+  repository, or paths/URLs to repository `index.json` files.
 - `lpm genindex REPO_DIR [--base-url URL] [--arch ARCH]` – generate an
   `index.json` for a directory of packages.
 - `lpm installpkg FILE... [--root PATH] [--dry-run] [--verify] [--force]`
@@ -116,7 +117,9 @@ LPM fetches each PKGBUILD from `gitlab.archlinux.org`, converts it to
 `.lpmbuild`, resolves meta-package dependencies through the same converter, and
 stages the results under `packages/<name>/<name>.lpmbuild` before writing the
 tarball. The optional `--workspace DIR` flag reuses a conversion cache so
-subsequent exports only download new packages.
+subsequent exports only download new packages. Targets prefixed with
+`repo:` (for example `repo:extra`) expand to every package listed in the
+upstream repository metadata.
 
 #### Symlink manifest digests
 
