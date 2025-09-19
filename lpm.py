@@ -20,7 +20,7 @@ import argparse, contextlib, dataclasses, fnmatch, hashlib, io, json, os, re, sh
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Iterable
+from typing import Dict, List, Optional, Set, Tuple, Iterable, Callable
 from collections import deque
 import zstandard as zstd
 
@@ -76,6 +76,7 @@ from src.config import (
     SIGN_KEY,
     SNAPSHOT_DIR,
     TRUST_DIR,
+    DEVELOPER_MODE,
     detect_init_system,
     initialize_state,
 )
@@ -84,6 +85,7 @@ from src.fs import read_json, write_json, urlread
 from src.installgen import generate_install_script
 from src.solver import CNF, CDCLSolver
 from src.first_run_ui import run_first_run_wizard
+from src import arch_compat
 
 # =========================== Protected packages ===============================
 PROTECTED_FILE = Path("/etc/lpm/protected.json")
@@ -1689,7 +1691,16 @@ def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str]
         installpkg(blob, explicit=(kind != "dependency"))
 
 
-def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: bool = True, prompt_default: Optional[str] = None, is_dep: bool = False, build_deps: bool = True) -> Tuple[Path, float, int]:
+def run_lpmbuild(
+    script: Path,
+    outdir: Optional[Path] = None,
+    *,
+    prompt_install: bool = True,
+    prompt_default: Optional[str] = None,
+    is_dep: bool = False,
+    build_deps: bool = True,
+    fetcher: Optional[Callable[[str, Path], Path]] = None,
+) -> Tuple[Path, float, int]:
     script_path = script.resolve()
     script_dir = script_path.parent
 
@@ -1710,6 +1721,8 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
         die("lpmbuild missing NAME or VERSION")
 
     # --- Auto-build dependencies before continuing ---
+    fetch_fn = fetcher or fetch_lpmbuild
+
     if build_deps:
         seen = set()
         deps_to_build: List[str] = []
@@ -1737,7 +1750,7 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
             else:
                 log(f"[deps] building required package: {depname}")
             tmp = Path(f"/tmp/lpm-dep-{depname}.lpmbuild")
-            fetch_lpmbuild(depname, tmp)
+            fetch_fn(depname, tmp)
             return run_lpmbuild(
                 tmp,
                 outdir or script_dir,
@@ -1745,6 +1758,7 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
                 prompt_default=prompt_default,
                 is_dep=True,
                 build_deps=True,
+                fetcher=fetch_fn,
             )[0]
         if deps_to_build:
             if prompt_install:
@@ -2287,18 +2301,95 @@ def cmd_build(a):
     prompt_install_pkg(out, default=a.install_default)
 
 def cmd_buildpkg(a):
-    out, duration, phases = run_lpmbuild(
-        a.script,
-        a.outdir,
-        build_deps=not a.no_deps,
-        prompt_default=a.install_default,
-    )
+    script_path = Path(a.script)
+    fetch_override: Optional[Callable[[str, Path], Path]] = None
+    tmpdir: Optional[tempfile.TemporaryDirectory[str]] = None
+
+    if getattr(a, "from_pkgbuild", False):
+        if not DEVELOPER_MODE:
+            die("--from-pkgbuild requires developer mode")
+
+        tmpdir = tempfile.TemporaryDirectory(prefix="lpm-pkgbuild-")
+        workspace = Path(tmpdir.name)
+        converter = arch_compat.PKGBuildConverter(workspace)
+
+        if script_path.exists():
+            info, script_path = converter.convert_file(script_path)
+        else:
+            info, script_path = converter.convert_remote(str(a.script))
+
+        if not a.no_deps:
+            for dep in info.dependency_names():
+                converter.ensure_dependency(dep)
+            fetch_override = converter.make_fetcher()
+
+    try:
+        out, duration, phases = run_lpmbuild(
+            script_path,
+            a.outdir,
+            build_deps=not a.no_deps,
+            prompt_default=a.install_default,
+            fetcher=fetch_override,
+        )
+    finally:
+        if tmpdir is not None:
+            tmpdir.cleanup()
+
     if out and out.exists():
         meta, _ = read_package_meta(out)
         print_build_summary(meta, out, duration, len(meta.requires), phases)
         ok(f"Built {out}")
     else:
         die(f"Build failed for {a.script}")
+
+
+def cmd_pkgbuild_to_lpmbuild(a):
+    if not DEVELOPER_MODE:
+        die("pkgbuild-2-lpmbuild requires developer mode")
+
+    tmpdir = tempfile.TemporaryDirectory(prefix="lpm-pkgbuild-")
+    converter = arch_compat.PKGBuildConverter(Path(tmpdir.name))
+
+    source_path = Path(a.source)
+    if source_path.exists():
+        info, script_path = converter.convert_file(source_path)
+    else:
+        info, script_path = converter.convert_remote(a.source)
+
+    output_path = Path(a.output) if a.output else Path.cwd() / f"{info.name}.lpmbuild"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(script_path, output_path)
+    script_path = output_path
+
+    ok(f"Converted {info.name} -> {script_path}")
+
+    fetch_override: Optional[Callable[[str, Path], Path]] = None
+    if a.build:
+        if not a.no_deps:
+            for dep in info.dependency_names():
+                converter.ensure_dependency(dep)
+            fetch_override = converter.make_fetcher()
+
+        try:
+            out, duration, phases = run_lpmbuild(
+                script_path,
+                a.outdir,
+                prompt_install=a.install,
+                prompt_default=a.install_default,
+                build_deps=not a.no_deps,
+                fetcher=fetch_override,
+            )
+        finally:
+            tmpdir.cleanup()
+
+        if out and out.exists():
+            meta, _ = read_package_meta(out)
+            print_build_summary(meta, out, duration, len(meta.requires), phases)
+            ok(f"Built {out}")
+        else:
+            die(f"Build failed for {script_path}")
+    else:
+        tmpdir.cleanup()
 
 def cmd_genindex(a):
     repo_dir = Path(a.repo_dir)
@@ -2770,7 +2861,18 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--outdir", default=Path.cwd(), type=Path)
     sp.add_argument("--no-deps", action="store_true", help="do not fetch or build dependencies")
     sp.add_argument("--install-default", choices=["y", "n"], help="default answer for install prompt")
+    sp.add_argument("--from-pkgbuild", action="store_true", help="convert an Arch PKGBUILD before building (developer mode)")
     sp.set_defaults(func=cmd_buildpkg)
+
+    sp=sub.add_parser("pkgbuild-2-lpmbuild", help="Convert an Arch PKGBUILD to .lpmbuild (developer mode)")
+    sp.add_argument("source", help="path to PKGBUILD or <repo>/<pkg> name")
+    sp.add_argument("--output", type=Path, help="write converted script to this path")
+    sp.add_argument("--build", action="store_true", help="build the converted package immediately")
+    sp.add_argument("--install", action="store_true", help="prompt to install the built package")
+    sp.add_argument("--outdir", default=Path.cwd(), type=Path, help="directory for built packages")
+    sp.add_argument("--no-deps", action="store_true", help="skip converting and building dependencies")
+    sp.add_argument("--install-default", choices=["y", "n"], help="default answer for install prompt")
+    sp.set_defaults(func=cmd_pkgbuild_to_lpmbuild)
 
     sp=sub.add_parser("genindex", help=f"Generate index.json for a repo directory of {EXT} files")
     sp.add_argument("repo_dir", help=f"directory containing {EXT} files")
