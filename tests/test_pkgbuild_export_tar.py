@@ -5,15 +5,40 @@ import json
 import sys
 import tarfile
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
 
 def _load_lpm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = Path(__file__).resolve().parent.parent
+    monkeypatch.syspath_prepend(str(root))
     monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("LPM_DEVELOPER_MODE", "1")
+
+    for name in ("zstandard", "tqdm"):
+        if name not in sys.modules:
+            module = ModuleType(name)
+            if name == "tqdm":
+                class _DummyTqdm:  # pragma: no cover - helper
+                    def __init__(self, iterable=None, **kwargs):
+                        self.iterable = iterable
+
+                    def __iter__(self):
+                        return iter(self.iterable or [])
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, exc_type, exc, tb):
+                        return False
+
+                    def update(self, *args, **kwargs):  # pragma: no cover - helper
+                        return None
+
+                module.tqdm = _DummyTqdm  # type: ignore[attr-defined]
+            monkeypatch.setitem(sys.modules, name, module)
+
     for name in ["lpm", "src.config", "src.arch_compat"]:
         sys.modules.pop(name, None)
     spec = importlib.util.spec_from_file_location("lpm", root / "lpm.py")
@@ -116,3 +141,41 @@ def test_pkgbuild_export_tarball(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         assert foo_file is not None
         foo_text = foo_file.read().decode("utf-8")
         assert "REQUIRES=(bar" in foo_text
+
+
+def test_pkgbuild_export_repo_prefixed_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    lpm = _load_lpm(tmp_path, monkeypatch)
+
+    pkgbuilds = {
+        "foo": """
+            pkgname=foo
+            pkgver=1
+            pkgrel=1
+            pkgdesc='Foo'
+            build() { :; }
+            package() { :; }
+        """,
+    }
+
+    fetched: list[str] = []
+
+    def fake_fetch(name: str, endpoints=None):
+        fetched.append(name)
+        key = name.split("/", 1)[-1]
+        if key not in pkgbuilds:
+            raise RuntimeError(name)
+        return pkgbuilds[key]
+
+    monkeypatch.setattr("src.arch_compat.fetch_pkgbuild", fake_fetch)
+
+    out_tar = tmp_path / "repo-export.tar"
+    args = SimpleNamespace(output=out_tar, targets=["extra/foo"], workspace=None)
+
+    lpm.cmd_pkgbuild_export_tar(args)
+
+    assert out_tar.exists()
+    assert fetched == ["extra/foo"]
+
+    with tarfile.open(out_tar, "r") as tf:
+        members = {m.name for m in tf.getmembers()}
+        assert "packages/foo/foo.lpmbuild" in members
