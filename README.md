@@ -96,6 +96,24 @@ contents and runs common maintenance commands based on what it finds:
 - `lpm removepkg NAME... [--root PATH] [--dry-run] [--force]` – remove installed
   packages by name.
 
+#### Symlink manifest digests
+
+`collect_manifest()` records symbolic links with a `"link"` field describing
+their target and stores a SHA‑256 digest alongside each entry.  Packages may use
+either of the following formats:
+
+- The default produced by `collect_manifest()` hashes the link target string
+  itself.  This keeps manifests stable even when the link points outside the
+  staged root.
+- Traditional manifests for projects such as glibc store the hash of the file
+  payload referenced by the link (for example `/usr/bin/ld.so` matching the
+  digest of the loader binary).
+
+`installpkg` recognises both schemes.  When the manifest omits the `"link"`
+metadata or when the recorded digest matches the resolved file content, LPM
+falls back to hashing the extracted payload so that older packages remain
+compatible.
+
 ### System bootstrap
 
 - `lpm bootstrap ROOT [--include PKG ...] [--no-verify]` – create a minimal

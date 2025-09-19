@@ -8,6 +8,8 @@ import dataclasses
 import tarfile
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
@@ -122,6 +124,53 @@ def _make_symlink_pkg(lpm, tmp_path):
     return out
 
 
+def _make_ldso_pkg(lpm, tmp_path):
+    staged = tmp_path / "stage-ldso"
+    (staged / "usr/bin").mkdir(parents=True)
+    (staged / "usr/lib").mkdir(parents=True)
+
+    loader = staged / "usr/lib/ld-2.38.so"
+    loader.write_bytes(b"fake-elf\x00")
+
+    ld_so = staged / "usr/bin/ld.so"
+    ld_so.symlink_to("../lib/ld-2.38.so")
+
+    manifest = lpm.collect_manifest(staged)
+    loader_hash = lpm.sha256sum(loader)
+    for entry in manifest:
+        if entry["path"] == "/usr/bin/ld.so":
+            entry["sha256"] = loader_hash
+            break
+    else:
+        raise AssertionError("ld.so entry missing from manifest")
+
+    meta = lpm.PkgMeta(name="glibc-test", version="1", release="1", arch="x86_64")
+
+    (staged / ".lpm-meta.json").write_text(json.dumps(dataclasses.asdict(meta)))
+    (staged / ".lpm-manifest.json").write_text(json.dumps(manifest))
+
+    out = tmp_path / "glibc-ldso.zst"
+    with out.open("wb") as f:
+        cctx = lpm.zstd.ZstdCompressor()
+        with cctx.stream_writer(f) as compressor:
+            with tarfile.open(fileobj=compressor, mode="w|") as tf:
+                for p in staged.iterdir():
+                    tf.add(p, arcname=p.name)
+
+    shutil.rmtree(staged)
+    return out
+
+
+@pytest.fixture
+def lpm_module(tmp_path, monkeypatch):
+    return _import_lpm(tmp_path, monkeypatch)
+
+
+@pytest.fixture
+def ldso_package(tmp_path, lpm_module):
+    return _make_ldso_pkg(lpm_module, tmp_path)
+
+
 def test_installpkg_verifies_symlink_manifest(tmp_path, monkeypatch):
     lpm = _import_lpm(tmp_path, monkeypatch)
     root = tmp_path / "root"
@@ -134,3 +183,16 @@ def test_installpkg_verifies_symlink_manifest(tmp_path, monkeypatch):
     installed_link = root / "link"
     assert installed_link.is_symlink()
     assert os.readlink(installed_link) == "target"
+
+
+def test_installpkg_accepts_file_digest_for_symlink(lpm_module, ldso_package, tmp_path):
+    root = tmp_path / "root-glibc"
+    root.mkdir()
+
+    lpm_module.installpkg(ldso_package, root=root, dry_run=False, verify=False, force=False, explicit=True)
+
+    installed_ld = root / "usr/bin/ld.so"
+    assert installed_ld.is_symlink()
+    assert os.readlink(installed_ld) == "../lib/ld-2.38.so"
+    loader = root / "usr/lib/ld-2.38.so"
+    assert loader.is_file()
