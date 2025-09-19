@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shlex
@@ -315,6 +316,37 @@ def fetch_pkgbuild(pkgname: str, endpoints: Optional[Mapping[str, str]] = None) 
     raise RuntimeError(f"Unable to fetch PKGBUILD for {pkgname} (tried {', '.join(label for label, _ in order)})")
 
 
+def _make_repo_index_url(base: str, repo: str) -> str:
+    return f"{base.rstrip('/')}/-/raw/main/repos/{repo}.json"
+
+
+def fetch_repo_index(repo: str, endpoints: Optional[Mapping[str, str]] = None) -> str:
+    endpoints = dict(endpoints or ARCH_REPO_ENDPOINTS)
+    order: List[Tuple[str, str]] = []
+    if repo in endpoints:
+        order.append((repo, endpoints[repo]))
+    if "meta" in endpoints and (not order or order[0][0] != "meta"):
+        if repo != "meta":
+            order.append(("meta", endpoints["meta"]))
+    for key, base in endpoints.items():
+        if key in {repo, "meta"}:
+            continue
+        order.append((key, base))
+
+    errors: List[str] = []
+    for label, base in order:
+        url = _make_repo_index_url(base, repo)
+        try:
+            data = urlread(url)
+            return data.decode("utf-8")
+        except Exception as exc:  # pragma: no cover - errors logged
+            errors.append(f"{label}: {exc}")
+            continue
+
+    attempted = ", ".join(label for label, _ in order) or "<none>"
+    raise RuntimeError(f"Unable to fetch repository index for {repo} (tried {attempted})")
+
+
 class PKGBuildConverter:
     def __init__(
         self,
@@ -408,6 +440,7 @@ __all__ = [
     "PKGBuildInfo",
     "PKGBuildConverter",
     "convert_pkgbuild_to_lpmbuild",
+    "fetch_repo_index",
     "fetch_pkgbuild",
     "normalize_dependency_name",
     "parse_pkgbuild",

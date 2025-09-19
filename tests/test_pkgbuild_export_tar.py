@@ -179,3 +179,75 @@ def test_pkgbuild_export_repo_prefixed_target(tmp_path: Path, monkeypatch: pytes
     with tarfile.open(out_tar, "r") as tf:
         members = {m.name for m in tf.getmembers()}
         assert "packages/foo/foo.lpmbuild" in members
+
+
+def test_pkgbuild_export_full_repository(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    lpm = _load_lpm(tmp_path, monkeypatch)
+
+    pkgbuilds = {
+        "foo": """
+            pkgname=foo
+            pkgver=1
+            pkgrel=1
+            pkgdesc='Foo'
+            depends=('bar')
+            build() { :; }
+            package() { :; }
+        """,
+        "bar": """
+            pkgname=bar
+            pkgver=1
+            pkgrel=1
+            pkgdesc='Bar'
+            build() { :; }
+            package() { :; }
+        """,
+        "baz": """
+            pkgname=baz
+            pkgver=1
+            pkgrel=1
+            pkgdesc='Baz'
+            build() { :; }
+            package() { :; }
+        """,
+    }
+
+    def fake_fetch(name: str, endpoints=None):
+        key = name.split("/", 1)[-1]
+        if key not in pkgbuilds:
+            raise RuntimeError(name)
+        return pkgbuilds[key]
+
+    repo_queries: list[str] = []
+
+    def fake_fetch_repo_index(repo: str, endpoints=None) -> str:
+        repo_queries.append(repo)
+        if repo != "extra":
+            raise RuntimeError(repo)
+        return json.dumps({
+            "packages": [
+                {"name": "foo"},
+                {"pkgname": "bar"},
+                "baz",
+            ]
+        })
+
+    monkeypatch.setattr("src.arch_compat.fetch_pkgbuild", fake_fetch)
+    monkeypatch.setattr("src.arch_compat.fetch_repo_index", fake_fetch_repo_index)
+
+    out_tar = tmp_path / "repo-full.tar"
+    args = SimpleNamespace(output=out_tar, targets=["repo:extra"], workspace=None)
+
+    lpm.cmd_pkgbuild_export_tar(args)
+
+    assert out_tar.exists()
+    assert repo_queries == ["extra"]
+
+    with tarfile.open(out_tar, "r") as tf:
+        members = {m.name for m in tf.getmembers()}
+        expected = {
+            "packages/foo/foo.lpmbuild",
+            "packages/bar/bar.lpmbuild",
+            "packages/baz/baz.lpmbuild",
+        }
+        assert expected.issubset(members)
