@@ -128,10 +128,17 @@ def _print_header(out: TextIO, metadata: Mapping[str, str], init_system: str, cp
         "for any setting. You can re-run it later with 'lpm setup'.\n\n"
     )
     out.write("Runtime metadata:\n")
+    out.write(f"  Name       : {metadata.get('name', 'unknown')}\n")
     out.write(f"  Version    : {metadata.get('version', 'unknown')}\n")
     out.write(f"  Build      : {metadata.get('build', 'development')}\n")
     build_date = metadata.get("build_date") or "unknown"
     out.write(f"  Build date : {build_date}\n")
+    developer = metadata.get("developer")
+    if developer:
+        out.write(f"  Developer  : {developer}\n")
+    project_url = metadata.get("url")
+    if project_url:
+        out.write(f"  Project URL: {project_url}\n")
     out.write("\n")
     out.write(f"Detected init system : {init_system}\n")
     out.write(
