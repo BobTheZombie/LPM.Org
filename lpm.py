@@ -2473,6 +2473,18 @@ def _extract_index_names(data) -> List[str]:
     return names
 
 
+def _normalize_pkgbuild_target(name: str) -> Optional[str]:
+    candidate = name.strip()
+    if not candidate:
+        return None
+    if "/" in candidate:
+        return candidate
+    base = arch_compat.normalize_dependency_name(candidate) or candidate
+    if not base:
+        return None
+    return base
+
+
 def _collect_pkgbuild_targets(targets: Iterable[str]) -> List[str]:
     seen: Dict[str, None] = {}
     ordered: List[str] = []
@@ -2482,7 +2494,7 @@ def _collect_pkgbuild_targets(targets: Iterable[str]) -> List[str]:
         try:
             text = _read_index_source(target)
         except FileNotFoundError:
-            base = arch_compat.normalize_dependency_name(target) or target
+            base = _normalize_pkgbuild_target(target)
             if base:
                 resolved = [base]
         except Exception as exc:
@@ -2495,7 +2507,7 @@ def _collect_pkgbuild_targets(targets: Iterable[str]) -> List[str]:
             resolved = _extract_index_names(parsed)
 
         for name in resolved:
-            base = arch_compat.normalize_dependency_name(name) or name
+            base = _normalize_pkgbuild_target(name)
             if not base:
                 continue
             if base not in seen:
