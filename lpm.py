@@ -2773,6 +2773,7 @@ def installpkg(
                     )
 
             # Move into root w/ conflict handling (same as before) ...
+            replace_all = False
             for e in mani:
                 rel = e["path"].lstrip("/")
                 src = tmp_root / rel
@@ -2793,22 +2794,34 @@ def installpkg(
                     if same:
                         log(f"[skip] {rel} already up-to-date")
                         continue
-                    while True:
-                        resp = input(f"[conflict] {rel} exists. [R]eplace / [S]kip / [A]bort? ").strip().lower()
-                        if resp in ("r", "replace"):
-                            if dest.is_file() or dest.is_symlink():
-                                dest.unlink()
-                            elif dest.is_dir():
-                                shutil.rmtree(dest)
-                            break
-                        elif resp in ("s", "skip"):
-                            log(f"[skip] {rel}")
-                            src.unlink(missing_ok=True)
-                            continue
-                        elif resp in ("a", "abort"):
-                            die(f"Aborted install due to conflict at {rel}")
-                        else:
-                            print("Please enter R, S, or A.")
+                    def _remove_dest() -> None:
+                        if dest.is_file() or dest.is_symlink():
+                            dest.unlink()
+                        elif dest.is_dir():
+                            shutil.rmtree(dest)
+
+                    if replace_all:
+                        _remove_dest()
+                    else:
+                        while True:
+                            resp = input(
+                                f"[conflict] {rel} exists. [R]eplace / [RA] Replace All / [S]kip / [A]bort? "
+                            ).strip().lower()
+                            if resp in ("r", "replace"):
+                                _remove_dest()
+                                break
+                            elif resp in ("ra", "all", "replace all"):
+                                replace_all = True
+                                _remove_dest()
+                                break
+                            elif resp in ("s", "skip"):
+                                log(f"[skip] {rel}")
+                                src.unlink(missing_ok=True)
+                                continue
+                            elif resp in ("a", "abort"):
+                                die(f"Aborted install due to conflict at {rel}")
+                            else:
+                                print("Please enter R, RA, S, or A.")
 
                 shutil.move(str(src), str(dest))
 

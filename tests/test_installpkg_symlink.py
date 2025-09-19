@@ -161,6 +161,31 @@ def _make_ldso_pkg(lpm, tmp_path):
     return out
 
 
+def _make_conflict_pkg(lpm, tmp_path):
+    staged = tmp_path / "stage-conflict"
+    (staged / "etc").mkdir(parents=True)
+
+    (staged / "etc" / "foo").write_text("package foo\n")
+    (staged / "etc" / "bar").write_text("package bar\n")
+
+    manifest = lpm.collect_manifest(staged)
+    meta = lpm.PkgMeta(name="conflict", version="1", release="1", arch="noarch")
+
+    (staged / ".lpm-meta.json").write_text(json.dumps(dataclasses.asdict(meta)))
+    (staged / ".lpm-manifest.json").write_text(json.dumps(manifest))
+
+    out = tmp_path / "conflict.zst"
+    with out.open("wb") as f:
+        cctx = lpm.zstd.ZstdCompressor()
+        with cctx.stream_writer(f) as compressor:
+            with tarfile.open(fileobj=compressor, mode="w|") as tf:
+                for p in staged.iterdir():
+                    tf.add(p, arcname=p.name)
+
+    shutil.rmtree(staged)
+    return out
+
+
 @pytest.fixture
 def lpm_module(tmp_path, monkeypatch):
     return _import_lpm(tmp_path, monkeypatch)
@@ -196,3 +221,35 @@ def test_installpkg_accepts_file_digest_for_symlink(lpm_module, ldso_package, tm
     assert os.readlink(installed_ld) == "../lib/ld-2.38.so"
     loader = root / "usr/lib/ld-2.38.so"
     assert loader.is_file()
+
+
+def test_installpkg_replace_all_option(tmp_path, monkeypatch):
+    lpm = _import_lpm(tmp_path, monkeypatch)
+    root = tmp_path / "root-conflict"
+    (root / "etc").mkdir(parents=True)
+
+    (root / "etc" / "foo").write_text("existing foo\n")
+    (root / "etc" / "bar").write_text("existing bar\n")
+
+    pkg = _make_conflict_pkg(lpm, tmp_path)
+
+    prompts = []
+
+    responses = iter(["ra"])
+
+    def fake_input(prompt: str) -> str:
+        prompts.append(prompt)
+        try:
+            return next(responses)
+        except StopIteration:  # pragma: no cover - ensures unexpected prompts fail the test
+            raise AssertionError("Unexpected additional prompt")
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    lpm.installpkg(pkg, root=root, dry_run=False, verify=False, force=False, explicit=True)
+
+    assert len(prompts) == 1
+    assert "[RA] Replace All" in prompts[0]
+
+    assert (root / "etc" / "foo").read_text() == "package foo\n"
+    assert (root / "etc" / "bar").read_text() == "package bar\n"
