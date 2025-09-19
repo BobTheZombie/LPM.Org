@@ -2451,19 +2451,65 @@ def installpkg(
                 f = tmp_root / e["path"].lstrip("/")
                 if not f.exists() and not f.is_symlink():
                     die(f"Manifest missing file: {e['path']}")
+
+                expected_hash = e.get("sha256")
                 if f.is_symlink() or "link" in e:
                     try:
                         target = os.readlink(f)
                     except OSError:
                         die(f"Manifest missing file: {e['path']}")
+
                     expected_target = e.get("link")
                     if expected_target is not None and target != expected_target:
                         die(f"Link mismatch for {e['path']}: expected {expected_target}, got {target}")
-                    h = hashlib.sha256(target.encode()).hexdigest()
+
+                    link_hash = hashlib.sha256(target.encode()).hexdigest()
+                    payload_hash = None
+
+                    payload_candidate: Optional[Path]
+                    if target.startswith("/"):
+                        payload_candidate = tmp_root / target.lstrip("/")
+                    else:
+                        payload_candidate = f.parent / target
+
+                    resolved_payload: Optional[Path] = None
+                    if payload_candidate is not None:
+                        try:
+                            resolved_payload = payload_candidate.resolve()
+                        except (FileNotFoundError, RuntimeError, OSError):
+                            resolved_payload = None
+
+                    if resolved_payload is not None:
+                        try:
+                            resolved_payload.relative_to(tmp_root)
+                        except ValueError:
+                            resolved_payload = None
+
+                    if (
+                        resolved_payload is not None
+                        and resolved_payload.exists()
+                        and resolved_payload.is_file()
+                    ):
+                        payload_hash = sha256sum(resolved_payload)
+
+                    actual_hash: Optional[str] = None
+                    if payload_hash is not None and (
+                        expected_hash is None or expected_hash == payload_hash
+                    ):
+                        actual_hash = payload_hash
+                    elif expected_hash == link_hash:
+                        actual_hash = link_hash
+                    elif payload_hash is not None:
+                        actual_hash = payload_hash
+                    else:
+                        actual_hash = link_hash
                 else:
-                    h = sha256sum(f)
-                if h != e["sha256"]:
-                    die(f"Hash mismatch for {e['path']}: expected {e['sha256']}, got {h}")
+                    actual_hash = sha256sum(f)
+
+                if expected_hash is not None and actual_hash != expected_hash:
+                    die(
+                        f"Hash mismatch for {e['path']}: expected {expected_hash}, got {actual_hash}"
+                    )
 
             # Move into root w/ conflict handling (same as before) ...
             for e in mani:
