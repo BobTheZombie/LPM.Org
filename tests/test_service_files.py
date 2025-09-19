@@ -41,7 +41,14 @@ def test_handle_service_files_systemd_multiple_dirs(root, monkeypatch, capsys):
 
     monkeypatch.setattr(lpm.subprocess, "run", fake_run)
 
-    lpm.handle_service_files("dummy", root)
+    manifest = [
+        {"path": "/usr/lib/systemd/system/foo.service"},
+        {"path": "/lib/systemd/system/foo.service"},
+        {"path": "/lib/systemd/system/bar.service"},
+        {"path": "/lib/systemd/system/baz.timer"},
+    ]
+
+    lpm.handle_service_files("dummy", root, manifest)
 
     err = capsys.readouterr().err
 
@@ -82,7 +89,14 @@ def test_remove_service_files_systemd_multiple_dirs(root, monkeypatch, capsys):
 
     monkeypatch.setattr(lpm.subprocess, "run", fake_run)
 
-    lpm.remove_service_files("dummy", root)
+    manifest = [
+        {"path": "/usr/lib/systemd/system/foo.service"},
+        {"path": "/lib/systemd/system/foo.service"},
+        {"path": "/lib/systemd/system/bar.service"},
+        {"path": "/lib/systemd/system/baz.timer"},
+    ]
+
+    lpm.remove_service_files("dummy", root, manifest)
 
     err = capsys.readouterr().err
 
@@ -113,7 +127,11 @@ def test_handle_service_files_systemd_non_default_root_skips_systemctl(root, mon
 
     monkeypatch.setattr(lpm.subprocess, "run", fake_run)
 
-    lpm.handle_service_files("dummy", root)
+    manifest = [
+        {"path": "/lib/systemd/system/foo.service"},
+    ]
+
+    lpm.handle_service_files("dummy", root, manifest)
 
     err = capsys.readouterr().err
 
@@ -140,10 +158,44 @@ def test_remove_service_files_systemd_non_default_root_skips_systemctl(root, mon
 
     monkeypatch.setattr(lpm.subprocess, "run", fake_run)
 
-    lpm.remove_service_files("dummy", root)
+    manifest = [
+        {"path": "/lib/systemd/system/foo.service"},
+    ]
+
+    lpm.remove_service_files("dummy", root, manifest)
 
     err = capsys.readouterr().err
 
     assert "foo.service" in err
     assert "Skipping systemctl disable" in err
     assert calls == []
+
+
+def test_handle_service_files_ignores_units_not_in_manifest(root, monkeypatch, capsys):
+    tracked = root / "lib/systemd/system/foo.service"
+    untracked = root / "lib/systemd/system/other.service"
+    _create_service(tracked)
+    _create_service(untracked)
+
+    manifest = [
+        {"path": "/lib/systemd/system/foo.service"},
+    ]
+
+    monkeypatch.setitem(lpm.CONF, "INIT_POLICY", "auto")
+    monkeypatch.setattr(lpm, "detect_init_system", lambda: "systemd")
+    monkeypatch.setattr(lpm, "_is_default_root", lambda root: True)
+
+    calls = []
+
+    def fake_run(cmd, check=False, **kwargs):
+        calls.append(cmd)
+
+    monkeypatch.setattr(lpm.subprocess, "run", fake_run)
+
+    lpm.handle_service_files("dummy", root, manifest)
+
+    err = capsys.readouterr().err
+
+    assert "foo.service" in err
+    assert "other.service" not in err
+    assert calls == [["systemctl", "enable", "--now", "foo.service"]]

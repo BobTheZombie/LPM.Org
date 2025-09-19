@@ -845,8 +845,41 @@ SYSTEMD_UNIT_GLOB_PATTERNS = [
     "*.link",
 ]
 
+SYSTEMD_UNIT_DIRECTORIES = (
+    "usr/lib/systemd/system",
+    "lib/systemd/system",
+)
 
-def handle_service_files(pkg_name: str, root: Path):
+
+def _normalize_manifest_paths(manifest_entries: Optional[List[object]]) -> List[str]:
+    paths: List[str] = []
+    if not manifest_entries:
+        return paths
+    for entry in manifest_entries:
+        if isinstance(entry, dict):
+            path = entry.get("path")
+        else:
+            path = entry
+        if isinstance(path, str):
+            paths.append(path)
+    return paths
+
+
+def _iter_systemd_units_from_manifest(paths: Iterable[str]) -> Iterable[Tuple[str, str]]:
+    for path in paths:
+        if not isinstance(path, str):
+            continue
+        rel = path.lstrip("/")
+        for service_dir in SYSTEMD_UNIT_DIRECTORIES:
+            prefix = f"{service_dir}/"
+            if rel.startswith(prefix):
+                unit_name = Path(rel).name
+                if any(fnmatch.fnmatch(unit_name, pattern) for pattern in SYSTEMD_UNIT_GLOB_PATTERNS):
+                    yield service_dir, unit_name
+                break
+
+
+def handle_service_files(pkg_name: str, root: Path, manifest_entries: Optional[List[object]] = None):
     """
     Detect service files from installed package and register them
     according to the active init system.
@@ -859,20 +892,13 @@ def handle_service_files(pkg_name: str, root: Path):
 
     if init == "systemd":
         manage_systemd = _is_default_root(root)
-        service_dirs = [
-            root / "usr/lib/systemd/system",
-            root / "lib/systemd/system",
-        ]
-        unique_units = {}
+        manifest_paths = _normalize_manifest_paths(manifest_entries)
+        unique_units: Dict[str, Path] = {}
 
-        for service_dir in service_dirs:
-            if not service_dir.exists():
-                continue
-            for pattern in SYSTEMD_UNIT_GLOB_PATTERNS:
-                for svc in service_dir.glob(pattern):
-                    if not svc.is_file():
-                        continue
-                    unique_units.setdefault(svc.name, svc)
+        for service_dir, unit_name in _iter_systemd_units_from_manifest(manifest_paths):
+            svc_path = root / service_dir / unit_name
+            if svc_path.is_file():
+                unique_units.setdefault(unit_name, svc_path)
 
         if unique_units:
             units_list = ", ".join(unique_units.keys())
@@ -938,7 +964,24 @@ def handle_service_files(pkg_name: str, root: Path):
         warn("No supported init system detected")
         
         
-def remove_service_files(pkg_name: str, root: Path):
+def _load_manifest_for_package(pkg_name: str) -> List[object]:
+    try:
+        conn = db()
+    except Exception:
+        return []
+    try:
+        row = conn.execute("SELECT manifest FROM installed WHERE name=?", (pkg_name,)).fetchone()
+    finally:
+        conn.close()
+    if not row or not row[0]:
+        return []
+    try:
+        return json.loads(row[0])
+    except Exception:
+        return []
+
+
+def remove_service_files(pkg_name: str, root: Path, manifest_entries: Optional[List[object]] = None):
     """
     Handle service cleanup on package removal.
     """
@@ -950,21 +993,14 @@ def remove_service_files(pkg_name: str, root: Path):
 
     if init == "systemd":
         manage_systemd = _is_default_root(root)
-        service_dirs = [
-            root / "usr/lib/systemd/system",
-            root / "lib/systemd/system",
-        ]
-        unique_units = {}
+        if manifest_entries is None:
+            manifest_entries = _load_manifest_for_package(pkg_name)
+        manifest_paths = _normalize_manifest_paths(manifest_entries)
+        unique_units: Dict[str, str] = {}
 
-        for service_dir in service_dirs:
-            if not service_dir.exists():
-                continue
-            for pattern in SYSTEMD_UNIT_GLOB_PATTERNS:
-                for svc in service_dir.glob(pattern):
-                    if not svc.is_file():
-                        continue
-                    log(f"[systemd] Disabled unit ({service_dir}): {svc.name}")
-                    unique_units.setdefault(svc.name, svc)
+        for service_dir, unit_name in _iter_systemd_units_from_manifest(manifest_paths):
+            log(f"[systemd] Disabled unit ({root / service_dir}): {unit_name}")
+            unique_units.setdefault(unit_name, service_dir)
 
         if policy == "auto":
             if manage_systemd:
@@ -1424,7 +1460,7 @@ def _remove_installed_package(meta: dict, root: Path, dry_run: bool, conn):
             warn(f"rm {p}: {e}")
             
         # Stop/disable/init cleanup for services
-        remove_service_files(name, root)
+        remove_service_files(name, root, manifest_entries)
  
 
     conn.execute("DELETE FROM installed WHERE name=?", (name,))
@@ -1499,7 +1535,7 @@ def do_upgrade(targets: List[str], root: Path, dry: bool, verify: bool, force: b
         def svc_worker(p: PkgMeta):
             cur = u.installed.get(p.name)
             if cur:
-                remove_service_files(p.name, Path(DEFAULT_ROOT))
+                remove_service_files(p.name, Path(DEFAULT_ROOT), cur.get("manifest"))
 
         max_workers = min(8, len(upgrades))
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -2173,7 +2209,7 @@ def cmd_upgrade(a):
         def svc_worker(p: PkgMeta):
             cur = u.installed.get(p.name)
             if cur:
-                remove_service_files(p.name, Path(DEFAULT_ROOT))
+                remove_service_files(p.name, Path(DEFAULT_ROOT), cur.get("manifest"))
         max_workers = min(8, len(upgrades))
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
             list(ex.map(svc_worker, upgrades))
@@ -2920,7 +2956,7 @@ def installpkg(
         })
         
         # New: init system service integration
-        handle_service_files(meta.name, root)
+        handle_service_files(meta.name, root, mani)
 
     ok(f"Installed {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
     return meta
