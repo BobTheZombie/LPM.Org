@@ -2391,6 +2391,129 @@ def cmd_pkgbuild_to_lpmbuild(a):
     else:
         tmpdir.cleanup()
 
+
+def _read_index_source(target: str) -> str:
+    path = Path(target)
+    if path.exists():
+        return path.read_text(encoding="utf-8")
+
+    parsed = urllib.parse.urlparse(target)
+    if parsed.scheme in {"http", "https", "file"}:
+        with urllib.request.urlopen(target) as resp:
+            data = resp.read()
+        return data.decode("utf-8")
+
+    raise FileNotFoundError(target)
+
+
+def _extract_index_names(data) -> List[str]:
+    names: List[str] = []
+    if isinstance(data, dict):
+        packages = data.get("packages")
+        if isinstance(packages, list):
+            for item in packages:
+                names.extend(_extract_index_names(item))
+        for key in ("name", "pkgname", "NAME"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                names.append(value.strip())
+    elif isinstance(data, list):
+        for item in data:
+            names.extend(_extract_index_names(item))
+    elif isinstance(data, str):
+        if data.strip():
+            names.append(data.strip())
+    return names
+
+
+def _collect_pkgbuild_targets(targets: Iterable[str]) -> List[str]:
+    seen: Dict[str, None] = {}
+    ordered: List[str] = []
+
+    for target in targets:
+        resolved: List[str] = []
+        try:
+            text = _read_index_source(target)
+        except FileNotFoundError:
+            base = arch_compat.normalize_dependency_name(target) or target
+            if base:
+                resolved = [base]
+        except Exception as exc:
+            die(f"failed to read repository index {target}: {exc}")
+        else:
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError as exc:
+                die(f"invalid repository index {target}: {exc}")
+            resolved = _extract_index_names(parsed)
+
+        for name in resolved:
+            base = arch_compat.normalize_dependency_name(name) or name
+            if not base:
+                continue
+            if base not in seen:
+                seen[base] = None
+                ordered.append(base)
+
+    return ordered
+
+
+def _detect_tar_mode(path: Path) -> str:
+    lower = path.name.lower()
+    if lower.endswith(".tar.gz") or lower.endswith(".tgz"):
+        return "w:gz"
+    if lower.endswith(".tar.bz2") or lower.endswith(".tbz2"):
+        return "w:bz2"
+    if lower.endswith(".tar.xz") or lower.endswith(".txz"):
+        return "w:xz"
+    return "w"
+
+
+def cmd_pkgbuild_export_tar(a):
+    if not DEVELOPER_MODE:
+        die("pkgbuild-export-tar requires developer mode")
+
+    targets = _collect_pkgbuild_targets(a.targets)
+    if not targets:
+        die("no packages resolved from inputs")
+
+    workspace_tmp: Optional[tempfile.TemporaryDirectory[str]] = None
+    if getattr(a, "workspace", None):
+        workspace = Path(a.workspace)
+        workspace.mkdir(parents=True, exist_ok=True)
+    else:
+        workspace_tmp = tempfile.TemporaryDirectory(prefix="lpm-arch-work-")
+        workspace = Path(workspace_tmp.name)
+
+    stage_tmp = tempfile.TemporaryDirectory(prefix="lpm-arch-stage-")
+    stage_root = Path(stage_tmp.name)
+
+    try:
+        converter = arch_compat.PKGBuildConverter(workspace)
+        for name in targets:
+            converter.convert_remote(name)
+
+        scripts = sorted(converter.iter_scripts(), key=lambda item: item[0])
+        packages_root = stage_root / "packages"
+        packages_root.mkdir(parents=True, exist_ok=True)
+        for name, script_path in scripts:
+            dest_dir = packages_root / name
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(script_path, dest_dir / f"{name}.lpmbuild")
+
+        output = Path(a.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        mode = _detect_tar_mode(output)
+        with tarfile.open(output, mode) as tf:
+            tf.add(packages_root, arcname="packages")
+
+        ok(f"Exported {len(scripts)} packages to {output}")
+    finally:
+        stage_tmp.cleanup()
+        if workspace_tmp is not None:
+            workspace_tmp.cleanup()
+
+
 def cmd_genindex(a):
     repo_dir = Path(a.repo_dir)
     gen_index(repo_dir, a.base_url, arch_filter=a.arch)
@@ -2873,6 +2996,12 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--no-deps", action="store_true", help="skip converting and building dependencies")
     sp.add_argument("--install-default", choices=["y", "n"], help="default answer for install prompt")
     sp.set_defaults(func=cmd_pkgbuild_to_lpmbuild)
+
+    sp=sub.add_parser("pkgbuild-export-tar", help="Export Arch PKGBUILDs as .lpmbuild scripts in a tarball (developer mode)")
+    sp.add_argument("output", type=Path, help="output tarball path")
+    sp.add_argument("targets", nargs="+", help="Arch package names or repository index paths/URLs")
+    sp.add_argument("--workspace", type=Path, help="reuse a workspace for converted scripts")
+    sp.set_defaults(func=cmd_pkgbuild_export_tar)
 
     sp=sub.add_parser("genindex", help=f"Generate index.json for a repo directory of {EXT} files")
     sp.add_argument("repo_dir", help=f"directory containing {EXT} files")

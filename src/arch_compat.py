@@ -397,6 +397,12 @@ class PKGBuildConverter:
     def metadata_for(self, name: str) -> Optional[PKGBuildInfo]:
         return self._meta.get(name)
 
+    def iter_scripts(self) -> Iterable[tuple[str, Path]]:
+        """Yield ``(name, path)`` pairs for all converted packages."""
+
+        for name, path in self._scripts.items():
+            yield name, path
+
 
 __all__ = [
     "PKGBuildInfo",
