@@ -743,22 +743,69 @@ def solve(goals: List[str], universe: Universe) -> List[PkgMeta]:
     return sorted(chosen.values(), key=lambda p: depth_of(p))
 
 # =========================== Hooks =============================================
+def _detect_python_for_hooks() -> Optional[str]:
+    exe = sys.executable
+    if exe:
+        exe_name = Path(exe).name.lower()
+        if ("python" in exe_name or "pypy" in exe_name) and os.access(exe, os.X_OK):
+            return exe
+    for candidate in ("python3", "python", "pypy3", "pypy"):
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    return None
+
+
+def _shebang_command(script: Path) -> Optional[List[str]]:
+    try:
+        with script.open("rb") as fh:
+            first_line = fh.readline()
+    except OSError:
+        return None
+
+    if not first_line.startswith(b"#!"):
+        return None
+
+    try:
+        decoded = first_line[2:].decode("utf-8")
+    except UnicodeDecodeError:
+        decoded = first_line[2:].decode("latin-1")
+    decoded = decoded.strip()
+    if not decoded:
+        return None
+
+    return shlex.split(decoded)
+
+
+def _run_hook_script(script: Path, env: Dict[str, str]):
+    merged_env = {**os.environ, **env}
+    if script.suffix == ".py":
+        interpreter = _detect_python_for_hooks()
+        if interpreter:
+            subprocess.run([interpreter, str(script)], env=merged_env, check=True)
+            return
+
+        shebang_cmd = _shebang_command(script)
+        if shebang_cmd:
+            subprocess.run([*shebang_cmd, str(script)], env=merged_env, check=True)
+            return
+
+        raise RuntimeError(f"Unable to locate Python interpreter for hook {script}")
+
+    if os.access(script, os.X_OK):
+        subprocess.run([str(script)], env=merged_env, check=True)
+
+
 def run_hook(hook: str, env: Dict[str,str]):
     path = HOOK_DIR / hook
-    if path.exists():
-        if path.suffix == ".py":
-            subprocess.run([sys.executable, str(path)], env={**os.environ, **env}, check=True)
-        elif os.access(path, os.X_OK):
-            subprocess.run([str(path)], env={**os.environ, **env}, check=True)
+    if path.is_file():
+        _run_hook_script(path, env)
 
     dpath = HOOK_DIR / f"{hook}.d"
     if dpath.is_dir():
         for script in sorted(dpath.iterdir()):
             if script.is_file():
-                if script.suffix == ".py":
-                    subprocess.run([sys.executable, str(script)], env={**os.environ, **env}, check=True)
-                elif os.access(script, os.X_OK):
-                    subprocess.run([str(script)], env={**os.environ, **env}, check=True)
+                _run_hook_script(script, env)
         
 # =========================== Service File Handling =============================
 def _is_default_root(root: Path) -> bool:
