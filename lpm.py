@@ -1704,7 +1704,9 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
     name = scal.get("NAME", "")
     version = scal.get("VERSION", "")
     release = scal.get("RELEASE", "1")
-    arch = scal.get("ARCH") or ARCH
+    arch = (scal.get("ARCH") or ARCH or "").strip()
+    if not arch:
+        arch = PkgMeta.__dataclass_fields__["arch"].default
     summary = scal.get("SUMMARY", "")
     url = scal.get("URL", "")
     license_ = scal.get("LICENSE", "")

@@ -33,3 +33,32 @@ def test_run_lpmbuild_generates_install_script(tmp_path, monkeypatch):
     assert install_sh.read_text() == "#!/bin/sh\nset -e\necho generated\n"
     assert os.access(install_sh, os.X_OK)
     shutil.rmtree(called['stagedir'])
+
+
+def test_run_lpmbuild_defaults_arch_to_noarch(tmp_path, monkeypatch):
+    script = tmp_path / "foo.lpmbuild"
+    script.write_text(
+        "NAME=foo\nVERSION=1\nRELEASE=1\nprepare(){ :; }\nbuild(){ :; }\ninstall(){ :; }\n"
+    )
+
+    monkeypatch.setattr(lpm, "ARCH", "")
+    monkeypatch.setattr(lpm, "generate_install_script", lambda stagedir: "echo hi")
+    monkeypatch.setattr(lpm, "sandboxed_run", lambda *args, **kwargs: None)
+
+    recorded = {}
+
+    def fake_build_package(stagedir, meta, out, sign=True):
+        recorded["meta_arch"] = meta.arch
+        recorded["stagedir"] = stagedir
+        recorded["out"] = out
+        out.write_text("pkg")
+
+    monkeypatch.setattr(lpm, "build_package", fake_build_package)
+
+    out_path, _, _ = lpm.run_lpmbuild(script, outdir=tmp_path, prompt_install=False, build_deps=False)
+
+    assert recorded["meta_arch"] == lpm.PkgMeta.__dataclass_fields__["arch"].default
+    assert out_path.name.endswith(".zst")
+    assert ".." not in out_path.name
+
+    shutil.rmtree(recorded["stagedir"])
