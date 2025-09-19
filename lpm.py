@@ -1197,12 +1197,6 @@ def extract_tar(blob: Path, root: Path) -> List[str]:
                 tf.extract(m, path=str(root), filter="data")
             manifest.append("/" + rel)
 
-    # Run embedded install script if present
-    script = root / ".lpm-install.sh"
-    if script.exists() and os.access(script, os.X_OK):
-        log(f"[lpm] Running embedded install script: {script}")
-        subprocess.run([str(script)], check=False)
-
     return manifest
 
 
@@ -2510,6 +2504,31 @@ def installpkg(
                             print("Please enter R, S, or A.")
 
                 shutil.move(str(src), str(dest))
+
+            install_script_rel = "/.lpm-install.sh"
+            staged_script = tmp_root / install_script_rel.lstrip("/")
+            installed_script = root / install_script_rel.lstrip("/")
+            script_entry = next((e for e in mani if e["path"] == install_script_rel), None)
+
+            script_to_run = None
+            if installed_script.exists():
+                script_to_run = installed_script
+            elif staged_script.exists():
+                script_to_run = staged_script
+
+            if script_to_run and os.access(script_to_run, os.X_OK):
+                env = os.environ.copy()
+                env["LPM_ROOT"] = str(root)
+                log(f"[lpm] Running embedded install script: {script_to_run}")
+                subprocess.run([str(script_to_run)], check=False, cwd=str(root), env=env)
+
+            if script_entry and not script_entry.get("keep", False):
+                for candidate in (installed_script, staged_script):
+                    try:
+                        candidate.unlink()
+                    except FileNotFoundError:
+                        pass
+                mani = [e for e in mani if e["path"] != install_script_rel]
 
             # Update DB
             conn.execute(
