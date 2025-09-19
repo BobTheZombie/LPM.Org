@@ -1553,8 +1553,10 @@ set -e
 source "{script_path}"
 _emit_scalar() {{
   n="$1"
-  v="${{!1}}"
-  printf "__SCALAR__ %s=%s\\n" "$n" "$v"
+  if [[ ${{!n+x}} == x ]]; then
+    v="${{!n}}"
+    printf "__SCALAR__ %s=%s\\n" "$n" "$v"
+  fi
 }}
 _emit_array() {{
   n="$1"
@@ -1702,7 +1704,7 @@ def run_lpmbuild(script: Path, outdir: Optional[Path]=None, *, prompt_install: b
     name = scal.get("NAME", "")
     version = scal.get("VERSION", "")
     release = scal.get("RELEASE", "1")
-    arch = scal.get("ARCH", ARCH)
+    arch = scal.get("ARCH") or ARCH
     summary = scal.get("SUMMARY", "")
     url = scal.get("URL", "")
     license_ = scal.get("LICENSE", "")

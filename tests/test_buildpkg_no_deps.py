@@ -1,3 +1,4 @@
+import importlib
 import os
 import sys
 import subprocess
@@ -51,3 +52,47 @@ def test_buildpkg_no_deps_skips_dependency_build(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert any(tmp_path.glob("*.zst"))
+
+
+def test_run_lpmbuild_defaults_missing_arch(tmp_path, monkeypatch):
+    monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "state"))
+
+    script = tmp_path / "bar.lpmbuild"
+    script.write_text(
+        textwrap.dedent(
+            """
+            NAME=bar
+            VERSION=1
+            RELEASE=1
+            prepare() { :; }
+            build() { :; }
+            install() {
+                mkdir -p "$pkgdir"
+                echo hi > "$pkgdir/hi"
+            }
+            """
+        )
+    )
+
+    for module in ("lpm", "src.config"):
+        sys.modules.pop(module, None)
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+    spec = importlib.util.spec_from_file_location("lpm", Path(__file__).resolve().parent.parent / "lpm.py")
+    assert spec and spec.loader
+    lpm = importlib.util.module_from_spec(spec)
+    sys.modules["lpm"] = lpm
+    spec.loader.exec_module(lpm)
+
+    built, _, _ = lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        prompt_default="n",
+        is_dep=False,
+        build_deps=False,
+    )
+
+    meta, _ = lpm.read_package_meta(built)
+    assert meta.arch == lpm.ARCH
