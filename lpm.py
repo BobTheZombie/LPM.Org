@@ -2455,9 +2455,19 @@ def installpkg(
             # Validate manifest files
             for e in mani:
                 f = tmp_root / e["path"].lstrip("/")
-                if not f.exists():
+                if not f.exists() and not f.is_symlink():
                     die(f"Manifest missing file: {e['path']}")
-                h = sha256sum(f)
+                if f.is_symlink() or "link" in e:
+                    try:
+                        target = os.readlink(f)
+                    except OSError:
+                        die(f"Manifest missing file: {e['path']}")
+                    expected_target = e.get("link")
+                    if expected_target is not None and target != expected_target:
+                        die(f"Link mismatch for {e['path']}: expected {expected_target}, got {target}")
+                    h = hashlib.sha256(target.encode()).hexdigest()
+                else:
+                    h = sha256sum(f)
                 if h != e["sha256"]:
                     die(f"Hash mismatch for {e['path']}: expected {e['sha256']}, got {h}")
 
