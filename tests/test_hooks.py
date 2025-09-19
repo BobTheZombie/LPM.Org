@@ -1,8 +1,44 @@
 import os
 import sys
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+for name in ("zstandard", "tqdm"):
+    if name not in sys.modules:
+        module = types.ModuleType(name)
+        if name == "zstandard":
+            class _DummyCompressor:
+                def stream_writer(self, fh):
+                    return fh
+
+            class _DummyDecompressor:
+                def stream_reader(self, fh):
+                    return fh
+
+            module.ZstdCompressor = _DummyCompressor
+            module.ZstdDecompressor = _DummyDecompressor
+        else:
+            class _DummyTqdm:
+                def __init__(self, iterable=None, **kwargs):
+                    self.iterable = iterable
+
+                def __iter__(self):
+                    return iter(self.iterable or [])
+
+                def update(self, *args, **kwargs):
+                    return None
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            module.tqdm = _DummyTqdm  # type: ignore[attr-defined]
+
+        sys.modules[name] = module
 
 import lpm
 
@@ -21,6 +57,25 @@ def test_python_hook(tmp_path, monkeypatch):
     lpm.run_hook("sample", {})
 
     assert marker.read_text() == "ok"
+
+
+def test_python_hook_falls_back_when_sys_executable_is_not_python(tmp_path, monkeypatch):
+    hook_dir = tmp_path / "hooks"
+    hook_dir.mkdir()
+    monkeypatch.setattr(lpm, "HOOK_DIR", hook_dir)
+
+    d = hook_dir / "sample.d"
+    d.mkdir()
+    marker = hook_dir / "ran"
+    script = d / "hook.py"
+    script.write_text(f"open({repr(str(marker))}, 'w').write('fallback')")
+
+    monkeypatch.setattr(lpm.sys, "executable", str(tmp_path / "lpm"), raising=False)
+    monkeypatch.setattr(lpm.sys, "frozen", True, raising=False)
+
+    lpm.run_hook("sample", {})
+
+    assert marker.read_text() == "fallback"
 
 
 def test_post_install_hooks_run(tmp_path, monkeypatch):
