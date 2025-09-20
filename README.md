@@ -96,7 +96,7 @@ contents and runs common maintenance commands based on what it finds:
   [--summary TEXT] [--url URL] [--license LICENSE] [--requires PKG ...]
   [--provides PKG ...] [--conflicts PKG ...] [--obsoletes PKG ...]
   [--recommends PKG ...] [--suggests PKG ...] [--output FILE] [--no-sign]`
-  – build an `.lpm` package from a staged root.
+  – build a `.zst` package from a staged root.
 - `lpm buildpkg SCRIPT [--outdir PATH] [--no-deps]` – run a `.lpmbuild` script to
   produce a package.
 - `lpm pkgbuild-export-tar OUTPUT TARGET... [--workspace DIR]` – developer mode
