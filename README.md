@@ -18,14 +18,22 @@ The Linux Package Manager
 - **.lpmbuild scripts** for reproducible package builds and a `build` command to
   package staged roots.
 
+## Documentation
+
+The new [Technical How-To](docs/TECHNICAL-HOWTO.md) walks through every
+end-user command in depth, including configuration, repository management,
+package workflows, snapshotting, verification, and package creation. Refer to
+it whenever you need detailed examples or flag reference material.
+
 ## Command line interface
 
-`lpm` uses sub‑commands.  Each command listed below shows its required
+`lpm` uses sub‑commands. Each command listed below shows its required
 arguments and optional flags.
 
 - `lpm setup` – launch the interactive first-run configuration wizard. The
   wizard also runs automatically the first time `lpm` starts if
   `/etc/lpm/lpm.conf` is missing.
+- `lpm clean` – purge cached package blobs from `${XDG_CACHE_HOME:-~/.cache}/lpm`.
 
 ### Repository management
 
@@ -42,8 +50,10 @@ arguments and optional flags.
 
 - `lpm install NAME... [--root PATH] [--dry-run] [--no-verify] [--allow-fallback|--no-fallback]`
 - `lpm remove NAME... [--root PATH] [--dry-run] [--force]`
+- `lpm autoremove [--root PATH] [--dry-run]` – uninstall orphaned dependencies.
 - `lpm upgrade [NAME ...] [--root PATH] [--dry-run] [--no-verify] [--allow-fallback|--no-fallback] [--force]`
 - `lpm list` – list installed packages.
+- `lpm files NAME` – list files that belong to an installed package.
 - `lpm verify [--root PATH]` – verify that installed files exist.
 
 When building a package, LPM automatically generates a post-install script if
