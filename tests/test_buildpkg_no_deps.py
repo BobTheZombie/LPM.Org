@@ -85,7 +85,7 @@ def test_run_lpmbuild_defaults_missing_arch(tmp_path, monkeypatch):
     sys.modules["lpm"] = lpm
     spec.loader.exec_module(lpm)
 
-    built, _, _ = lpm.run_lpmbuild(
+    built, _, _, splits = lpm.run_lpmbuild(
         script,
         outdir=tmp_path,
         prompt_install=False,
@@ -96,3 +96,4 @@ def test_run_lpmbuild_defaults_missing_arch(tmp_path, monkeypatch):
 
     meta, _ = lpm.read_package_meta(built)
     assert meta.arch == lpm.ARCH
+    assert splits == []

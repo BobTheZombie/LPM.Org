@@ -55,10 +55,11 @@ def test_run_lpmbuild_defaults_arch_to_noarch(tmp_path, monkeypatch):
 
     monkeypatch.setattr(lpm, "build_package", fake_build_package)
 
-    out_path, _, _ = lpm.run_lpmbuild(script, outdir=tmp_path, prompt_install=False, build_deps=False)
+    out_path, _, _, splits = lpm.run_lpmbuild(script, outdir=tmp_path, prompt_install=False, build_deps=False)
 
     assert recorded["meta_arch"] == lpm.PkgMeta.__dataclass_fields__["arch"].default
     assert out_path.name.endswith(".zst")
     assert ".." not in out_path.name
+    assert splits == []
 
     shutil.rmtree(recorded["stagedir"])

@@ -17,7 +17,7 @@ def test_cmd_buildpkg_shows_progress_and_summary(monkeypatch, tmp_path, capsys):
             print(f"[{i}/3] {phase}", file=sys.stderr)
         out = (outdir or script.parent) / "foo-1-1.noarch.zst"
         out.write_text("dummy")
-        return out, 1.0, 3
+        return out, 1.0, 3, []
 
     def fake_read_package_meta(path):
         meta = PkgMeta(name="foo", version="1", release="1", arch="noarch", summary="demo")
