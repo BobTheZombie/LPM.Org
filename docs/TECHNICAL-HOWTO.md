@@ -348,6 +348,22 @@ Meson-style summary with build time and dependency count when it finishes.【F:l
 $ lpm buildpkg packages/hello/hello.lpmbuild --outdir dist
 ```
 
+During the `install` phase the script can emit extra packages by calling the
+`LPM_SPLIT_PACKAGE` helper. The environment variable points to a tiny wrapper
+around `lpm splitpkg` that reuses the metadata collected from the parent
+package. Supply a staged root and any metadata overrides to produce a
+fully-signed package inline, for example:
+
+```bash
+splitdir="$BUILDROOT/gcc-fortran"
+mkdir -p "$splitdir/usr/bin"
+cp fortran/* "$splitdir/usr/bin/"
+"$LPM_SPLIT_PACKAGE" --stagedir "$splitdir" --name gcc-fortran --requires gcc-libs
+```
+
+Each invocation writes the package to the current build output directory and is
+reported alongside the primary package when the build completes.【F:lpm.py†L1833-L1894】【F:lpm.py†L2405-L2445】
+
 ### 10.3 `lpm genindex`
 
 Generates an `index.json` for a repository directory full of `.zst` archives.

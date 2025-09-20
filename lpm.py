@@ -1393,7 +1393,7 @@ def do_install(
             warn(f"Could not fetch {p.name} from repos ({res}), trying GitLab fallback...")
             tmp = Path(f"/tmp/lpm-dep-{p.name}.lpmbuild")
             fetch_lpmbuild(p.name, tmp)
-            built, _, _ = run_lpmbuild(tmp, prompt_install=False, is_dep=True, build_deps=True)
+            built, _, _, _ = run_lpmbuild(tmp, prompt_install=False, is_dep=True, build_deps=True)
             meta = installpkg(
                 built,
                 root=root,
@@ -1743,7 +1743,7 @@ def build_from_gitlab(pkgname: str) -> Path:
 
     tmp = Path(f"/tmp/lpm-dep-{pkgname}.lpmbuild")
     fetch_lpmbuild(pkgname, tmp)
-    built, _, _ = run_lpmbuild(tmp, outdir=CACHE_DIR, prompt_install=False, is_dep=True, build_deps=True)
+    built, _, _, _ = run_lpmbuild(tmp, outdir=CACHE_DIR, prompt_install=False, is_dep=True, build_deps=True)
 
     # Copy to a stable cache filename
     if built != cache_pkg:
@@ -1795,12 +1795,21 @@ def run_lpmbuild(
     is_dep: bool = False,
     build_deps: bool = True,
     fetcher: Optional[Callable[[str, Path], Path]] = None,
-) -> Tuple[Path, float, int]:
+) -> Tuple[Path, float, int, List[Tuple[Path, PkgMeta]]]:
     script_path = script.resolve()
     script_dir = script_path.parent
 
     # --- Capture metadata first ---
-    scal, arr = _capture_lpmbuild_metadata(script_path)
+    had_split_cmd = "LPM_SPLIT_PACKAGE" in os.environ
+    if not had_split_cmd:
+        os.environ["LPM_SPLIT_PACKAGE"] = shutil.which("true") or "/bin/true"
+
+    try:
+        scal, arr = _capture_lpmbuild_metadata(script_path)
+    finally:
+        if not had_split_cmd:
+            with contextlib.suppress(KeyError):
+                del os.environ["LPM_SPLIT_PACKAGE"]
     name = scal.get("NAME", "")
     version = scal.get("VERSION", "")
     release = scal.get("RELEASE", "1")
@@ -1885,10 +1894,65 @@ def run_lpmbuild(
     buildroot = Path(f"/tmp/build-{name}")
     srcroot   = Path(f"/tmp/src-{name}")
 
+    split_meta = {
+        "name": name,
+        "version": version,
+        "release": release,
+        "arch": arch,
+        "summary": summary,
+        "url": url,
+        "license": license_,
+        "requires": arr.get("REQUIRES", []),
+        "provides": arr.get("PROVIDES", []),
+        "conflicts": arr.get("CONFLICTS", []),
+        "obsoletes": arr.get("OBSOLETES", []),
+        "recommends": arr.get("RECOMMENDS", []),
+        "suggests": arr.get("SUGGESTS", []),
+        "kernel": kernel,
+        "mkinitcpio_preset": mkinitcpio_preset,
+    }
+    tmp_files: List[Path] = []
+
+    with tempfile.NamedTemporaryFile(
+        prefix="lpm-split-meta-",
+        suffix=".json",
+        delete=False,
+        mode="w",
+        encoding="utf-8",
+    ) as f:
+        json.dump(split_meta, f)
+        split_meta_path = Path(f.name)
+        tmp_files.append(split_meta_path)
+
+    with tempfile.NamedTemporaryFile(
+        prefix="lpm-split-record-",
+        suffix=".jsonl",
+        delete=False,
+        mode="w",
+        encoding="utf-8",
+    ) as f:
+        split_record_path = Path(f.name)
+        tmp_files.append(split_record_path)
+
     for d in (stagedir, buildroot, srcroot):
         if d.exists():
             shutil.rmtree(d)
         d.mkdir(parents=True)
+
+    helper_name = "lpm-split-package"
+    helper_path = buildroot / helper_name
+    helper_path.write_text(
+        "#!/bin/sh\n"
+        f"exec {shlex.quote(sys.executable)} {shlex.quote(str(Path(__file__).resolve()))} splitpkg \"$@\"\n",
+        encoding="utf-8",
+    )
+    helper_path.chmod(0o755)
+    helper_env_path: Path
+    sandbox_mode = CONF.get("SANDBOX_MODE", "none").lower()
+    if sandbox_mode == "bwrap":
+        helper_env_path = Path("/build") / helper_name
+    else:
+        helper_env_path = helper_path
 
     env = os.environ.copy()
     env.update({
@@ -1896,6 +1960,10 @@ def run_lpmbuild(
         "pkgdir": str(stagedir),
         "BUILDROOT": str(buildroot),
         "SRCROOT": str(srcroot),
+        "LPM_SPLIT_PACKAGE": str(helper_env_path),
+        "LPM_SPLIT_BASE_META": str(split_meta_path),
+        "LPM_SPLIT_RECORD": str(split_record_path),
+        "LPM_SPLIT_OUTDIR": str(outdir or script_dir),
     })
 
     base_flags = f"{OPT_LEVEL} -march={MARCH} -mtune={MTUNE} -pipe -fPIC"
@@ -1974,9 +2042,35 @@ def run_lpmbuild(
     outdir = script_dir if outdir is None else outdir
     out = outdir / f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}"
     build_package(stagedir, meta, out, sign=True)
+    split_records: List[Tuple[Path, PkgMeta]] = []
+    try:
+        if split_record_path.exists():
+            for line in split_record_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    path = Path(data.get("path", "")).resolve()
+                    meta_dict = data.get("meta", {})
+                    meta_dict.setdefault("name", meta.name)
+                    meta_dict.setdefault("version", meta.version)
+                    meta_dict.setdefault("release", meta.release)
+                    meta_dict.setdefault("arch", meta.arch)
+                    pkg_meta = PkgMeta.from_dict(meta_dict)
+                    split_records.append((path, pkg_meta))
+                except Exception as e:
+                    warn(f"Failed to parse split package record: {e}")
+    finally:
+        for tmp in tmp_files:
+            with contextlib.suppress(Exception):
+                tmp.unlink()
+        with contextlib.suppress(Exception):
+            helper_path.unlink()
+
     if prompt_install:
         prompt_install_pkg(out, kind="dependency" if is_dep else "package", default=prompt_default)
-    return out, duration, phase_count
+    return out, duration, phase_count, split_records
 
 # =========================== CLI commands =====================================
 def cmd_repolist(_):
@@ -2445,6 +2539,93 @@ def cmd_build(a):
     build_package(stagedir, meta, out, sign=(not a.no_sign))
     prompt_install_pkg(out, default=a.install_default)
 
+def cmd_splitpkg(a):
+    stagedir = Path(a.stagedir)
+
+    base_meta_path = os.environ.get("LPM_SPLIT_BASE_META")
+    base_meta: Dict[str, object] = {}
+    if base_meta_path:
+        try:
+            base_meta = read_json(Path(base_meta_path))
+        except Exception as e:
+            warn(f"Could not read split package defaults: {e}")
+
+    def _get_default(key: str, fallback=None):
+        value = getattr(a, key, None)
+        if value is not None:
+            return value
+        return base_meta.get(key, fallback)
+
+    name = _get_default("name")
+    if not name:
+        die("splitpkg requires --name or LPM_SPLIT_BASE_META")
+    version = _get_default("version", "")
+    if not version:
+        die("splitpkg missing version (set --version or VERSION in defaults)")
+    release = _get_default("release", "1")
+    arch = _get_default("arch", ARCH or "noarch") or "noarch"
+    summary = _get_default("summary", "")
+    url = _get_default("url", "")
+    license_ = _get_default("license", "")
+
+    def _merge_list(opt_name: str) -> List[str]:
+        opt = getattr(a, opt_name, None)
+        if opt:
+            return [str(x) for x in opt]
+        base = base_meta.get(opt_name)
+        if isinstance(base, list):
+            return [str(x) for x in base]
+        return []
+
+    requires = _merge_list("requires")
+    provides = _merge_list("provides")
+    conflicts = _merge_list("conflicts")
+    obsoletes = _merge_list("obsoletes")
+    recommends = _merge_list("recommends")
+    suggests = _merge_list("suggests")
+    kernel = bool(_get_default("kernel", False))
+    mkinitcpio_preset = _get_default("mkinitcpio_preset")
+
+    meta = PkgMeta(
+        name=name,
+        version=str(version),
+        release=str(release),
+        arch=str(arch),
+        summary=str(summary),
+        url=str(url),
+        license=str(license_),
+        requires=requires,
+        provides=provides,
+        conflicts=conflicts,
+        obsoletes=obsoletes,
+        recommends=recommends,
+        suggests=suggests,
+        kernel=kernel,
+        mkinitcpio_preset=mkinitcpio_preset if mkinitcpio_preset else None,
+    )
+
+    outdir = Path(a.outdir or os.environ.get("LPM_SPLIT_OUTDIR") or stagedir.parent)
+    out: Path
+    if a.output:
+        out = Path(a.output)
+    else:
+        out = outdir / f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}"
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    build_package(stagedir, meta, out, sign=(not a.no_sign))
+
+    record_path = os.environ.get("LPM_SPLIT_RECORD")
+    if record_path:
+        try:
+            rec = {"path": str(out), "meta": dataclasses.asdict(meta)}
+            with open(record_path, "a", encoding="utf-8") as f:
+                json.dump(rec, f)
+                f.write("\n")
+        except Exception as e:
+            warn(f"Could not record split package metadata: {e}")
+
+    ok(f"Built split package {out}")
+
 def cmd_buildpkg(a):
     script_path = Path(a.script)
     fetch_override: Optional[Callable[[str, Path], Path]] = None
@@ -2469,7 +2650,7 @@ def cmd_buildpkg(a):
             fetch_override = converter.make_fetcher()
 
     try:
-        out, duration, phases = run_lpmbuild(
+        out, duration, phases, splits = run_lpmbuild(
             script_path,
             a.outdir,
             build_deps=not a.no_deps,
@@ -2483,6 +2664,9 @@ def cmd_buildpkg(a):
     if out and out.exists():
         meta, _ = read_package_meta(out)
         print_build_summary(meta, out, duration, len(meta.requires), phases)
+        if splits:
+            for spath, smeta in splits:
+                ok(f"Split: {spath} ({smeta.name})")
         ok(f"Built {out}")
     else:
         die(f"Build failed for {a.script}")
@@ -2516,7 +2700,7 @@ def cmd_pkgbuild_to_lpmbuild(a):
             fetch_override = converter.make_fetcher()
 
         try:
-            out, duration, phases = run_lpmbuild(
+            out, duration, phases, splits = run_lpmbuild(
                 script_path,
                 a.outdir,
                 prompt_install=a.install,
@@ -2530,6 +2714,9 @@ def cmd_pkgbuild_to_lpmbuild(a):
         if out and out.exists():
             meta, _ = read_package_meta(out)
             print_build_summary(meta, out, duration, len(meta.requires), phases)
+            if splits:
+                for spath, smeta in splits:
+                    ok(f"Split: {spath} ({smeta.name})")
             ok(f"Built {out}")
         else:
             die(f"Build failed for {script_path}")
@@ -3176,6 +3363,26 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--no-sign", action="store_true", help="do not sign even if key exists")
     sp.add_argument("--install-default", choices=["y", "n"], help="default answer for install prompt")
     sp.set_defaults(func=cmd_build)
+
+    sp=sub.add_parser("splitpkg", help=f"Package an additional staged root during .lpmbuild execution")
+    sp.add_argument("--stagedir", required=True, type=Path, help="directory containing files for the split package")
+    sp.add_argument("--name", help="name of the split package (defaults to base NAME)")
+    sp.add_argument("--version", help="override version (defaults to base VERSION)")
+    sp.add_argument("--release", help="override release (defaults to base RELEASE)")
+    sp.add_argument("--arch", help="override architecture (defaults to base ARCH)")
+    sp.add_argument("--summary", help="package summary")
+    sp.add_argument("--url", help="homepage URL")
+    sp.add_argument("--license", help="license identifier")
+    sp.add_argument("--requires", action="append", help="dependency (can be repeated)")
+    sp.add_argument("--provides", action="append", help="virtual provide (can be repeated)")
+    sp.add_argument("--conflicts", action="append", help="conflicting package (can be repeated)")
+    sp.add_argument("--obsoletes", action="append", help="obsoleted package (can be repeated)")
+    sp.add_argument("--recommends", action="append", help="recommended dependency (can be repeated)")
+    sp.add_argument("--suggests", action="append", help="suggested dependency (can be repeated)")
+    sp.add_argument("--outdir", type=Path, help="directory for built split packages")
+    sp.add_argument("--output", type=Path, help=f"explicit output {EXT} path")
+    sp.add_argument("--no-sign", action="store_true", help="do not sign even if key exists")
+    sp.set_defaults(func=cmd_splitpkg)
 
     sp=sub.add_parser("buildpkg", help=f"Build a {EXT} package from a .lpmbuild script")
     sp.add_argument("script", type=Path)

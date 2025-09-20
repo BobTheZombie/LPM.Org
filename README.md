@@ -97,6 +97,12 @@ contents and runs common maintenance commands based on what it finds:
   [--provides PKG ...] [--conflicts PKG ...] [--obsoletes PKG ...]
   [--recommends PKG ...] [--suggests PKG ...] [--output FILE] [--no-sign]`
   – build a `.zst` package from a staged root.
+- `lpm splitpkg --stagedir DIR [--name NAME] [--version VERSION] [--release N]`
+  `[--arch ARCH] [--summary TEXT] [--requires PKG ...] [--provides PKG ...]`
+  `[--conflicts PKG ...] [--obsoletes PKG ...] [--recommends PKG ...]`
+  `[--suggests PKG ...] [--outdir DIR] [--output FILE] [--no-sign]` – package an
+  additional staged root (for split packages) using the metadata gathered from
+  the parent `.lpmbuild`.
 - `lpm buildpkg SCRIPT [--outdir PATH] [--no-deps]` – run a `.lpmbuild` script to
   produce a package.
 - `lpm pkgbuild-export-tar OUTPUT TARGET... [--workspace DIR]` – developer mode
