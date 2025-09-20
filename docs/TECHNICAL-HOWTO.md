@@ -128,7 +128,7 @@ Conflicts:  libressl
 Obsoletes:  -
 Recommends: -
 Suggests:   -
-Blob:       openssl-3.3.1-1.x86_64.lpm
+Blob:       openssl-3.3.1-1.x86_64.zst
 ```
 
 ### 3.3 `lpm list`
@@ -176,13 +176,13 @@ $ sudo lpm install vim
 
 ### 4.2 `lpm installpkg FILE ...`
 
-Installs local `.lpm` archives directly. Each file is validated (extension,
+Installs local `.zst` archives directly. Each file is validated (extension,
 magic number, signature if `--verify`), metadata is read, and the package is
 installed through the same pipeline used by repository installs.【F:lpm.py†L2672-L2767】
 Options include `--root`, `--dry-run`, `--verify`, and `--force`.
 
 ```bash
-$ sudo lpm installpkg ./builds/hello-1.0-1.x86_64.lpm --verify
+$ sudo lpm installpkg ./builds/hello-1.0-1.x86_64.zst --verify
 ```
 
 ## 5. Removing Software
@@ -210,7 +210,7 @@ $ sudo lpm autoremove
 ### 5.3 `lpm removepkg NAME ...`
 
 Removes already-installed packages by name without consulting repositories,
-primarily for local `.lpm` deployments. It runs in parallel for efficiency and
+primarily for local `.zst` deployments. It runs in parallel for efficiency and
 accepts `--root`, `--dry-run`, and `--force`.【F:lpm.py†L2600-L2648】
 
 ```bash
@@ -327,14 +327,14 @@ $ sudo lpm bootstrap /srv/chroot --include openssh vim
 
 ### 10.1 `lpm build`
 
-Packages a staged filesystem tree (`DESTDIR`) into an `.lpm` archive. You must
+Packages a staged filesystem tree (`DESTDIR`) into a `.zst` archive. You must
 supply metadata such as `--name`, `--version`, and optionally dependency lists
 (`--requires`, `--provides`, etc.). LPM signs the package unless `--no-sign` is
 passed, then optionally prompts for installation.【F:lpm.py†L2394-L2411】
 
 ```bash
 $ lpm build pkgroot --name hello --version 1.0 --arch x86_64 --summary "Hello CLI" \
-      --requires glibc --output dist/hello-1.0-1.x86_64.lpm
+      --requires glibc --output dist/hello-1.0-1.x86_64.zst
 ```
 
 ### 10.2 `lpm buildpkg`
@@ -350,7 +350,7 @@ $ lpm buildpkg packages/hello/hello.lpmbuild --outdir dist
 
 ### 10.3 `lpm genindex`
 
-Generates an `index.json` for a repository directory full of `.lpm` archives.
+Generates an `index.json` for a repository directory full of `.zst` archives.
 You can set a `--base-url` to embed download URLs and restrict output to a
 specific `--arch`. Useful for publishing custom repositories.【F:lpm.py†L2652-L2654】
 
