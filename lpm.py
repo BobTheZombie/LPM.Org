@@ -2255,10 +2255,60 @@ def cmd_files(a):
         path = e["path"] if isinstance(e, dict) else e
         print(path)
 
+def _format_install_time(ts: Optional[int]) -> str:
+    if not ts:
+        return "unknown"
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(ts)))
+    except (OverflowError, ValueError, OSError):
+        return "unknown"
+
+
 def cmd_list_installed(_):
-    conn=db()
-    for n,v,r,a in conn.execute("SELECT name,version,release,arch FROM installed ORDER BY name"):
-        print(f"{n:30} {v}-{r}.{a}")
+    conn = db()
+    rows = list(
+        conn.execute(
+            "SELECT name,version,release,arch,install_time,explicit FROM installed ORDER BY name"
+        )
+    )
+    conn.close()
+
+    if not rows:
+        print("No packages installed.")
+        return
+
+    table_rows = []
+    explicit_count = 0
+    for name, version, release, arch, installed_ts, explicit in rows:
+        if explicit:
+            explicit_count += 1
+        table_rows.append(
+            (
+                name,
+                f"{version}-{release}",
+                arch,
+                _format_install_time(installed_ts),
+                "explicit" if explicit else "dependency",
+            )
+        )
+
+    headers = ("Name", "Version", "Arch", "Installed", "Origin")
+    widths = [
+        max(len(header), *(len(row[idx]) for row in table_rows)) for idx, header in enumerate(headers)
+    ]
+
+    def fmt_row(row):
+        return "  ".join(col.ljust(width) for col, width in zip(row, widths))
+
+    print(f"Installed packages: {len(rows)} total")
+    print(fmt_row(headers))
+    print("  ".join("-" * w for w in widths))
+    for row in table_rows:
+        print(fmt_row(row))
+
+    deps = len(rows) - explicit_count
+    print()
+    print(f"Explicit: {explicit_count}    Dependencies: {deps}")
 
 def cmd_snapshots(a):
     if a.delete:
