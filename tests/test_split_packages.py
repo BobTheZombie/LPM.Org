@@ -186,3 +186,60 @@ def test_split_package_helper_falls_back_to_argv0(tmp_path, monkeypatch, lpm_mod
     assert str(missing_executable) not in helper_contents
 
     original_unlink(helper_path)
+
+
+def test_split_package_helper_for_frozen_executable(tmp_path, monkeypatch, lpm_module):
+    script = tmp_path / "split.lpmbuild"
+    script.write_text(
+        "\n".join(
+            [
+                "NAME=foo",
+                "VERSION=1.0.0",
+                "RELEASE=1",
+                "ARCH=noarch",
+                "SUMMARY=\"Base package\"",
+                "prepare(){ :; }",
+                "build(){ :; }",
+                "install(){",
+                "  mkdir -p \"$pkgdir/usr/bin\"",
+                "  echo base > \"$pkgdir/usr/bin/foo\"",
+                "}",
+            ]
+        )
+    )
+
+    frozen_binary = tmp_path / "frozen-lpm"
+    frozen_binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    frozen_binary.chmod(0o755)
+
+    current_argv = list(sys.argv)
+    monkeypatch.setattr(sys, "executable", str(frozen_binary))
+    monkeypatch.setattr(sys, "argv", [str(frozen_binary)] + current_argv[1:])
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+    helper_path = Path("/tmp/build-foo/lpm-split-package")
+    original_unlink = Path.unlink
+    with contextlib.suppress(FileNotFoundError):
+        original_unlink(helper_path)
+
+    def fake_unlink(self, *args, **kwargs):
+        if self == helper_path:
+            return None
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fake_unlink)
+
+    lpm_module.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    helper_contents = helper_path.read_text(encoding="utf-8")
+    expected = f"exec {shlex.quote(str(frozen_binary.resolve()))} splitpkg \"$@\""
+    assert expected in helper_contents
+    module_path = Path(lpm_module.__file__).resolve()
+    assert str(module_path) not in helper_contents
+
+    original_unlink(helper_path)
