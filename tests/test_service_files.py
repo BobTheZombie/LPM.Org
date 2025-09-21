@@ -1,10 +1,46 @@
 import sys
+import types
 from pathlib import Path
 
 import pytest
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+for name in ("zstandard", "tqdm"):
+    if name not in sys.modules:
+        module = types.ModuleType(name)
+        if name == "zstandard":
+            class _DummyCompressor:
+                def stream_writer(self, fh):
+                    return fh
+
+            class _DummyDecompressor:
+                def stream_reader(self, fh):
+                    return fh
+
+            module.ZstdCompressor = _DummyCompressor
+            module.ZstdDecompressor = _DummyDecompressor
+        else:
+            class _DummyTqdm:
+                def __init__(self, iterable=None, **kwargs):
+                    self.iterable = iterable
+
+                def __iter__(self):
+                    return iter(self.iterable or [])
+
+                def update(self, *args, **kwargs):
+                    return None
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            module.tqdm = _DummyTqdm  # type: ignore[attr-defined]
+
+        sys.modules[name] = module
 
 import lpm
 
@@ -107,6 +143,62 @@ def test_remove_service_files_systemd_multiple_dirs(root, monkeypatch, capsys):
     assert err.count("baz.timer") == 1
 
     assert calls == [
+        ["systemctl", "disable", "--now", "foo.service"],
+        ["systemctl", "disable", "--now", "bar.service"],
+        ["systemctl", "disable", "--now", "baz.timer"],
+    ]
+
+
+def test_remove_installed_package_only_disables_units_once(root, monkeypatch):
+    service_usr = root / "usr/lib/systemd/system/foo.service"
+    service_lib_foo = root / "lib/systemd/system/foo.service"
+    service_lib_bar = root / "lib/systemd/system/bar.service"
+    timer_lib = root / "lib/systemd/system/baz.timer"
+
+    for svc in (service_usr, service_lib_foo, service_lib_bar, timer_lib):
+        _create_service(svc)
+
+    monkeypatch.setitem(lpm.CONF, "INIT_POLICY", "auto")
+    monkeypatch.setattr(lpm, "detect_init_system", lambda: "systemd")
+    monkeypatch.setattr(lpm, "_is_default_root", lambda root: True)
+    monkeypatch.setattr(lpm, "progress_bar", lambda iterable, **kwargs: iterable)
+
+    disable_calls = []
+
+    def fake_run(cmd, check=False, **kwargs):
+        disable_calls.append(cmd)
+
+    monkeypatch.setattr(lpm.subprocess, "run", fake_run)
+
+    original_remove = lpm.remove_service_files
+    remove_calls = []
+
+    def tracking_remove(pkg_name, root_path, manifest_entries):
+        remove_calls.append([entry["path"] for entry in manifest_entries])
+        return original_remove(pkg_name, root_path, manifest_entries)
+
+    monkeypatch.setattr(lpm, "remove_service_files", tracking_remove)
+
+    manifest = [
+        {"path": "/usr/lib/systemd/system/foo.service"},
+        {"path": "/lib/systemd/system/foo.service"},
+        {"path": "/lib/systemd/system/bar.service"},
+        {"path": "/lib/systemd/system/baz.timer"},
+    ]
+
+    meta = {"name": "dummy", "version": "1.0", "manifest": manifest}
+
+    class DummyConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, query, params=()):
+            self.calls.append((query, params))
+
+    lpm._remove_installed_package(meta, root, dry_run=False, conn=DummyConn())
+
+    assert remove_calls == [[entry["path"] for entry in manifest]]
+    assert disable_calls == [
         ["systemctl", "disable", "--now", "foo.service"],
         ["systemctl", "disable", "--now", "bar.service"],
         ["systemctl", "disable", "--now", "baz.timer"],
