@@ -2015,8 +2015,40 @@ def run_lpmbuild(
     env["LDFLAGS"] = OPT_LEVEL
     log(f"[opt] vendor={CPU_VENDOR} family={CPU_FAMILY} -> {flags}")
 
-    # Auto-fetch source if URL provided
-    _maybe_fetch_source(url, srcroot)
+    # Auto-fetch sources defined via SOURCE array or fallback to URL scalar
+    raw_sources = arr.get("SOURCE", []) or []
+    source_urls: List[str] = []
+    allowed_schemes = {"http", "https", "ftp"}
+
+    for raw_source in raw_sources:
+        candidate = raw_source.strip()
+        if not candidate:
+            continue
+        if "::" in candidate:
+            candidate = candidate.split("::", 1)[1]
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+
+        parsed = urllib.parse.urlparse(candidate)
+        scheme = parsed.scheme.lower()
+
+        if scheme in allowed_schemes:
+            source_urls.append(candidate)
+            continue
+
+        if "+" in scheme:
+            _, _, remainder = candidate.partition("+")
+            if remainder:
+                parsed_remainder = urllib.parse.urlparse(remainder)
+                if parsed_remainder.scheme.lower() in allowed_schemes:
+                    source_urls.append(remainder)
+
+    if source_urls:
+        for source_url in source_urls:
+            _maybe_fetch_source(source_url, srcroot)
+    elif url:
+        _maybe_fetch_source(url, srcroot)
 
     # --- Run build functions inside sandbox ---
     def run_func(func: str, cwd: Path):
