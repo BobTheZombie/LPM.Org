@@ -337,6 +337,10 @@ def test_run_lpmbuild_extracts_archive_by_default(lpm_module, tmp_path, monkeypa
     with tarfile.open(tarball, "w") as tf:
         tf.add(payload_dir, arcname="foo-1")
 
+    hook_dir = tmp_path / "hooks"
+    hook_dir.mkdir()
+    monkeypatch.setattr(lpm, "HOOK_DIR", hook_dir)
+
     script = tmp_path / "foo.lpmbuild"
     script.write_text(
         textwrap.dedent(
