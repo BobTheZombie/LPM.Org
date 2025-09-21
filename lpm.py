@@ -2221,7 +2221,17 @@ def run_lpmbuild(
                     return None
                 return "/".join(parts[1:])
 
-            with tarfile.open(path) as tf:
+            fileobj: Optional[io.BytesIO] = None
+            tf: Optional[tarfile.TarFile] = None
+            try:
+                lowered_name = path.name.lower()
+                if lowered_name.endswith(".tar.zst"):
+                    data = zstd.ZstdDecompressor().decompress(path.read_bytes())
+                    fileobj = io.BytesIO(data)
+                    tf = tarfile.open(fileobj=fileobj, mode="r:")
+                else:
+                    tf = tarfile.open(path)
+
                 members = []
                 for member in tf.getmembers():
                     stripped = _strip_member(member.name)
@@ -2230,6 +2240,11 @@ def run_lpmbuild(
                     member.name = stripped
                     members.append(member)
                 tf.extractall(dest, members=members)
+            finally:
+                if tf is not None:
+                    tf.close()
+                if fileobj is not None:
+                    fileobj.close()
 
         try:
             subprocess.run(
