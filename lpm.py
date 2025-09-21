@@ -1983,9 +1983,30 @@ def run_lpmbuild(
 
     helper_name = "lpm-split-package"
     helper_path = buildroot / helper_name
+    exec_candidate = getattr(sys, "executable", None)
+    exec_path: Optional[Path] = None
+    if exec_candidate:
+        try:
+            exec_path = Path(exec_candidate)
+        except TypeError:
+            exec_path = None
+
+    use_argv0 = getattr(sys, "frozen", False)
+    if exec_path is None or not exec_path.exists():
+        use_argv0 = True
+
+    if use_argv0:
+        argv0 = sys.argv[0] if sys.argv else None
+        if argv0:
+            command_path = Path(argv0).resolve()
+        else:
+            command_path = Path(__file__).resolve()
+    else:
+        command_path = exec_path.resolve() if exec_path is not None else Path(__file__).resolve()
+
     helper_path.write_text(
         "#!/bin/sh\n"
-        f"exec {shlex.quote(sys.executable)} {shlex.quote(str(Path(__file__).resolve()))} splitpkg \"$@\"\n",
+        f"exec {shlex.quote(str(command_path))} {shlex.quote(str(Path(__file__).resolve()))} splitpkg \"$@\"\n",
         encoding="utf-8",
     )
     helper_path.chmod(0o755)
