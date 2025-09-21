@@ -321,19 +321,75 @@ def test_maybe_fetch_source_skips_existing_file(lpm_module, tmp_path, monkeypatc
     assert target.read_text(encoding="utf-8") == "present"
 
 
-def test_run_lpmbuild_triggers_post_source_fetch_hook(lpm_module, tmp_path, monkeypatch):
+def test_run_lpmbuild_extracts_archive_by_default(lpm_module, tmp_path, monkeypatch):
     lpm = lpm_module
 
     _stub_build_pipeline(lpm, monkeypatch)
     monkeypatch.setattr(lpm, "ok", lambda msg: None)
     monkeypatch.setattr(lpm, "warn", lambda msg: None)
 
-    payload = tmp_path / "payload.txt"
+    payload_dir = tmp_path / "payload_dir"
+    payload_dir.mkdir()
+    payload = payload_dir / "payload.txt"
     payload.write_text("hello from tar", encoding="utf-8")
 
     tarball = tmp_path / "foo-1.tar"
     with tarfile.open(tarball, "w") as tf:
-        tf.add(payload, arcname="payload.txt")
+        tf.add(payload_dir, arcname="foo-1")
+
+    script = tmp_path / "foo.lpmbuild"
+    script.write_text(
+        textwrap.dedent(
+            """
+            NAME=foo
+            VERSION=1
+            RELEASE=1
+            ARCH=noarch
+            SOURCE=(
+              'foo-1.tar'
+            )
+            prepare() { :; }
+            build() { :; }
+            install() { :; }
+            """
+        )
+    )
+
+    out_path, _, _, _ = lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    assert out_path.exists()
+
+    srcroot = Path("/tmp/src-foo")
+    extracted_dir = srcroot / "foo-1"
+    extracted_file = extracted_dir / "payload.txt"
+
+    assert extracted_file.exists()
+    assert extracted_file.read_text(encoding="utf-8") == "hello from tar"
+
+    out_path.unlink()
+    for suffix in ("pkg-foo", "build-foo", "src-foo"):
+        shutil.rmtree(Path(f"/tmp/{suffix}"), ignore_errors=True)
+
+
+def test_run_lpmbuild_post_source_fetch_hook_can_override(lpm_module, tmp_path, monkeypatch):
+    lpm = lpm_module
+
+    _stub_build_pipeline(lpm, monkeypatch)
+    monkeypatch.setattr(lpm, "ok", lambda msg: None)
+    monkeypatch.setattr(lpm, "warn", lambda msg: None)
+
+    payload_dir = tmp_path / "payload_dir"
+    payload_dir.mkdir()
+    (payload_dir / "payload.txt").write_text("hello from tar", encoding="utf-8")
+
+    tarball = tmp_path / "foo-1.tar"
+    with tarfile.open(tarball, "w") as tf:
+        tf.add(payload_dir, arcname="foo-1")
 
     script = tmp_path / "foo.lpmbuild"
     script.write_text(
@@ -360,31 +416,14 @@ def test_run_lpmbuild_triggers_post_source_fetch_hook(lpm_module, tmp_path, monk
         textwrap.dedent(
             """
             import os
-            import tarfile
             from pathlib import Path
 
             srcroot = Path(os.environ["LPM_SRCROOT"])
-            entries = [line for line in os.environ.get("LPM_SOURCE_ENTRIES", "").splitlines() if line.strip()]
-
-            tarball = None
-            for entry in entries:
-                candidate = Path(entry)
-                if not candidate.is_absolute():
-                    candidate = srcroot / candidate
-                if candidate.is_file() and tarfile.is_tarfile(candidate):
-                    tarball = candidate
-                    break
-
-            if tarball is None:
-                raise SystemExit(0)
-
             target = srcroot / f"{os.environ['LPM_NAME']}-{os.environ['LPM_VERSION']}"
-            target.mkdir(parents=True, exist_ok=True)
-
-            with tarfile.open(tarball) as tf:
-                tf.extractall(target)
-
-            (target / "hook_was_here").write_text("ran", encoding="utf-8")
+            payload = target / "payload.txt"
+            if payload.exists():
+                payload.unlink()
+            (target / "hook_override.txt").write_text("hooked", encoding="utf-8")
             """
         )
     )
@@ -402,14 +441,13 @@ def test_run_lpmbuild_triggers_post_source_fetch_hook(lpm_module, tmp_path, monk
     assert out_path.exists()
 
     srcroot = Path("/tmp/src-foo")
-    extracted_dir = srcroot / "foo-1"
-    extracted_file = extracted_dir / "payload.txt"
-    sentinel = extracted_dir / "hook_was_here"
+    target_dir = srcroot / "foo-1"
+    payload_file = target_dir / "payload.txt"
+    override_file = target_dir / "hook_override.txt"
 
-    assert extracted_file.exists()
-    assert extracted_file.read_text(encoding="utf-8") == "hello from tar"
-    assert sentinel.exists()
-    assert sentinel.read_text(encoding="utf-8") == "ran"
+    assert not payload_file.exists()
+    assert override_file.exists()
+    assert override_file.read_text(encoding="utf-8") == "hooked"
 
     out_path.unlink()
     for suffix in ("pkg-foo", "build-foo", "src-foo"):
