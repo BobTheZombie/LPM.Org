@@ -2057,24 +2057,26 @@ def run_lpmbuild(
         except TypeError:
             exec_path = None
 
-    use_argv0 = getattr(sys, "frozen", False)
-    if exec_path is None or not exec_path.exists():
-        use_argv0 = True
+    module_path = Path(__file__).resolve()
+    is_frozen = bool(getattr(sys, "frozen", False))
+    use_argv0 = is_frozen or exec_path is None or not exec_path.exists()
 
     if use_argv0:
         argv0 = sys.argv[0] if sys.argv else None
         if argv0:
             command_path = Path(argv0).resolve()
+        elif exec_path is not None:
+            command_path = exec_path.resolve()
         else:
-            command_path = Path(__file__).resolve()
+            command_path = module_path
+        helper_cmd = [shlex.quote(str(command_path)), "splitpkg"]
     else:
-        command_path = exec_path.resolve() if exec_path is not None else Path(__file__).resolve()
-
-    module_path = Path(__file__).resolve()
-    helper_cmd = [shlex.quote(str(command_path))]
-    if not use_argv0:
-        helper_cmd.append(shlex.quote(str(module_path)))
-    helper_cmd.append("splitpkg")
+        command_path = exec_path.resolve()
+        helper_cmd = [
+            shlex.quote(str(command_path)),
+            shlex.quote(str(module_path)),
+            "splitpkg",
+        ]
 
     helper_path.write_text(
         "#!/bin/sh\n"
