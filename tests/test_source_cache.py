@@ -1,5 +1,7 @@
+import contextlib
 import importlib
 import sys
+import types
 from pathlib import Path
 
 
@@ -11,6 +13,45 @@ def _import_lpm(tmp_path, monkeypatch):
     for mod in ["lpm", "src.config"]:
         if mod in sys.modules:
             del sys.modules[mod]
+    class DummyTqdm:
+        def __init__(self, iterable=None, **kwargs):
+            self.iterable = iterable
+            self.n = 0
+            self.total = kwargs.get("total")
+            self.desc = kwargs.get("desc")
+
+        def __iter__(self):
+            if self.iterable is None:
+                return iter(())
+            for item in self.iterable:
+                self.n += 1
+                yield item
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def update(self, value):
+            self.n += value
+
+        def set_description(self, desc):
+            self.desc = desc
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(sys.modules, "tqdm", types.SimpleNamespace(tqdm=DummyTqdm))
+    dummy_module = types.SimpleNamespace(
+        ZstdCompressor=lambda *args, **kwargs: types.SimpleNamespace(
+            stream_writer=lambda f: contextlib.nullcontext(f)
+        ),
+        ZstdDecompressor=lambda *args, **kwargs: types.SimpleNamespace(
+            stream_reader=lambda f: contextlib.nullcontext(f)
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "zstandard", dummy_module)
     return importlib.import_module("lpm")
 
 
