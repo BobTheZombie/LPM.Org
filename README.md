@@ -104,7 +104,11 @@ contents and runs common maintenance commands based on what it finds:
   additional staged root (for split packages) using the metadata gathered from
   the parent `.lpmbuild`.
 - `lpm buildpkg SCRIPT [--outdir PATH] [--no-deps]` – run a `.lpmbuild` script to
-  produce a package.
+  produce a package. `.lpmbuild` scripts may declare a `SOURCE=()` array; entries
+  without a URL scheme automatically resolve to
+  `{LPMBUILD_REPO}/{pkgname}/{filename}`, matching Arch Linux's `source=()`
+  behaviour, while explicit URLs and `foo::https://example.com/src` rename
+  syntax are honoured as-is.【F:lpm.py†L1994-L2018】
 - `lpm pkgbuild-export-tar OUTPUT TARGET... [--workspace DIR]` – developer mode
   helper that fetches Arch Linux PKGBUILDs, converts them to `.lpmbuild`
   scripts (including dependencies), stages them under `packages/<name>` and
