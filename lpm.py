@@ -815,6 +815,10 @@ def run_hook(hook: str, env: Dict[str,str]):
     if path.is_file():
         _run_hook_script(path, env)
 
+    py_path = path.with_suffix(".py")
+    if py_path.is_file():
+        _run_hook_script(py_path, env)
+
     dpath = HOOK_DIR / f"{hook}.d"
     if dpath.is_dir():
         for script in sorted(dpath.iterdir()):
@@ -2158,6 +2162,26 @@ def run_lpmbuild(
                 continue
 
         _maybe_fetch_source(source_ref, srcroot, filename=alias)
+
+    staged_entries: List[str] = []
+    for path in sorted(srcroot.rglob("*")):
+        if path.is_file() or path.is_symlink():
+            try:
+                rel = path.relative_to(srcroot)
+            except ValueError:
+                rel = path
+            staged_entries.append(str(rel))
+
+    run_hook(
+        "post_source_fetch",
+        {
+            "LPM_NAME": name,
+            "LPM_VERSION": version,
+            "LPM_RELEASE": release,
+            "LPM_SRCROOT": str(srcroot),
+            "LPM_SOURCE_ENTRIES": "\n".join(staged_entries),
+        },
+    )
 
     # --- Run build functions inside sandbox ---
     def run_func(func: str, cwd: Path):
