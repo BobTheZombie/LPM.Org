@@ -308,7 +308,7 @@ def fetch_pkgbuild(pkgname: str, endpoints: Optional[Mapping[str, str]] = None) 
     for label, base in order:
         url = _make_pkgbuild_url(base, pkg)
         try:
-            data = urlread(url)
+            data, _ = urlread(url)
             return data.decode("utf-8")
         except Exception as exc:  # pragma: no cover - errors logged
             errors.append(f"{label}: {exc}")
@@ -337,7 +337,7 @@ def fetch_repo_index(repo: str, endpoints: Optional[Mapping[str, str]] = None) -
     for label, base in order:
         url = _make_repo_index_url(base, repo)
         try:
-            data = urlread(url)
+            data, _ = urlread(url)
             return data.decode("utf-8")
         except Exception as exc:  # pragma: no cover - errors logged
             errors.append(f"{label}: {exc}")

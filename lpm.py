@@ -428,7 +428,8 @@ def del_repo(name):
 
 def fetch_repo_index(repo: Repo) -> List[PkgMeta]:
     idx_url = repo.url.rstrip("/") + "/index.json"
-    j = json.loads(urlread(idx_url).decode("utf-8"))
+    raw, _ = urlread(idx_url)
+    j = json.loads(raw.decode("utf-8"))
     return [PkgMeta.from_dict(p, repo.name, repo.priority, repo.bias, repo.decay) for p in j.get("packages",[])]
 
 def load_universe() -> Dict[str, List[PkgMeta]]:
@@ -1321,10 +1322,11 @@ def fetch_blob(p: PkgMeta) -> Tuple[Path, Optional[Path]]:
         if sig_src.exists(): shutil.copy2(sig_src, sig_dst)
     else:
         for _ in progress_bar(range(1), desc=f"Downloading {p.name}"):
-            data = urlread(url); dst.write_bytes(data)
+            data, _ = urlread(url)
+            dst.write_bytes(data)
         try:
             sig_url = url + ".sig"
-            sig_data = urlread(sig_url)
+            sig_data, _ = urlread(sig_url)
             sig_dst.write_bytes(sig_data)
         except Exception:
             pass
@@ -1713,19 +1715,53 @@ def _source_cache_path(url: str, filename: str) -> Path:
     return SOURCE_CACHE_DIR / f"{stem}-{digest}{ext}"
 
 
+def _cache_entry_filename(path: Path, url: str) -> str:
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    stem = path.stem
+    if stem.endswith(f"-{digest}"):
+        stem = stem[: -(len(digest) + 1)]
+    return f"{stem}{path.suffix}"
+
+
 def _maybe_fetch_source(url: str, dst_dir: Path, *, filename: Optional[str] = None):
     if not url:
         return
     parsed = urllib.parse.urlparse(url)
-    fn = filename or os.path.basename(parsed.path.rstrip("/"))
-    if not fn:
-        return
-    dst = dst_dir / fn
-    if dst.exists():
-        return
+    fallback_fn = os.path.basename(parsed.path.rstrip("/"))
 
-    cache_path = _source_cache_path(url, fn)
-    if cache_path.exists():
+    cache_filename: Optional[str] = None
+    cache_path: Optional[Path] = None
+
+    if filename:
+        dst = dst_dir / filename
+        if dst.exists():
+            return
+        candidate = _source_cache_path(url, filename)
+        if candidate.exists():
+            cache_path = candidate
+            cache_filename = filename
+    else:
+        if fallback_fn:
+            dst = dst_dir / fallback_fn
+            if dst.exists():
+                return
+            candidate = _source_cache_path(url, fallback_fn)
+            if candidate.exists():
+                cache_path = candidate
+                cache_filename = fallback_fn
+
+    if cache_path is None:
+        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+        matches = sorted(SOURCE_CACHE_DIR.glob(f"*-{digest}*"))
+        if matches:
+            cache_path = matches[0]
+            cache_filename = _cache_entry_filename(cache_path, url)
+
+    resolved_name = filename or cache_filename or fallback_fn
+    if cache_path and cache_path.exists() and resolved_name:
+        dst = dst_dir / resolved_name
+        if dst.exists():
+            return
         try:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(cache_path, dst)
@@ -1735,12 +1771,42 @@ def _maybe_fetch_source(url: str, dst_dir: Path, *, filename: Optional[str] = No
             warn(f"Failed to use cached source for {url}: {e}")
 
     ok(f"Fetching source: {url}")
-    data = urlread(url)
+    data, meta = urlread(url)
+
+    resolved_name = filename
+    if not resolved_name:
+        inferred: Optional[str] = None
+        if meta:
+            if "://" in meta:
+                final = urllib.parse.urlparse(meta)
+                inferred = os.path.basename(final.path.rstrip("/"))
+                query = urllib.parse.parse_qs(final.query)
+                values = query.get("filename") or []
+                if values:
+                    inferred = values[-1]
+                if inferred:
+                    inferred = os.path.basename(inferred)
+            else:
+                inferred = os.path.basename(meta)
+        if not inferred and cache_filename:
+            inferred = cache_filename
+        if not inferred and fallback_fn:
+            inferred = fallback_fn
+        resolved_name = inferred
+
+    if not resolved_name:
+        return
+
+    dst = dst_dir / resolved_name
+    if dst.exists():
+        return
+
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_bytes(data)
 
     try:
         SOURCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_path = _source_cache_path(url, resolved_name)
         tmp_cache = cache_path.with_suffix(cache_path.suffix + ".tmp")
         tmp_cache.write_bytes(data)
         tmp_cache.replace(cache_path)
@@ -1762,7 +1828,7 @@ def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
     ok(f"Fetching lpmbuild for {pkgname} from {url}")
     dst.parent.mkdir(parents=True, exist_ok=True)
     try:
-        data = urlread(url)
+        data, _ = urlread(url)
     except Exception as e:
         die(f"Failed to fetch lpmbuild for {pkgname}: {e}")
     dst.write_bytes(data)
