@@ -1865,23 +1865,26 @@ def run_lpmbuild(
     if build_deps:
         seen = set()
         deps_to_build: List[str] = []
-        for dep in arr.get("REQUIRES", []):
-            try:
-                e = parse_dep_expr(dep)
-            except Exception:
-                continue
-            parts = flatten_and(e) if e.kind == "and" else [e]
-            for part in parts:
-                if part.kind == "atom":
-                    depname = part.atom.name
-                    if depname in seen:
-                        continue
-                    seen.add(depname)
+        conn = db()
+        try:
+            installed = db_installed(conn)
+            for dep in arr.get("REQUIRES", []):
+                try:
+                    e = parse_dep_expr(dep)
+                except Exception:
+                    continue
+                parts = flatten_and(e) if e.kind == "and" else [e]
+                for part in parts:
+                    if part.kind == "atom":
+                        depname = part.atom.name
+                        if depname in seen:
+                            continue
+                        seen.add(depname)
 
-                    conn = db()
-                    installed = db_installed(conn)
-                    if depname not in installed:
-                        deps_to_build.append(depname)
+                        if depname not in installed:
+                            deps_to_build.append(depname)
+        finally:
+            conn.close()
 
         def _build_dep(depname: str, idx: Optional[int] = None, total: Optional[int] = None):
             if idx is not None and total is not None:
