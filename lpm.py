@@ -1640,31 +1640,33 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
     Source the .lpmbuild (bash) and dump scalars + arrays.
     """
     script_path = str(script.resolve())
-    bcmd = f"""
-set -e
-source "{script_path}"
-_emit_scalar() {{
-  n="$1"
-  if [[ ${{!n+x}} == x ]]; then
-    v="${{!n}}"
-    printf "__SCALAR__ %s=%s\\n" "$n" "$v"
-  fi
-}}
-_emit_array() {{
-  n="$1"
-  if declare -p "$n" 2>/dev/null | grep -q 'declare -a'; then
-    eval "arr=(\\${{${{n}}[@]}})"
-    printf "__ARRAY__ %s\\n" "$n"
-    for x in "${{arr[@]}}"; do printf "%s\\0" "$x"; done
-    printf "\\n"
-  else
-    printf "__ARRAY__ %s\\n" "$n"
-    printf "\\n"
-  fi
-}}
-for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE CFLAGS KERNEL MKINITCPIO_PRESET; do _emit_scalar "$v"; done
-for a in REQUIRES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS; do _emit_array "$a"; done
-"""
+    lines = [
+        "set -e",
+        f'source "{script_path}"',
+        "_emit_scalar() {",
+        '  n="$1"',
+        '  if [[ ${!n+x} == x ]]; then',
+        '    v="${!n}"',
+        '    printf "__SCALAR__ %s=%s\\n" "$n" "$v"',
+        '  fi',
+        "}",
+        "_emit_array() {",
+        '  n="$1"',
+        '  printf "__ARRAY__ %s\\n" "$n"',
+        "  if declare -p \"$n\" 2>/dev/null | grep -q 'declare -a'; then",
+        '    eval "for x in \\\"\\${${n}[@]}\\\"; do printf \\\"%s\\0\\\" \\\"\\$x\\\"; done"',
+        '  elif [[ ${!n+x} == x ]]; then',
+        '    v="${!n}"',
+        '    if [[ -n "$v" ]]; then',
+        '      printf "%s\\0" "$v"',
+        '    fi',
+        '  fi',
+        '  printf "\\n"',
+        "}",
+        "for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE CFLAGS KERNEL MKINITCPIO_PRESET; do _emit_scalar \"$v\"; done",
+        "for a in REQUIRES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS; do _emit_array \"$a\"; done",
+    ]
+    bcmd = "\n".join(lines)
 
     try:
         proc = subprocess.run(["bash","-c", bcmd], capture_output=True, check=True)

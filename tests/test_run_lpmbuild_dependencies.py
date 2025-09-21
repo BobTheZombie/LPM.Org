@@ -82,6 +82,65 @@ def _stub_build_pipeline(monkeypatch):
     monkeypatch.setattr(lpm, "build_package", fake_build_package)
 
 
+def test_run_lpmbuild_collects_dependency_arrays(tmp_path, monkeypatch):
+    script = tmp_path / "arrays.lpmbuild"
+    script.write_text(
+        textwrap.dedent(
+            """
+            NAME=toolchain
+            VERSION=1
+            RELEASE=2
+            ARCH=noarch
+            REQUIRES=(
+              'glibc'
+              'linux-headers'
+              'binutils'
+              'zlib'
+            )
+            PROVIDES=('gcc' 'cc-bin')
+            CONFLICTS=('gcc-old' 'gcc-beta')
+            OBSOLETES=('gcc-12')
+            RECOMMENDS=('gdb')
+            SUGGESTS=('valgrind')
+            prepare() { :; }
+            build() { :; }
+            install() {
+                mkdir -p "$pkgdir"
+                echo hi > "$pkgdir/hi"
+            }
+            """
+        )
+    )
+
+    monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(lpm, "sandboxed_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(lpm, "generate_install_script", lambda stagedir: "echo hi")
+
+    captured = {}
+
+    def fake_build_package(stagedir, meta, out, sign=True):
+        captured["meta"] = meta
+        out.write_text("pkg")
+
+    monkeypatch.setattr(lpm, "build_package", fake_build_package)
+
+    out_path, _, _, _ = lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    assert out_path.exists()
+    meta = captured["meta"]
+    assert meta.requires == ["glibc", "linux-headers", "binutils", "zlib"]
+    assert meta.provides == ["gcc", "cc-bin"]
+    assert meta.conflicts == ["gcc-old", "gcc-beta"]
+    assert meta.obsoletes == ["gcc-12"]
+    assert meta.recommends == ["gdb"]
+    assert meta.suggests == ["valgrind"]
+
+
 def test_run_lpmbuild_caches_installed_lookup(tmp_path, monkeypatch):
     deps = [f"dep{i}" for i in range(5)]
     script = tmp_path / "foo.lpmbuild"
