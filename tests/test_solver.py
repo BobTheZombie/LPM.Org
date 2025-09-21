@@ -41,3 +41,34 @@ def test_dependency_resolution():
     assert res.assign[a]
     # exactly one of b or c is installed
     assert res.assign[b] ^ res.assign[c]
+
+
+def test_vsids_decay_map_sat_regression():
+    cnf = CNF()
+    a = cnf.new_var('A')
+    b = cnf.new_var('B')
+    # a XOR b with a forced true; solver should deduce b is false after a conflict
+    cnf.add_clause([a, b])
+    cnf.add_clause([-a, -b])
+    cnf.add_clause([a])
+    decay_map = {a: 0.6, b: 0.8}
+    solver = CDCLSolver(cnf, decay_map=decay_map)
+    res = solver.solve([])
+    assert res.sat
+    assert res.assign[a]
+    assert not res.assign[b]
+
+
+def test_vsids_unsat_regression():
+    cnf = CNF()
+    a = cnf.new_var('A')
+    b = cnf.new_var('B')
+    # Unsatisfiable combination requiring a branching conflict
+    cnf.add_clause([a, b])
+    cnf.add_clause([-a, b])
+    cnf.add_clause([a, -b])
+    cnf.add_clause([-a, -b])
+    decay_map = {a: 0.7, b: 0.85}
+    solver = CDCLSolver(cnf, decay_map=decay_map)
+    res = solver.solve([])
+    assert not res.sat

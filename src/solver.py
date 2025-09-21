@@ -128,6 +128,8 @@ class CDCLSolver:
         self.cla_inc = 1.0
         self.cla_decay = cla_decay
         self.max_learnts = max_learnts
+        self.var_decay_steps = 0
+        self.var_last_decay_step: Dict[int, int] = {}
 
     def solve(self, assumptions: List[int]) -> SATResult:
         """Solve the stored CNF instance under optional assumptions."""
@@ -137,6 +139,8 @@ class CDCLSolver:
         for v in range(1, nvars + 1):
             if v not in self.var_activity:
                 self.var_activity[v] = 0.0
+            if v not in self.var_last_decay_step:
+                self.var_last_decay_step[v] = self.var_decay_steps
 
         assigns: Dict[int, Optional[bool]] = {i: None for i in range(1, nvars + 1)}
         levels: Dict[int, int] = {i: 0 for i in range(1, nvars + 1)}
@@ -152,24 +156,38 @@ class CDCLSolver:
         var_decay_conf = self.var_decay_conf
         decay_map = self.decay_map
         max_learnts = self.max_learnts
+        var_decay_steps = self.var_decay_steps
+        var_last_decay_step = self.var_last_decay_step
+
+        def normalize_var(v: int) -> float:
+            last = var_last_decay_step.get(v, var_decay_steps)
+            pending = var_decay_steps - last
+            if pending:
+                factor = decay_map.get(v, var_decay_conf)
+                var_activity[v] *= pow(factor, pending)
+                var_last_decay_step[v] = var_decay_steps
+            elif v not in var_last_decay_step:
+                var_last_decay_step[v] = var_decay_steps
+            return var_activity[v]
+
         # stats for testing/benchmarking
         self.last_conflicts = 0
         self.last_restarts = 0
 
         def bump_var(v: int) -> None:
             nonlocal var_inc
+            normalize_var(v)
             var_activity[v] += var_inc
             if var_activity[v] > 1e100:
                 for k in var_activity:
+                    normalize_var(k)
                     var_activity[k] *= 1e-100
                 var_inc *= 1e-100
 
         def decay_var_activity() -> None:
-            nonlocal var_inc
+            nonlocal var_inc, var_decay_steps
             var_inc /= var_decay_conf
-            for v in var_activity:
-                factor = decay_map.get(v, var_decay_conf)
-                var_activity[v] *= factor
+            var_decay_steps += 1
 
         cla_inc = self.cla_inc
         cla_decay = self.cla_decay
@@ -265,7 +283,7 @@ class CDCLSolver:
             unassigned = [v for v in range(1, nvars + 1) if assigns[v] is None]
             if not unassigned:
                 return 0
-            return max(unassigned, key=lambda v: var_activity[v])
+            return max(unassigned, key=normalize_var)
 
         def analyze(conflict_idx: int) -> Tuple[List[int], int]:
             bump_clause(conflict_idx)
@@ -345,6 +363,7 @@ class CDCLSolver:
                                         core_clause.append(l)
                                 changed = True
                     self.var_inc = var_inc
+                    self.var_decay_steps = var_decay_steps
                     self.cla_inc = cla_inc
                     self.last_conflicts = conflicts
                     return SATResult(False, {v: False for v in assigns}, core_clause)
@@ -367,6 +386,7 @@ class CDCLSolver:
                 v = pick_branch_var()
                 if v == 0:
                     self.var_inc = var_inc
+                    self.var_decay_steps = var_decay_steps
                     self.cla_inc = cla_inc
                     self.last_conflicts = conflicts
                     final = {var: (assigns[var] if assigns[var] is not None else False) for var in assigns}
