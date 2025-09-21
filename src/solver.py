@@ -62,14 +62,21 @@ class CNF:
         if not clause:
             return
         w1, w2 = self.watchers[idx]
-        if w1 in self.watch_list and idx in self.watch_list[w1]:
-            self.watch_list[w1].remove(idx)
-            if not self.watch_list[w1]:
-                del self.watch_list[w1]
-        if w2 in self.watch_list and idx in self.watch_list[w2]:
-            self.watch_list[w2].remove(idx)
-            if not self.watch_list[w2]:
-                del self.watch_list[w2]
+        def unlink(lit: int) -> None:
+            watchers = self.watch_list.get(lit)
+            if not watchers:
+                self.watch_list.pop(lit, None)
+                return
+            for i in range(len(watchers) - 1, -1, -1):
+                if watchers[i] == idx:
+                    watchers[i] = watchers[-1]
+                    watchers.pop()
+                    break
+            if not watchers:
+                self.watch_list.pop(lit, None)
+
+        unlink(w1)
+        unlink(w2)
         self.clauses[idx] = []
         self.watchers[idx] = (0, 0)
         self.activity[idx] = 0.0
@@ -266,8 +273,20 @@ class CDCLSolver:
         def propagate() -> Optional[int]:
             while queue:
                 lit = queue.popleft()
-                for ci in list(cnf.watch_list.get(-lit, [])):
+                watchers = cnf.watch_list.get(-lit)
+                if not watchers:
+                    cnf.watch_list.pop(-lit, None)
+                    continue
+                i = 0
+                while i < len(watchers):
+                    ci = watchers[i]
                     clause = cnf.clauses[ci]
+                    if not clause:
+                        watchers[i] = watchers[-1]
+                        watchers.pop()
+                        if not watchers:
+                            cnf.watch_list.pop(-lit, None)
+                        continue
                     w1, w2 = cnf.watchers[ci]
                     if w1 == -lit:
                         other = w2
@@ -276,6 +295,7 @@ class CDCLSolver:
                         other = w1
                         first = False
                     if value(other) is True:
+                        i += 1
                         continue
                     found = False
                     for new_lit in clause:
@@ -286,15 +306,19 @@ class CDCLSolver:
                                 cnf.watchers[ci] = (new_lit, other)
                             else:
                                 cnf.watchers[ci] = (other, new_lit)
-                            cnf.watch_list[-lit].remove(ci)
+                            watchers[i] = watchers[-1]
+                            watchers.pop()
+                            if not watchers:
+                                cnf.watch_list.pop(-lit, None)
                             cnf.watch_list.setdefault(new_lit, []).append(ci)
                             found = True
                             break
-                    if not found:
-                        if value(other) is False:
-                            return ci
-                        else:
-                            enqueue(other, ci)
+                    if found:
+                        continue
+                    if value(other) is False:
+                        return ci
+                    enqueue(other, ci)
+                    i += 1
             return None
 
         def pick_branch_var() -> int:
