@@ -1471,8 +1471,9 @@ def _remove_installed_package(meta: dict, root: Path, dry_run: bool, conn):
                     pass
         except Exception as e:
             warn(f"rm {p}: {e}")
-            
-        # Stop/disable/init cleanup for services
+
+    # Stop/disable/init cleanup for services once all files are handled
+    if manifest_entries:
         remove_service_files(name, root, manifest_entries)
  
 
