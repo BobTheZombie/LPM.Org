@@ -2054,7 +2054,17 @@ def run_lpmbuild(
             source_ref = source_ref.strip()
 
         parsed = urllib.parse.urlparse(source_ref)
-        if not parsed.scheme and not alias and not os.path.isabs(source_ref):
+
+        if not parsed.scheme and not os.path.isabs(source_ref):
+            local_candidate = (script_dir / source_ref).resolve()
+            if local_candidate.exists():
+                target_name = alias or os.path.basename(source_ref.rstrip("/"))
+                if target_name:
+                    target_path = srcroot / target_name
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(local_candidate, target_path)
+                continue
+
             source_ref = urllib.parse.urljoin(f"{base_source_prefix}", source_ref)
             parsed = urllib.parse.urlparse(source_ref)
 
