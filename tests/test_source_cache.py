@@ -18,9 +18,9 @@ def test_maybe_fetch_source_uses_cache(tmp_path, monkeypatch):
     lpm = _import_lpm(tmp_path, monkeypatch)
     calls = {"count": 0}
 
-    def fake_urlread(url):
+    def fake_urlread(url, timeout=10):
         calls["count"] += 1
-        return b"payload"
+        return b"payload", url
 
     monkeypatch.setattr(lpm, "urlread", fake_urlread)
     monkeypatch.setattr(lpm, "ok", lambda msg: None)
@@ -46,3 +46,27 @@ def test_maybe_fetch_source_uses_cache(tmp_path, monkeypatch):
     cache_files = list(Path(lpm.SOURCE_CACHE_DIR).glob("foo.tar-*.gz"))
     assert cache_files, "cached source should exist"
     assert cache_files[0].read_bytes() == b"payload"
+
+
+def test_maybe_fetch_source_uses_redirect_filename(tmp_path, monkeypatch):
+    lpm = _import_lpm(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(lpm, "ok", lambda msg: None)
+    monkeypatch.setattr(lpm, "warn", lambda msg: None)
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+
+    final_url = "https://downloads.example.com/get?filename=foo-1.0.tar.gz"
+
+    def fake_urlread(url, timeout=10):
+        assert url == "https://example.com/source"
+        return b"payload", final_url
+
+    monkeypatch.setattr(lpm, "urlread", fake_urlread)
+
+    lpm._maybe_fetch_source("https://example.com/source", src_dir)
+
+    target = src_dir / "foo-1.0.tar.gz"
+    assert target.exists()
+    assert target.read_bytes() == b"payload"

@@ -110,7 +110,7 @@ def test_run_lpmbuild_fetches_relative_sources(lpm_module, tmp_path, monkeypatch
 
     def fake_urlread(url, timeout=10):
         fetched_urls.append(url)
-        return b"payload"
+        return b"payload", url
 
     monkeypatch.setattr(lpm, "urlread", fake_urlread)
 
@@ -168,7 +168,7 @@ def test_run_lpmbuild_downloads_multiple_url_sources(lpm_module, tmp_path, monke
 
     def fake_urlread(url, timeout=10):
         fetched_urls.append(url)
-        return f"payload:{url}".encode()
+        return f"payload:{url}".encode(), url
 
     monkeypatch.setattr(lpm, "urlread", fake_urlread)
 
@@ -228,7 +228,7 @@ def test_run_lpmbuild_allows_alias_for_repo_sources(lpm_module, tmp_path, monkey
 
     def fake_urlread(url, timeout=10):
         fetched_urls.append(url)
-        return b"payload"
+        return b"payload", url
 
     monkeypatch.setattr(lpm, "urlread", fake_urlread)
 
@@ -281,7 +281,7 @@ def test_run_lpmbuild_skips_metadata_url_fetch(lpm_module, tmp_path, monkeypatch
         if "unreachable" in url:
             raise AssertionError("metadata URL should not be fetched")
         fetched_urls.append(url)
-        return b"payload"
+        return b"payload", url
 
     monkeypatch.setattr(lpm, "urlread", fake_urlread)
 
