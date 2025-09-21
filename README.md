@@ -108,38 +108,13 @@ contents and runs common maintenance commands based on what it finds:
   without a URL scheme automatically resolve to
   `{LPMBUILD_REPO}/{pkgname}/{filename}`, matching Arch Linux's `source=()`
   behaviour, while explicit URLs and `foo::https://example.com/src` rename
-  syntax are honoured as-is.【F:lpm.py†L1994-L2018】
-- `lpm pkgbuild-export-tar OUTPUT TARGET... [--workspace DIR]` – developer mode
-  helper that fetches Arch Linux PKGBUILDs, converts them to `.lpmbuild`
-  scripts (including dependencies), stages them under `packages/<name>` and
-  writes the result to an archive at `OUTPUT`. `TARGET` entries can be package
-  names such as `extra/zstd`, `repo:core` to pull every package from a
-  repository, or paths/URLs to repository `index.json` files.
+  syntax are honoured as-is.【F:lpm.py†L2116-L2159】
 - `lpm genindex REPO_DIR [--base-url URL] [--arch ARCH]` – generate an
   `index.json` for a directory of packages.
 - `lpm installpkg FILE... [--root PATH] [--dry-run] [--verify] [--force]`
   – install from local package files.
 - `lpm removepkg NAME... [--root PATH] [--dry-run] [--force]` – remove installed
   packages by name.
-
-#### Exporting Arch PKGBUILDs
-
-When `LPM_DEVELOPER_MODE=1` the `pkgbuild-export-tar` command can bootstrap a
-local `.lpmbuild` workspace straight from Arch Linux packaging sources. Provide
-one or more package names (optionally prefixed with their repository) or
-existing repository `index.json` files and an output archive path:
-
-```
-LPM_DEVELOPER_MODE=1 lpm pkgbuild-export-tar arch-export.tar foo extra/zstd repo/index.json
-```
-
-LPM fetches each PKGBUILD from `gitlab.archlinux.org`, converts it to
-`.lpmbuild`, resolves meta-package dependencies through the same converter, and
-stages the results under `packages/<name>/<name>.lpmbuild` before writing the
-tarball. The optional `--workspace DIR` flag reuses a conversion cache so
-subsequent exports only download new packages. Targets prefixed with
-`repo:` (for example `repo:extra`) expand to every package listed in the
-upstream repository metadata.
 
 #### Symlink manifest digests
 
