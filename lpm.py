@@ -1713,10 +1713,11 @@ def _source_cache_path(url: str, filename: str) -> Path:
     return SOURCE_CACHE_DIR / f"{stem}-{digest}{ext}"
 
 
-def _maybe_fetch_source(url: str, dst_dir: Path):
+def _maybe_fetch_source(url: str, dst_dir: Path, *, filename: Optional[str] = None):
     if not url:
         return
-    fn = os.path.basename(urllib.parse.urlparse(url).path)
+    parsed = urllib.parse.urlparse(url)
+    fn = filename or os.path.basename(parsed.path.rstrip("/"))
     if not fn:
         return
     dst = dst_dir / fn
@@ -2017,6 +2018,36 @@ def run_lpmbuild(
 
     # Auto-fetch source if URL provided
     _maybe_fetch_source(url, srcroot)
+
+    base_repo = CONF.get("LPMBUILD_REPO", "https://gitlab.com/lpm-org/packages/-/raw/main").rstrip("/")
+    base_source_prefix = f"{base_repo}/{name}/"
+    for raw_entry in arr.get("SOURCE", []):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        alias: Optional[str] = None
+        source_ref = entry
+        if "::" in entry:
+            alias, source_ref = entry.split("::", 1)
+            alias = alias.strip() or None
+            source_ref = source_ref.strip()
+
+        parsed = urllib.parse.urlparse(source_ref)
+        if not parsed.scheme and not alias and not os.path.isabs(source_ref):
+            source_ref = urllib.parse.urljoin(f"{base_source_prefix}", source_ref)
+            parsed = urllib.parse.urlparse(source_ref)
+
+        if not parsed.scheme:
+            local_candidate = (script_dir / source_ref).resolve()
+            if local_candidate.exists():
+                target_name = alias or os.path.basename(source_ref.rstrip("/"))
+                if target_name:
+                    target_path = srcroot / target_name
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(local_candidate, target_path)
+                continue
+
+        _maybe_fetch_source(source_ref, srcroot, filename=alias)
 
     # --- Run build functions inside sandbox ---
     def run_func(func: str, cwd: Path):
