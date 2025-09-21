@@ -188,6 +188,58 @@ def test_run_lpmbuild_allows_alias_for_repo_sources(lpm_module, tmp_path, monkey
         shutil.rmtree(Path(f"/tmp/{suffix}"), ignore_errors=True)
 
 
+def test_run_lpmbuild_skips_metadata_url_fetch(lpm_module, tmp_path, monkeypatch):
+    lpm = lpm_module
+    script = tmp_path / "foo.lpmbuild"
+    script.write_text(
+        textwrap.dedent(
+            """
+            NAME=foo
+            VERSION=1
+            RELEASE=1
+            ARCH=noarch
+            URL=https://unreachable.example.invalid/project
+            SOURCE=(
+              'https://downloads.example.com/foo-1.tar.gz'
+            )
+            prepare() { :; }
+            build() { :; }
+            install() { :; }
+            """
+        )
+    )
+
+    _stub_build_pipeline(lpm, monkeypatch)
+    monkeypatch.setattr(lpm, "ok", lambda msg: None)
+    monkeypatch.setattr(lpm, "warn", lambda msg: None)
+
+    fetched_urls: list[str] = []
+
+    def fake_urlread(url, timeout=10):
+        if "unreachable" in url:
+            raise AssertionError("metadata URL should not be fetched")
+        fetched_urls.append(url)
+        return b"payload"
+
+    monkeypatch.setattr(lpm, "urlread", fake_urlread)
+
+    out_path, _, _, _ = lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    assert out_path.exists()
+    srcroot = Path("/tmp/src-foo")
+    assert (srcroot / "foo-1.tar.gz").read_bytes() == b"payload"
+    assert fetched_urls == ["https://downloads.example.com/foo-1.tar.gz"]
+
+    out_path.unlink()
+    for suffix in ("pkg-foo", "build-foo", "src-foo"):
+        shutil.rmtree(Path(f"/tmp/{suffix}"), ignore_errors=True)
+
+
 def test_maybe_fetch_source_skips_existing_file(lpm_module, tmp_path, monkeypatch):
     lpm = lpm_module
     src_dir = tmp_path / "src"

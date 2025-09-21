@@ -2037,15 +2037,20 @@ def run_lpmbuild(
     env["LDFLAGS"] = OPT_LEVEL
     log(f"[opt] vendor={CPU_VENDOR} family={CPU_FAMILY} -> {flags}")
 
-    # Auto-fetch source if URL provided
-    _maybe_fetch_source(url, srcroot)
+    sources = []
+    for raw_entry in arr.get("SOURCE", []):
+        entry = raw_entry.strip()
+        if entry:
+            sources.append(entry)
+
+    fetch_url_opt_in = scal.get("FETCH_URL", "").strip().lower() in {"1", "true", "yes", "on"}
+    if fetch_url_opt_in or not sources:
+        # Auto-fetch source if URL provided and explicitly requested or no SOURCE entries exist
+        _maybe_fetch_source(url, srcroot)
 
     base_repo = CONF.get("LPMBUILD_REPO", "https://gitlab.com/lpm-org/packages/-/raw/main").rstrip("/")
     base_source_prefix = f"{base_repo}/{name}/"
-    for raw_entry in arr.get("SOURCE", []):
-        entry = raw_entry.strip()
-        if not entry:
-            continue
+    for entry in sources:
         alias: Optional[str] = None
         source_ref = entry
         if "::" in entry:
