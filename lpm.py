@@ -1665,7 +1665,7 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
         '  printf "\\n"',
         "}",
         "for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE CFLAGS KERNEL MKINITCPIO_PRESET; do _emit_scalar \"$v\"; done",
-        "for a in REQUIRES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS; do _emit_array \"$a\"; done",
+        "for a in SOURCE REQUIRES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS; do _emit_array \"$a\"; done",
     ]
     bcmd = "\n".join(lines)
 
@@ -1677,7 +1677,7 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
 
     data = proc.stdout
     scalars: Dict[str,str] = {}
-    arrays: Dict[str,List[str]] = {k: [] for k in ["REQUIRES","PROVIDES","CONFLICTS","OBSOLETES","RECOMMENDS","SUGGESTS"]}
+    arrays: Dict[str,List[str]] = {k: [] for k in ["SOURCE","REQUIRES","PROVIDES","CONFLICTS","OBSOLETES","RECOMMENDS","SUGGESTS"]}
 
     i=0; n=len(data)
     while i < n:
