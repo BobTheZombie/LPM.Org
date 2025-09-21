@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections import deque
+from heapq import heappop, heappush
 from dataclasses import dataclass, field
+from itertools import count
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 
@@ -148,6 +150,9 @@ class CDCLSolver:
         trail: List[int] = []
         trail_lim: List[int] = []
         queue = deque()
+        branch_heap: List[Tuple[float, int, int]] = []
+        heap_counter = count()
+        active_vars: Set[int] = set(range(1, nvars + 1))
         imp_graph: Dict[int, Implication] = {i: Implication() for i in range(1, nvars + 1)}
 
         var_activity = self.var_activity
@@ -170,6 +175,16 @@ class CDCLSolver:
                 var_last_decay_step[v] = var_decay_steps
             return var_activity[v]
 
+        def push_var(v: int, priority: Optional[float] = None) -> None:
+            if assigns[v] is not None or v not in active_vars:
+                return
+            if priority is None:
+                priority = -normalize_var(v)
+            heappush(branch_heap, (priority, next(heap_counter), v))
+
+        for v in active_vars:
+            push_var(v)
+
         # stats for testing/benchmarking
         self.last_conflicts = 0
         self.last_restarts = 0
@@ -183,6 +198,8 @@ class CDCLSolver:
                     normalize_var(k)
                     var_activity[k] *= 1e-100
                 var_inc *= 1e-100
+            if assigns[v] is None and v in active_vars:
+                push_var(v, -var_activity[v])
 
         def decay_var_activity() -> None:
             nonlocal var_inc, var_decay_steps
@@ -225,6 +242,7 @@ class CDCLSolver:
             if assigns[v] is not None:
                 return
             assigns[v] = val
+            active_vars.discard(v)
             saved_phase[v] = val
             levels[v] = current_level()
             reason[v] = rsn
@@ -280,10 +298,16 @@ class CDCLSolver:
             return None
 
         def pick_branch_var() -> int:
-            unassigned = [v for v in range(1, nvars + 1) if assigns[v] is None]
-            if not unassigned:
-                return 0
-            return max(unassigned, key=normalize_var)
+            while branch_heap:
+                priority, _, v = heappop(branch_heap)
+                if assigns[v] is not None or v not in active_vars:
+                    continue
+                current_priority = -normalize_var(v)
+                if abs(current_priority - priority) > 1e-12:
+                    push_var(v, current_priority)
+                    continue
+                return v
+            return 0
 
         def analyze(conflict_idx: int) -> Tuple[List[int], int]:
             bump_clause(conflict_idx)
@@ -338,6 +362,8 @@ class CDCLSolver:
                     reason[v] = None
                     levels[v] = 0
                     imp_graph[v] = Implication()
+                    active_vars.add(v)
+                    push_var(v)
                 queue.clear()
 
         conflicts = 0
