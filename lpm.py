@@ -70,6 +70,7 @@ from src.config import (
     ARCH,
     ALLOW_LPMBUILD_FALLBACK,
     CACHE_DIR,
+    SOURCE_CACHE_DIR,
     CONF,
     CONF_FILE,
     CPU_FAMILY,
@@ -1699,14 +1700,48 @@ for a in REQUIRES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS; do _emit_arr
 
     return scalars, arrays
 
+def _source_cache_path(url: str, filename: str) -> Path:
+    parsed = urllib.parse.urlparse(url)
+    base = os.path.basename(parsed.path.rstrip("/")) or filename or "source"
+    stem, ext = os.path.splitext(base)
+    if not stem:
+        stem = "source"
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    return SOURCE_CACHE_DIR / f"{stem}-{digest}{ext}"
+
+
 def _maybe_fetch_source(url: str, dst_dir: Path):
-    if not url: return
+    if not url:
+        return
     fn = os.path.basename(urllib.parse.urlparse(url).path)
-    if not fn: return
+    if not fn:
+        return
     dst = dst_dir / fn
-    if dst.exists(): return
+    if dst.exists():
+        return
+
+    cache_path = _source_cache_path(url, fn)
+    if cache_path.exists():
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(cache_path, dst)
+            ok(f"Using cached source: {url}")
+            return
+        except Exception as e:
+            warn(f"Failed to use cached source for {url}: {e}")
+
     ok(f"Fetching source: {url}")
-    dst.write_bytes(urlread(url))
+    data = urlread(url)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_bytes(data)
+
+    try:
+        SOURCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp_cache = cache_path.with_suffix(cache_path.suffix + ".tmp")
+        tmp_cache.write_bytes(data)
+        tmp_cache.replace(cache_path)
+    except Exception as e:
+        warn(f"Failed to cache source {url}: {e}")
 
 # ======================= LPMBUILD =============================================
 def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
