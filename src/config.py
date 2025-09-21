@@ -13,6 +13,7 @@ TEMPLATE_CONF = Path(__file__).resolve().parent.parent / "etc" / "lpm" / "lpm.co
 STATE_DIR = Path(os.environ.get("LPM_STATE_DIR", "/var/lib/lpm"))
 DB_PATH   = STATE_DIR / "state.db"
 CACHE_DIR = STATE_DIR / "cache"
+SOURCE_CACHE_DIR = CACHE_DIR / "sources"
 SNAPSHOT_DIR = STATE_DIR / "snapshots"
 REPO_LIST = STATE_DIR / "repos.json"       # [{"name":"core","url":"file:///srv/repo","priority":10}, ...]
 PIN_FILE  = STATE_DIR / "pins.json"        # {"hold":["pkg"], "prefer":{"pkg":"~=3.3"}}
@@ -49,7 +50,7 @@ _ARCH_REPO_DEFAULTS: Dict[str, str] = {
 
 def initialize_state() -> None:
     os.umask(UMASK)
-    for d in (STATE_DIR, CACHE_DIR, SNAPSHOT_DIR):
+    for d in (STATE_DIR, CACHE_DIR, SOURCE_CACHE_DIR, SNAPSHOT_DIR):
         d.mkdir(parents=True, exist_ok=True)
     if not REPO_LIST.exists():
         REPO_LIST.write_text("[]", encoding="utf-8")
