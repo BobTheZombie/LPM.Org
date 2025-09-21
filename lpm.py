@@ -2172,6 +2172,81 @@ def run_lpmbuild(
                 rel = path
             staged_entries.append(str(rel))
 
+    def _iter_stage_candidates(entries: Iterable[str]) -> Iterable[Path]:
+        for raw in entries:
+            entry = raw.strip()
+            if not entry:
+                continue
+            candidate = Path(entry)
+            if not candidate.is_absolute():
+                candidate = srcroot / candidate
+            yield candidate
+
+    signature_suffixes = (".sig", ".asc")
+    extra_compressed_exts = (".tar.zst", ".tar.lz4", ".tar.lzo")
+
+    def _is_signature(path: Path) -> bool:
+        name = path.name.lower()
+        return any(name.endswith(suffix) for suffix in signature_suffixes)
+
+    def _is_extractable(path: Path) -> bool:
+        if not path.is_file():
+            return False
+        if _is_signature(path):
+            return False
+        if tarfile.is_tarfile(path):
+            return True
+        lowered = path.name.lower()
+        return any(lowered.endswith(ext) for ext in extra_compressed_exts)
+
+    archive_path: Optional[Path] = None
+    for candidate in _iter_stage_candidates(staged_entries):
+        if _is_extractable(candidate):
+            archive_path = candidate
+            break
+    if archive_path is None:
+        for candidate in sorted(srcroot.rglob("*")):
+            if _is_extractable(candidate):
+                archive_path = candidate
+                break
+
+    if archive_path is not None:
+        target_dir = srcroot / f"{name}-{version}"
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        def _extract_with_tarfile(path: Path, dest: Path) -> None:
+            def _strip_member(name: str) -> Optional[str]:
+                parts = [part for part in name.split("/") if part and part != "."]
+                if len(parts) <= 1:
+                    return None
+                return "/".join(parts[1:])
+
+            with tarfile.open(path) as tf:
+                members = []
+                for member in tf.getmembers():
+                    stripped = _strip_member(member.name)
+                    if stripped is None:
+                        continue
+                    member.name = stripped
+                    members.append(member)
+                tf.extractall(dest, members=members)
+
+        try:
+            subprocess.run(
+                [
+                    "tar",
+                    "--strip-components=1",
+                    "-xaf",
+                    str(archive_path),
+                    "-C",
+                    str(target_dir),
+                ],
+                check=True,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            with contextlib.suppress(Exception):
+                _extract_with_tarfile(archive_path, target_dir)
+
     run_hook(
         "post_source_fetch",
         {
