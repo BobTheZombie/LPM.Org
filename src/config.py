@@ -35,17 +35,6 @@ MARCH = "generic"
 MTUNE = "generic"
 CPU_VENDOR = ""
 CPU_FAMILY = ""
-DEVELOPER_MODE = False
-ARCH_REPO_ENDPOINTS: Dict[str, str] = {}
-
-_ARCH_REPO_DEFAULTS: Dict[str, str] = {
-    "core": "https://gitlab.archlinux.org/archlinux/packaging/packages",
-    "extra": "https://gitlab.archlinux.org/archlinux/packaging/packages",
-    "community": "https://gitlab.archlinux.org/archlinux/packaging/packages",
-    "multilib": "https://gitlab.archlinux.org/archlinux/packaging/packages",
-    "testing": "https://gitlab.archlinux.org/archlinux/packaging/packages",
-    "meta": "https://gitlab.archlinux.org/archlinux/packaging/meta",
-}
 
 
 def initialize_state() -> None:
@@ -77,32 +66,6 @@ def _get_bool(key: str, default: bool) -> bool:
     if val is None:
         return default
     return val.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _load_arch_repo_endpoints(conf: Mapping[str, str]) -> Dict[str, str]:
-    endpoints = dict(_ARCH_REPO_DEFAULTS)
-
-    raw_conf = conf.get("ARCH_REPO_ENDPOINTS")
-    env_conf = os.environ.get("LPM_ARCH_ENDPOINTS")
-    for source in (raw_conf, env_conf):
-        if not source:
-            continue
-        try:
-            parsed = json.loads(source)
-        except json.JSONDecodeError:
-            logging.warning("Invalid ARCH_REPO_ENDPOINTS JSON: %s", source)
-            continue
-        if isinstance(parsed, dict):
-            for key, value in parsed.items():
-                if isinstance(key, str) and isinstance(value, str) and value.strip():
-                    endpoints[key.strip()] = value.strip()
-
-    for key in list(endpoints):
-        override = conf.get(f"ARCH_REPO_{key.upper()}")
-        if override:
-            endpoints[key] = override.strip()
-
-    return endpoints
 
 
 def _detect_cpu() -> Tuple[str, str, str, str]:
@@ -189,7 +152,7 @@ def _init_cpu_settings() -> Tuple[str, str, str, str]:
 def _apply_conf(conf: Mapping[str, str]) -> None:
     global CONF, ARCH, OPT_LEVEL, MAX_SNAPSHOTS, MAX_LEARNT_CLAUSES
     global INSTALL_PROMPT_DEFAULT, ALLOW_LPMBUILD_FALLBACK, MARCH, MTUNE
-    global CPU_VENDOR, CPU_FAMILY, DEVELOPER_MODE, ARCH_REPO_ENDPOINTS
+    global CPU_VENDOR, CPU_FAMILY
 
     CONF = dict(conf)
     ARCH = CONF.get("ARCH", os.uname().machine if hasattr(os, "uname") else "x86_64")
@@ -213,14 +176,6 @@ def _apply_conf(conf: Mapping[str, str]) -> None:
         INSTALL_PROMPT_DEFAULT = "n"
 
     ALLOW_LPMBUILD_FALLBACK = _get_bool("ALLOW_LPMBUILD_FALLBACK", False)
-
-    env_dev = os.environ.get("LPM_DEVELOPER_MODE")
-    if env_dev is not None:
-        DEVELOPER_MODE = env_dev.strip().lower() in {"1", "true", "yes", "on"}
-    else:
-        DEVELOPER_MODE = _get_bool("DEVELOPER_MODE", False)
-
-    ARCH_REPO_ENDPOINTS = _load_arch_repo_endpoints(CONF)
 
     MARCH, MTUNE, CPU_VENDOR, CPU_FAMILY = _init_cpu_settings()
 
@@ -353,7 +308,5 @@ __all__ = [
     "MTUNE",
     "CPU_VENDOR",
     "CPU_FAMILY",
-    "DEVELOPER_MODE",
-    "ARCH_REPO_ENDPOINTS",
     "detect_init_system",
 ]

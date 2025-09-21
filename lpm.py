@@ -16,7 +16,7 @@ License: MIT
 """
 
 from __future__ import annotations
-import argparse, contextlib, dataclasses, fnmatch, hashlib, io, json, os, re, shlex, shutil, sqlite3, subprocess, sys, tarfile, tempfile, time, urllib.parse, urllib.request
+import argparse, contextlib, dataclasses, fnmatch, hashlib, io, json, os, re, shlex, shutil, sqlite3, subprocess, sys, tarfile, tempfile, time, urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -89,7 +89,6 @@ from src.config import (
     SIGN_KEY,
     SNAPSHOT_DIR,
     TRUST_DIR,
-    DEVELOPER_MODE,
     detect_init_system,
     initialize_state,
 )
@@ -98,7 +97,6 @@ from src.fs import read_json, write_json, urlread
 from src.installgen import generate_install_script
 from src.solver import CNF, CDCLSolver
 from src.first_run_ui import run_first_run_wizard
-from src import arch_compat
 
 # =========================== Protected packages ===============================
 PROTECTED_FILE = Path("/etc/lpm/protected.json")
@@ -2924,38 +2922,15 @@ def cmd_splitpkg(a):
 
 def cmd_buildpkg(a):
     script_path = Path(a.script)
-    fetch_override: Optional[Callable[[str, Path], Path]] = None
-    tmpdir: Optional[tempfile.TemporaryDirectory[str]] = None
+    if not script_path.exists():
+        die(f".lpmbuild script not found: {script_path}")
 
-    if getattr(a, "from_pkgbuild", False):
-        if not DEVELOPER_MODE:
-            die("--from-pkgbuild requires developer mode")
-
-        tmpdir = tempfile.TemporaryDirectory(prefix="lpm-pkgbuild-")
-        workspace = Path(tmpdir.name)
-        converter = arch_compat.PKGBuildConverter(workspace)
-
-        if script_path.exists():
-            info, script_path = converter.convert_file(script_path)
-        else:
-            info, script_path = converter.convert_remote(str(a.script))
-
-        if not a.no_deps:
-            for dep in info.dependency_names():
-                converter.ensure_dependency(dep)
-            fetch_override = converter.make_fetcher()
-
-    try:
-        out, duration, phases, splits = run_lpmbuild(
-            script_path,
-            a.outdir,
-            build_deps=not a.no_deps,
-            prompt_default=a.install_default,
-            fetcher=fetch_override,
-        )
-    finally:
-        if tmpdir is not None:
-            tmpdir.cleanup()
+    out, duration, phases, splits = run_lpmbuild(
+        script_path,
+        a.outdir,
+        build_deps=not a.no_deps,
+        prompt_default=a.install_default,
+    )
 
     if out and out.exists():
         meta, _ = read_package_meta(out)
@@ -2966,220 +2941,6 @@ def cmd_buildpkg(a):
         ok(f"Built {out}")
     else:
         die(f"Build failed for {a.script}")
-
-
-def cmd_pkgbuild_to_lpmbuild(a):
-    if not DEVELOPER_MODE:
-        die("pkgbuild-2-lpmbuild requires developer mode")
-
-    tmpdir = tempfile.TemporaryDirectory(prefix="lpm-pkgbuild-")
-    converter = arch_compat.PKGBuildConverter(Path(tmpdir.name))
-
-    source_path = Path(a.source)
-    if source_path.exists():
-        info, script_path = converter.convert_file(source_path)
-    else:
-        info, script_path = converter.convert_remote(a.source)
-
-    output_path = Path(a.output) if a.output else Path.cwd() / f"{info.name}.lpmbuild"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(script_path, output_path)
-    script_path = output_path
-
-    ok(f"Converted {info.name} -> {script_path}")
-
-    fetch_override: Optional[Callable[[str, Path], Path]] = None
-    if a.build:
-        if not a.no_deps:
-            for dep in info.dependency_names():
-                converter.ensure_dependency(dep)
-            fetch_override = converter.make_fetcher()
-
-        try:
-            out, duration, phases, splits = run_lpmbuild(
-                script_path,
-                a.outdir,
-                prompt_install=a.install,
-                prompt_default=a.install_default,
-                build_deps=not a.no_deps,
-                fetcher=fetch_override,
-            )
-        finally:
-            tmpdir.cleanup()
-
-        if out and out.exists():
-            meta, _ = read_package_meta(out)
-            print_build_summary(meta, out, duration, len(meta.requires), phases)
-            if splits:
-                for spath, smeta in splits:
-                    ok(f"Split: {spath} ({smeta.name})")
-            ok(f"Built {out}")
-        else:
-            die(f"Build failed for {script_path}")
-    else:
-        tmpdir.cleanup()
-
-
-def _read_index_source(target: str) -> str:
-    path = Path(target)
-    if path.exists():
-        return path.read_text(encoding="utf-8")
-
-    parsed = urllib.parse.urlparse(target)
-    if parsed.scheme in {"http", "https", "file"}:
-        with urllib.request.urlopen(target) as resp:
-            data = resp.read()
-        return data.decode("utf-8")
-
-    raise FileNotFoundError(target)
-
-
-def _extract_index_names(data) -> List[str]:
-    names: List[str] = []
-    if isinstance(data, dict):
-        packages = data.get("packages")
-        if isinstance(packages, list):
-            for item in packages:
-                names.extend(_extract_index_names(item))
-        for key in ("name", "pkgname", "NAME"):
-            value = data.get(key)
-            if isinstance(value, str) and value.strip():
-                names.append(value.strip())
-    elif isinstance(data, list):
-        for item in data:
-            names.extend(_extract_index_names(item))
-    elif isinstance(data, str):
-        if data.strip():
-            names.append(data.strip())
-    return names
-
-
-def _normalize_pkgbuild_target(name: str) -> Optional[str]:
-    candidate = name.strip()
-    if not candidate:
-        return None
-    if "/" in candidate:
-        return candidate
-    base = arch_compat.normalize_dependency_name(candidate) or candidate
-    if not base:
-        return None
-    return base
-
-
-def _collect_pkgbuild_targets(
-    targets: Iterable[str],
-    repo_fetcher: Optional[Callable[[str], str]] = None,
-) -> List[str]:
-    seen: Dict[str, None] = {}
-    ordered: List[str] = []
-
-    for target in targets:
-        resolved: List[str] = []
-        if target.startswith("repo:"):
-            if repo_fetcher is None:
-                die("repository targets require a fetcher")
-            repo_name = target.split(":", 1)[1].strip()
-            if not repo_name:
-                die("repository target missing name")
-            try:
-                text = repo_fetcher(repo_name)
-            except Exception as exc:
-                die(f"failed to fetch repository {repo_name}: {exc}")
-            try:
-                parsed = json.loads(text)
-            except json.JSONDecodeError as exc:
-                die(f"invalid repository index repo:{repo_name}: {exc}")
-            resolved = _extract_index_names(parsed)
-            if not resolved:
-                warn(f"repository {repo_name} produced no packages")
-            for name in resolved:
-                base = _normalize_pkgbuild_target(name)
-                if not base:
-                    continue
-                if base not in seen:
-                    seen[base] = None
-                    ordered.append(base)
-            continue
-        try:
-            text = _read_index_source(target)
-        except FileNotFoundError:
-            base = _normalize_pkgbuild_target(target)
-            if base:
-                resolved = [base]
-        except Exception as exc:
-            die(f"failed to read repository index {target}: {exc}")
-        else:
-            try:
-                parsed = json.loads(text)
-            except json.JSONDecodeError as exc:
-                die(f"invalid repository index {target}: {exc}")
-            resolved = _extract_index_names(parsed)
-
-        for name in resolved:
-            base = _normalize_pkgbuild_target(name)
-            if not base:
-                continue
-            if base not in seen:
-                seen[base] = None
-                ordered.append(base)
-
-    return ordered
-
-
-def _detect_tar_mode(path: Path) -> str:
-    lower = path.name.lower()
-    if lower.endswith(".tar.gz") or lower.endswith(".tgz"):
-        return "w:gz"
-    if lower.endswith(".tar.bz2") or lower.endswith(".tbz2"):
-        return "w:bz2"
-    if lower.endswith(".tar.xz") or lower.endswith(".txz"):
-        return "w:xz"
-    return "w"
-
-
-def cmd_pkgbuild_export_tar(a):
-    if not DEVELOPER_MODE:
-        die("pkgbuild-export-tar requires developer mode")
-
-    targets = _collect_pkgbuild_targets(a.targets, repo_fetcher=arch_compat.fetch_repo_index)
-    if not targets:
-        die("no packages resolved from inputs")
-
-    workspace_tmp: Optional[tempfile.TemporaryDirectory[str]] = None
-    if getattr(a, "workspace", None):
-        workspace = Path(a.workspace)
-        workspace.mkdir(parents=True, exist_ok=True)
-    else:
-        workspace_tmp = tempfile.TemporaryDirectory(prefix="lpm-arch-work-")
-        workspace = Path(workspace_tmp.name)
-
-    stage_tmp = tempfile.TemporaryDirectory(prefix="lpm-arch-stage-")
-    stage_root = Path(stage_tmp.name)
-
-    try:
-        converter = arch_compat.PKGBuildConverter(workspace)
-        for name in targets:
-            converter.convert_remote(name)
-
-        scripts = sorted(converter.iter_scripts(), key=lambda item: item[0])
-        packages_root = stage_root / "packages"
-        packages_root.mkdir(parents=True, exist_ok=True)
-        for name, script_path in scripts:
-            dest_dir = packages_root / name
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(script_path, dest_dir / f"{name}.lpmbuild")
-
-        output = Path(a.output)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        mode = _detect_tar_mode(output)
-        with tarfile.open(output, mode) as tf:
-            tf.add(packages_root, arcname="packages")
-
-        ok(f"Exported {len(scripts)} packages to {output}")
-    finally:
-        stage_tmp.cleanup()
-        if workspace_tmp is not None:
-            workspace_tmp.cleanup()
 
 
 def cmd_genindex(a):
@@ -3685,28 +3446,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--outdir", default=Path.cwd(), type=Path)
     sp.add_argument("--no-deps", action="store_true", help="do not fetch or build dependencies")
     sp.add_argument("--install-default", choices=["y", "n"], help="default answer for install prompt")
-    sp.add_argument("--from-pkgbuild", action="store_true", help="convert an Arch PKGBUILD before building (developer mode)")
     sp.set_defaults(func=cmd_buildpkg)
-
-    sp=sub.add_parser("pkgbuild-2-lpmbuild", help="Convert an Arch PKGBUILD to .lpmbuild (developer mode)")
-    sp.add_argument("source", help="path to PKGBUILD or <repo>/<pkg> name")
-    sp.add_argument("--output", type=Path, help="write converted script to this path")
-    sp.add_argument("--build", action="store_true", help="build the converted package immediately")
-    sp.add_argument("--install", action="store_true", help="prompt to install the built package")
-    sp.add_argument("--outdir", default=Path.cwd(), type=Path, help="directory for built packages")
-    sp.add_argument("--no-deps", action="store_true", help="skip converting and building dependencies")
-    sp.add_argument("--install-default", choices=["y", "n"], help="default answer for install prompt")
-    sp.set_defaults(func=cmd_pkgbuild_to_lpmbuild)
-
-    sp=sub.add_parser("pkgbuild-export-tar", help="Export Arch PKGBUILDs as .lpmbuild scripts in a tarball (developer mode)")
-    sp.add_argument("output", type=Path, help="output tarball path")
-    sp.add_argument(
-        "targets",
-        nargs="+",
-        help="Arch package names, repository index paths/URLs, or repo:NAME entries",
-    )
-    sp.add_argument("--workspace", type=Path, help="reuse a workspace for converted scripts")
-    sp.set_defaults(func=cmd_pkgbuild_export_tar)
 
     sp=sub.add_parser("genindex", help=f"Generate index.json for a repo directory of {EXT} files")
     sp.add_argument("repo_dir", help=f"directory containing {EXT} files")
