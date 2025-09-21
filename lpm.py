@@ -2070,9 +2070,15 @@ def run_lpmbuild(
     else:
         command_path = exec_path.resolve() if exec_path is not None else Path(__file__).resolve()
 
+    module_path = Path(__file__).resolve()
+    helper_cmd = [shlex.quote(str(command_path))]
+    if not use_argv0:
+        helper_cmd.append(shlex.quote(str(module_path)))
+    helper_cmd.append("splitpkg")
+
     helper_path.write_text(
         "#!/bin/sh\n"
-        f"exec {shlex.quote(str(command_path))} {shlex.quote(str(Path(__file__).resolve()))} splitpkg \"$@\"\n",
+        f"exec {' '.join(helper_cmd)} \"$@\"\n",
         encoding="utf-8",
     )
     helper_path.chmod(0o755)
