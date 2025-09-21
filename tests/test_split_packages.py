@@ -133,6 +133,63 @@ def test_run_lpmbuild_creates_split_packages(tmp_path, lpm_module):
             assert meta.provides == ["foo-beta-bin"]
 
 
+def test_split_package_helper_includes_module_for_interpreter(tmp_path, monkeypatch, lpm_module):
+    script = tmp_path / "split.lpmbuild"
+    script.write_text(
+        "\n".join(
+            [
+                "NAME=foo",
+                "VERSION=1.0.0",
+                "RELEASE=1",
+                "ARCH=noarch",
+                "SUMMARY=\"Base package\"",
+                "prepare(){ :; }",
+                "build(){ :; }",
+                "install(){",
+                "  mkdir -p \"$pkgdir/usr/bin\"",
+                "  echo base > \"$pkgdir/usr/bin/foo\"",
+                "}",
+            ]
+        )
+    )
+
+    python_stub = tmp_path / "python-stub"
+    python_stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    python_stub.chmod(0o755)
+
+    current_argv = list(sys.argv) or [str(script)]
+    monkeypatch.setattr(sys, "executable", str(python_stub))
+    monkeypatch.setattr(sys, "argv", current_argv)
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+
+    helper_path = Path("/tmp/build-foo/lpm-split-package")
+    original_unlink = Path.unlink
+    with contextlib.suppress(FileNotFoundError):
+        original_unlink(helper_path)
+
+    def fake_unlink(self, *args, **kwargs):
+        if self == helper_path:
+            return None
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fake_unlink)
+
+    lpm_module.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    helper_contents = helper_path.read_text(encoding="utf-8")
+    interpreter = shlex.quote(str(python_stub.resolve()))
+    module_path = shlex.quote(str(Path(lpm_module.__file__).resolve()))
+    expected = f"exec {interpreter} {module_path} splitpkg \"$@\""
+    assert expected in helper_contents
+
+    original_unlink(helper_path)
+
+
 def test_split_package_helper_falls_back_to_argv0(tmp_path, monkeypatch, lpm_module):
     script = tmp_path / "split.lpmbuild"
     script.write_text(
