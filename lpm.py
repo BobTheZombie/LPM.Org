@@ -234,7 +234,7 @@ def sandboxed_run(func: str, cwd: Path, env: dict, script_path: Path, stagedir: 
     script_abs = script_path.resolve()
     script_quoted = shlex.quote(str(script_abs))
 
-    wrapper_body = f"""__lpm_run_phase() {{\n    local phase=\"$1\"\n    shift || true\n    local def\n    if def=\"$(declare -f \"$phase\")\"; then\n        local new=\"__lpm_phase_${{phase}}\"\n        eval \"${{def/$phase/$new}}\"\n        unset -f \"$phase\"\n        \"$new\" \"$@\"\n    else\n        \"$phase\" \"$@\"\n    fi\n}}\n__lpm_run_phase {shlex.quote(func)}\n"""
+    wrapper_body = f"""__lpm_run_phase() {{\n    local __lpm_phase_name=\"$1\"\n    shift || true\n    local __lpm_phase_def\n    if __lpm_phase_def=\"$(declare -f \"$__lpm_phase_name\")\"; then\n        local __lpm_phase_wrapper=\"__lpm_phase_${{__lpm_phase_name}}\"\n        eval \"${{__lpm_phase_def/$__lpm_phase_name/$__lpm_phase_wrapper}}\"\n        unset -f \"$__lpm_phase_name\"\n        \"$__lpm_phase_wrapper\" \"$@\"\n    else\n        \"$__lpm_phase_name\" \"$@\"\n    fi\n}}\n__lpm_run_phase {shlex.quote(func)}\n"""
     wrapper = f"set -e\nsource {script_quoted}\n{wrapper_body}"
 
     if mode == "fakeroot":
