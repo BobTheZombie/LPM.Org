@@ -16,7 +16,7 @@ License: MIT
 """
 
 from __future__ import annotations
-import argparse, contextlib, dataclasses, fnmatch, hashlib, io, json, os, re, shlex, shutil, sqlite3, subprocess, sys, tarfile, tempfile, time, urllib.parse
+import argparse, contextlib, dataclasses, fnmatch, hashlib, io, json, os, re, shlex, shutil, sqlite3, stat, subprocess, sys, tarfile, tempfile, time, urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1123,30 +1123,64 @@ def _extract_symbols(p: Path) -> List[str]:
     except Exception:
         return []
 
-def collect_manifest(stagedir: Path) -> List[Dict[str,object]]:
-    mani=[]
-    for root,dirs,files in os.walk(stagedir):
+def _should_extract_symbols(path: Path, st: os.stat_result) -> bool:
+    if not stat.S_ISREG(st.st_mode) or st.st_size == 0:
+        return False
+    if st.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+        return True
+    name = path.name
+    if name.endswith(".so") or ".so." in name:
+        return True
+    return False
+
+
+def collect_manifest(stagedir: Path) -> List[Dict[str, object]]:
+    stagedir = stagedir.resolve()
+    mani: List[Dict[str, object]] = []
+    skip = {".lpm-meta.json", ".lpm-manifest.json"}
+
+    for root, _, files in os.walk(stagedir):
+        root_path = Path(root)
         for fn in files:
-            if fn in (".lpm-meta.json", ".lpm-manifest.json"):
+            if fn in skip:
                 continue
-            f=Path(root)/fn
-            rel=f.relative_to(stagedir).as_posix()
-            entry={"path":"/"+rel}
-            if f.is_symlink():
-                target=os.readlink(f)
-                st=os.lstat(f)
-                entry["link"]=target
-                entry["sha256"]=hashlib.sha256(target.encode()).hexdigest()
-                entry["size"]=st.st_size
+            f = root_path / fn
+            try:
+                st = f.lstat()
+            except FileNotFoundError:
+                continue
+
+            try:
+                rel = f.relative_to(stagedir).as_posix()
+            except ValueError:
+                rel = os.path.relpath(f, stagedir).replace(os.sep, "/")
+            entry: Dict[str, object] = {"path": "/" + rel}
+
+            if stat.S_ISLNK(st.st_mode):
+                try:
+                    target = os.readlink(f)
+                except OSError:
+                    continue
+                entry["link"] = target
+                entry["sha256"] = hashlib.sha256(target.encode()).hexdigest()
+                entry["size"] = st.st_size
                 mani.append(entry)
                 continue
-            entry["sha256"]=sha256sum(f)
-            entry["size"]=f.stat().st_size
-            syms=_extract_symbols(f)
-            if syms:
-                entry["symbols"]=syms
+
+            entry["size"] = st.st_size
+            try:
+                entry["sha256"] = sha256sum(f)
+            except OSError:
+                entry["sha256"] = ""
+            else:
+                if _should_extract_symbols(f, st):
+                    syms = _extract_symbols(f)
+                    if syms:
+                        entry["symbols"] = syms
+
             mani.append(entry)
-    return sorted(mani,key=lambda e:e["path"])
+
+    return sorted(mani, key=lambda e: e["path"])
 
     
 # =========================== Unified package tar opener =========================
@@ -1752,18 +1786,22 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
 
     return scalars, arrays
 
-def _source_cache_path(url: str, filename: str) -> Path:
+def _url_digest(url: str) -> str:
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+
+
+def _source_cache_path(url: str, filename: str, *, digest: Optional[str] = None) -> Path:
     parsed = urllib.parse.urlparse(url)
     base = os.path.basename(parsed.path.rstrip("/")) or filename or "source"
     stem, ext = os.path.splitext(base)
     if not stem:
         stem = "source"
-    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    if digest is None:
+        digest = _url_digest(url)
     return SOURCE_CACHE_DIR / f"{stem}-{digest}{ext}"
 
 
-def _cache_entry_filename(path: Path, url: str) -> str:
-    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+def _cache_entry_filename(path: Path, *, digest: str) -> str:
     stem = path.stem
     if stem.endswith(f"-{digest}"):
         stem = stem[: -(len(digest) + 1)]
@@ -1778,12 +1816,13 @@ def _maybe_fetch_source(url: str, dst_dir: Path, *, filename: Optional[str] = No
 
     cache_filename: Optional[str] = None
     cache_path: Optional[Path] = None
+    url_digest = _url_digest(url)
 
     if filename:
         dst = dst_dir / filename
         if dst.exists():
             return
-        candidate = _source_cache_path(url, filename)
+        candidate = _source_cache_path(url, filename, digest=url_digest)
         if candidate.exists():
             cache_path = candidate
             cache_filename = filename
@@ -1792,17 +1831,20 @@ def _maybe_fetch_source(url: str, dst_dir: Path, *, filename: Optional[str] = No
             dst = dst_dir / fallback_fn
             if dst.exists():
                 return
-            candidate = _source_cache_path(url, fallback_fn)
+            candidate = _source_cache_path(url, fallback_fn, digest=url_digest)
             if candidate.exists():
                 cache_path = candidate
                 cache_filename = fallback_fn
 
     if cache_path is None:
-        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
-        matches = sorted(SOURCE_CACHE_DIR.glob(f"*-{digest}*"))
-        if matches:
-            cache_path = matches[0]
-            cache_filename = _cache_entry_filename(cache_path, url)
+        pattern = f"*-{url_digest}*"
+        best_match: Optional[Path] = None
+        for match in SOURCE_CACHE_DIR.glob(pattern):
+            if best_match is None or match.name < best_match.name:
+                best_match = match
+        if best_match is not None:
+            cache_path = best_match
+            cache_filename = _cache_entry_filename(best_match, digest=url_digest)
 
     resolved_name = filename or cache_filename or fallback_fn
     if cache_path and cache_path.exists() and resolved_name:
@@ -1853,7 +1895,7 @@ def _maybe_fetch_source(url: str, dst_dir: Path, *, filename: Optional[str] = No
 
     try:
         SOURCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        cache_path = _source_cache_path(url, resolved_name)
+        cache_path = _source_cache_path(url, resolved_name, digest=url_digest)
         tmp_cache = cache_path.with_suffix(cache_path.suffix + ".tmp")
         tmp_cache.write_bytes(data)
         tmp_cache.replace(cache_path)
