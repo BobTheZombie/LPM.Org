@@ -66,7 +66,7 @@ def _write_dummy_lpmbuild(script: Path, deps):
             REQUIRES=({deps})
             prepare() {{ :; }}
             build() {{ :; }}
-            install() {{ :; }}
+            staging() {{ :; }}
             """
         ).format(deps=" ".join(deps))
     )
@@ -98,7 +98,7 @@ def test_run_lpmbuild_detects_dependency_cycle(tmp_path, monkeypatch, capsys):
             REQUIRES=('bar')
             prepare() { :; }
             build() { :; }
-            install() { :; }
+            staging() { :; }
             """
         )
     )
@@ -112,7 +112,7 @@ def test_run_lpmbuild_detects_dependency_cycle(tmp_path, monkeypatch, capsys):
             REQUIRES=('foo')
             prepare() { :; }
             build() { :; }
-            install() { :; }
+            staging() { :; }
             """
         )
     )
@@ -172,7 +172,7 @@ def test_run_lpmbuild_collects_dependency_arrays(tmp_path, monkeypatch):
             SUGGESTS=('valgrind')
             prepare() { :; }
             build() { :; }
-            install() {
+            staging() {
                 mkdir -p "$pkgdir"
                 echo hi > "$pkgdir/hi"
             }

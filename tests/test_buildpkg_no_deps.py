@@ -17,7 +17,7 @@ def test_buildpkg_no_deps_skips_dependency_build(tmp_path):
             REQUIRES=(nonexistent-dep)
             prepare() { :; }
             build() { :; }
-            install() {
+            staging() {
                 mkdir -p "$pkgdir"
                 echo hi > "$pkgdir/hi"
             }
@@ -27,6 +27,97 @@ def test_buildpkg_no_deps_skips_dependency_build(tmp_path):
 
     env = os.environ.copy()
     env["LPM_STATE_DIR"] = str(tmp_path / "state")
+
+    stub_dir = tmp_path / "stubs"
+    stub_dir.mkdir()
+    (stub_dir / "zstandard.py").write_text(
+        """
+class _Writer:
+    def __init__(self, fh):
+        self._fh = fh
+        self._started = False
+
+    def write(self, data):
+        if not self._started:
+            self._fh.write(b"\\x28\\xb5\\x2f\\xfd")
+            self._started = True
+        return self._fh.write(data)
+
+    def flush(self):
+        return self._fh.flush()
+
+    def close(self):
+        return self._fh.close()
+
+    def __enter__(self):
+        if not self._started:
+            self._fh.write(b"\\x28\\xb5\\x2f\\xfd")
+            self._started = True
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _Compressor:
+    def stream_writer(self, fh):
+        return _Writer(fh)
+
+
+class _Reader:
+    def __init__(self, fh):
+        self._fh = fh
+        self._skipped = False
+
+    def read(self, size=-1):
+        if not self._skipped:
+            self._fh.read(4)
+            self._skipped = True
+        return self._fh.read(size)
+
+    def close(self):
+        return self._fh.close()
+
+    def readable(self):
+        return True
+
+
+class _Decompressor:
+    def stream_reader(self, fh):
+        return _Reader(fh)
+
+
+ZstdCompressor = _Compressor
+ZstdDecompressor = _Decompressor
+"""
+    )
+    (stub_dir / "tqdm.py").write_text(
+        """
+class tqdm:
+    def __init__(self, iterable=None, **kwargs):
+        self.iterable = iterable or []
+        self.n = 0
+
+    def __iter__(self):
+        for item in self.iterable:
+            self.n += 1
+            yield item
+
+    def update(self, n=1):
+        self.n += n
+
+    def set_description(self, *args, **kwargs):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+"""
+    )
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(stub_dir), existing]))
 
     lpm = Path(__file__).resolve().parent.parent / "lpm.py"
 
@@ -66,7 +157,7 @@ def test_run_lpmbuild_defaults_missing_arch(tmp_path, monkeypatch):
             RELEASE=1
             prepare() { :; }
             build() { :; }
-            install() {
+            staging() {
                 mkdir -p "$pkgdir"
                 echo hi > "$pkgdir/hi"
             }

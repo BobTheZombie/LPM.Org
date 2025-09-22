@@ -225,16 +225,47 @@ def progress_bar(
     )
 
 # ============================ Build Isolation =======================
-def sandboxed_run(func: str, cwd: Path, env: dict, script_path: Path, stagedir: Path, buildroot: Path, srcroot: Path):
-    """
-    Run build function inside sandbox depending on SANDBOX_MODE.
+def sandboxed_run(
+    func: str,
+    cwd: Path,
+    env: dict,
+    script_path: Path,
+    stagedir: Path,
+    buildroot: Path,
+    srcroot: Path,
+    *,
+    aliases: Iterable[str] = (),
+):
+    """Run build function inside sandbox depending on SANDBOX_MODE.
+
     Supports: none, fakeroot, bwrap.
     """
     mode = CONF.get("SANDBOX_MODE", "none").lower()
     script_abs = script_path.resolve()
     script_quoted = shlex.quote(str(script_abs))
 
-    wrapper_body = f"""__lpm_run_phase() {{\n    local __lpm_phase_name=\"$1\"\n    shift || true\n    local __lpm_phase_def\n    if __lpm_phase_def=\"$(declare -f \"$__lpm_phase_name\")\"; then\n        local __lpm_phase_wrapper=\"__lpm_phase_${{__lpm_phase_name}}\"\n        eval \"${{__lpm_phase_def/$__lpm_phase_name/$__lpm_phase_wrapper}}\"\n        unset -f \"$__lpm_phase_name\"\n        \"$__lpm_phase_wrapper\" \"$@\"\n    else\n        \"$__lpm_phase_name\" \"$@\"\n    fi\n}}\n__lpm_run_phase {shlex.quote(func)}\n"""
+    candidates = [func, *aliases]
+    candidate_list = " ".join(shlex.quote(name) for name in candidates)
+    wrapper_body = (
+        "__lpm_run_phase() {\n"
+        "    local __lpm_requested=\"$1\"\n"
+        "    shift || true\n"
+        f"    local __lpm_candidates=({candidate_list})\n"
+        "    local __lpm_phase_name\n"
+        "    for __lpm_phase_name in \"${__lpm_candidates[@]}\"; do\n"
+        "        local __lpm_phase_def\n"
+        "        if __lpm_phase_def=\"$(declare -f \"$__lpm_phase_name\")\"; then\n"
+        "            local __lpm_phase_wrapper=\"__lpm_phase_${__lpm_phase_name}\"\n"
+        "            eval \"${__lpm_phase_def/$__lpm_phase_name/$__lpm_phase_wrapper}\"\n"
+        "            unset -f \"$__lpm_phase_name\"\n"
+        "            \"$__lpm_phase_wrapper\" \"$@\"\n"
+        "            return\n"
+        "        fi\n"
+        "    done\n"
+        "    \"$__lpm_requested\" \"$@\"\n"
+        "}\n"
+        f"__lpm_run_phase {shlex.quote(func)}\n"
+    )
     wrapper = f"set -e\nsource {script_quoted}\n{wrapper_body}"
 
     if mode == "fakeroot":
@@ -2355,9 +2386,21 @@ def run_lpmbuild(
 
     # --- Run build functions inside sandbox ---
     def run_func(func: str, cwd: Path):
-        sandboxed_run(func, cwd, env, script_path, stagedir, buildroot, srcroot)
+        phase_aliases: Tuple[str, ...] = ()
+        if func == "staging":
+            phase_aliases = ("install",)
+        sandboxed_run(
+            func,
+            cwd,
+            env,
+            script_path,
+            stagedir,
+            buildroot,
+            srcroot,
+            aliases=phase_aliases,
+        )
 
-    phases = ("prepare", "build", "install")
+    phases = ("prepare", "build", "staging")
     with progress_bar(
         phases,
         unit="phase",

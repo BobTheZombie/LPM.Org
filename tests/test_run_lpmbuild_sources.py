@@ -118,7 +118,7 @@ def test_run_lpmbuild_fetches_relative_sources(lpm_module, tmp_path, monkeypatch
             )
             prepare() { :; }
             build() { :; }
-            install() { :; }
+            staging() { :; }
             """
         )
     )
@@ -176,7 +176,7 @@ def test_run_lpmbuild_downloads_multiple_url_sources(lpm_module, tmp_path, monke
             )
             prepare() { :; }
             build() { :; }
-            install() { :; }
+            staging() { :; }
             """
         )
     )
@@ -236,7 +236,7 @@ def test_run_lpmbuild_allows_alias_for_repo_sources(lpm_module, tmp_path, monkey
             )
             prepare() { :; }
             build() { :; }
-            install() { :; }
+            staging() { :; }
             """
         )
     )
@@ -290,7 +290,7 @@ def test_run_lpmbuild_skips_metadata_url_fetch(lpm_module, tmp_path, monkeypatch
             )
             prepare() { :; }
             build() { :; }
-            install() { :; }
+            staging() { :; }
             """
         )
     )
@@ -341,7 +341,7 @@ def test_run_lpmbuild_supports_git_sources(lpm_module, tmp_path, monkeypatch):
             )
             prepare() { :; }
             build() { :; }
-            install() { :; }
+            staging() { :; }
             """
         )
     )
@@ -395,7 +395,7 @@ def test_run_lpmbuild_git_source_respects_alias_and_commit(lpm_module, tmp_path,
             )
             prepare() { :; }
             build() { :; }
-            install() { :; }
+            staging() { :; }
             """
         )
     )
@@ -485,7 +485,7 @@ def test_run_lpmbuild_extracts_archive_by_default(lpm_module, tmp_path, monkeypa
             )
             prepare() { :; }
             build() { :; }
-            install() { :; }
+            staging() { :; }
             """
         )
     )
@@ -539,7 +539,7 @@ def test_run_lpmbuild_post_source_fetch_hook_can_override(lpm_module, tmp_path, 
             )
             prepare() { :; }
             build() { :; }
-            install() { :; }
+            staging() { :; }
             """
         )
     )

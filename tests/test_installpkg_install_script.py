@@ -174,7 +174,7 @@ def _build_pkg_from_lpmbuild(lpm, tmp_path, monkeypatch, *, name, version, relea
             install=foo.install
             prepare(){{ :; }}
             build(){{ :; }}
-            install(){{ :; }}
+            staging(){{ :; }}
             """
         ).strip()
         + "\n"
@@ -185,8 +185,18 @@ def _build_pkg_from_lpmbuild(lpm, tmp_path, monkeypatch, *, name, version, relea
 
     payload_contents = "payload\n"
 
-    def fake_sandboxed_run(func, cwd, env, script_path_arg, stagedir, buildroot, srcroot):
-        if func == "install":
+    def fake_sandboxed_run(
+        func,
+        cwd,
+        env,
+        script_path_arg,
+        stagedir,
+        buildroot,
+        srcroot,
+        *,
+        aliases=(),
+    ):
+        if func == "staging" or "install" in aliases:
             target = stagedir / "installed.txt"
             target.write_text(payload_contents)
 

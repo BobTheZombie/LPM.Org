@@ -23,7 +23,7 @@ def _prepare_lpmbuild(tmpdir: Path, deps) -> Path:
             REQUIRES=({deps})
             prepare() {{ :; }}
             build() {{ :; }}
-            install() {{ :; }}
+            staging() {{ :; }}
             """
         ).format(deps=" ".join(deps))
     )
