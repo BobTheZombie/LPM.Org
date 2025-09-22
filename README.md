@@ -205,7 +205,7 @@ Hook scripts placed in `/usr/share/lpm/hooks` or within `<hook>.d` directories
 run at key points during package operations. These hooks may be either shell or
 Python scripts, with Python hooks executed using the current Python interpreter.
 
-### Default post-install hooks
+### Post-install and post-upgrade hooks
 
 LPM ships with several hooks that run after a package is installed:
 
@@ -217,6 +217,34 @@ LPM ships with several hooks that run after a package is installed:
 
 Each hook checks for the presence of its corresponding tool and exits quietly
 if it is not installed.
+
+In addition to the per-package `post_install` hook, upgrades now trigger a
+`post_upgrade` entry point after the new files have been committed. Both hooks
+receive the same environment variables:
+
+| Variable | Description |
+| --- | --- |
+| `LPM_PKG` | Package name being installed or upgraded. |
+| `LPM_VERSION` | Version of the package that has just been installed. |
+| `LPM_RELEASE` | Release string for the installed package. |
+| `LPM_ROOT` | Destination root path passed to `lpm install`. |
+| `LPM_PREVIOUS_VERSION` | Previous installed version when upgrading (unset on fresh installs). |
+| `LPM_PREVIOUS_RELEASE` | Previous installed release when upgrading (unset on fresh installs). |
+
+To add custom logic, drop an executable into either
+`/usr/share/lpm/hooks/post_install.d/` or `/usr/share/lpm/hooks/post_upgrade.d/`.
+For example, to notify a service after every upgrade create
+`/usr/share/lpm/hooks/post_upgrade.d/900-notify.sh`:
+
+```sh
+#!/bin/sh
+[ -z "${LPM_PREVIOUS_VERSION:-}" ] && exit 0
+logger -t lpm "${LPM_PKG} upgraded from ${LPM_PREVIOUS_VERSION}-${LPM_PREVIOUS_RELEASE} to ${LPM_VERSION}-${LPM_RELEASE}"
+systemctl reload my-service.service
+```
+
+The script is executed automatically after each upgrade. Similar scripts placed
+in `post_install.d/` run after every installation (including upgrades).
 
 ### Kernel installation hook
 

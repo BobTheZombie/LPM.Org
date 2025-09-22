@@ -3079,11 +3079,25 @@ def installpkg(
     # --- Step 5: Transaction (unchanged below) ---
     conn = db()
     with transaction(conn, f"install {meta.name}", dry_run):
-        run_hook("pre_install", {
+        row = conn.execute(
+            "SELECT version, release FROM installed WHERE name=?",
+            (meta.name,),
+        ).fetchone()
+        previous_version = row[0] if row else None
+        previous_release = row[1] if row else None
+
+        hook_env = {
             "LPM_PKG": meta.name,
             "LPM_VERSION": meta.version,
+            "LPM_RELEASE": meta.release,
             "LPM_ROOT": str(root),
-        })
+        }
+        if previous_version is not None:
+            hook_env["LPM_PREVIOUS_VERSION"] = previous_version
+        if previous_release is not None:
+            hook_env["LPM_PREVIOUS_RELEASE"] = previous_release
+
+        run_hook("pre_install", dict(hook_env))
 
         tmp_root = Path(tempfile.mkdtemp(prefix=f"lpm-{meta.name}-", dir="/tmp"))
         try:
@@ -3248,18 +3262,25 @@ def installpkg(
                     int(time.time()),
                 ),
             )
+            action = "upgrade" if previous_version is not None else "install"
             conn.execute(
                 "INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
-                (int(time.time()), "install", meta.name, None, meta.version, json.dumps(dataclasses.asdict(meta))),
+                (
+                    int(time.time()),
+                    action,
+                    meta.name,
+                    previous_version,
+                    meta.version,
+                    json.dumps(dataclasses.asdict(meta)),
+                ),
             )
         finally:
             shutil.rmtree(tmp_root, ignore_errors=True)
 
-        run_hook("post_install", {
-            "LPM_PKG": meta.name,
-            "LPM_VERSION": meta.version,
-            "LPM_ROOT": str(root),
-        })
+        run_hook("post_install", dict(hook_env))
+
+        if previous_version is not None:
+            run_hook("post_upgrade", dict(hook_env))
         
         # New: init system service integration
         handle_service_files(meta.name, root, mani)
