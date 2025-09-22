@@ -131,6 +131,31 @@ def _make_install_script_pkg(lpm, tmp_path):
     return out
 
 
+def _make_simple_pkg(lpm, tmp_path, *, name="scripted", version="1", release="1", payload="from package\n"):
+    staged = tmp_path / f"stage-{name}-{version}-{release}"
+    staged.mkdir()
+
+    payload_path = staged / "foo"
+    payload_path.write_text(payload)
+
+    manifest = lpm.collect_manifest(staged)
+    meta = lpm.PkgMeta(name=name, version=version, release=release, arch="noarch")
+
+    (staged / ".lpm-meta.json").write_text(json.dumps(dataclasses.asdict(meta)))
+    (staged / ".lpm-manifest.json").write_text(json.dumps(manifest))
+
+    out = tmp_path / f"{name}-{version}-{release}.zst"
+    with out.open("wb") as f:
+        cctx = lpm.zstd.ZstdCompressor()
+        with cctx.stream_writer(f) as compressor:
+            with tarfile.open(fileobj=compressor, mode="w|") as tf:
+                for p in staged.iterdir():
+                    tf.add(p, arcname=p.name)
+
+    shutil.rmtree(staged)
+    return out
+
+
 def test_installpkg_runs_embedded_script(tmp_path, monkeypatch):
     lpm = _import_lpm(tmp_path, monkeypatch)
     root = tmp_path / "root"
@@ -155,3 +180,32 @@ def test_installpkg_runs_embedded_script(tmp_path, monkeypatch):
     assert row is not None
     manifest = json.loads(row[0])
     assert all(entry["path"] != "/.lpm-install.sh" for entry in manifest)
+
+
+def test_post_upgrade_hook_runs_with_previous_version(tmp_path, monkeypatch):
+    lpm = _import_lpm(tmp_path, monkeypatch)
+    root = tmp_path / "root"
+    root.mkdir()
+
+    hook_dir = tmp_path / "hooks"
+    hook_dir.mkdir()
+    log = tmp_path / "upgrade.log"
+    script = hook_dir / "post_upgrade"
+    script.write_text(
+        "#!/bin/sh\n"
+        "[ -z \"$LPM_PREVIOUS_VERSION\" ] && exit 0\n"
+        f"printf '%s %s %s %s\\n' \"$LPM_PKG\" \"$LPM_VERSION\" \"$LPM_PREVIOUS_VERSION\" \"$LPM_PREVIOUS_RELEASE\" >> {log}\n"
+    )
+    script.chmod(0o755)
+    monkeypatch.setattr(lpm, "HOOK_DIR", hook_dir)
+
+    pkg_v1 = _make_simple_pkg(lpm, tmp_path, name="sample", version="1.0", release="1")
+    pkg_v2 = _make_simple_pkg(lpm, tmp_path, name="sample", version="2.0", release="3")
+
+    lpm.installpkg(pkg_v1, root=root, dry_run=False, verify=False, force=False, explicit=True)
+    assert not log.exists() or log.read_text().strip() == ""
+
+    lpm.installpkg(pkg_v2, root=root, dry_run=False, verify=False, force=False, explicit=True)
+
+    lines = log.read_text().splitlines()
+    assert lines == ["sample 2.0 1.0 1"]
