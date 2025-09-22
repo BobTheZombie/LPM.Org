@@ -231,9 +231,11 @@ def sandboxed_run(func: str, cwd: Path, env: dict, script_path: Path, stagedir: 
     Supports: none, fakeroot, bwrap.
     """
     mode = CONF.get("SANDBOX_MODE", "none").lower()
+    script_abs = script_path.resolve()
+    script_quoted = shlex.quote(str(script_abs))
 
     if mode == "fakeroot":
-        cmd = ["fakeroot", "bash", "-c", f'set -e; source "{script_path}"; {func}']
+        cmd = ["fakeroot", "bash", "-c", f"set -e; source {script_quoted}; {func}"]
         subprocess.run(cmd, check=True, env=env, cwd=str(cwd))
         return
 
@@ -250,13 +252,13 @@ def sandboxed_run(func: str, cwd: Path, env: dict, script_path: Path, stagedir: 
             "--unshare-all",
             "--share-net",             # allow networking (remove for full isolation)
             "--die-with-parent",
-            "bash", "-c", f'set -e; cd /src; source "{script_path.name}"; {func}'
+            "bash", "-c", f"set -e; cd /src; source {script_quoted}; {func}"
         ]
         subprocess.run(cmd, check=True, env=env, cwd=str(cwd))
         return
 
     # Default: no sandbox
-    cmd = ["bash", "-c", f'set -e; source "{script_path}"; {func}']
+    cmd = ["bash", "-c", f"set -e; source {script_quoted}; {func}"]
     subprocess.run(cmd, check=True, env=env, cwd=str(cwd))
 
 # ================ PACKAGING  ================
