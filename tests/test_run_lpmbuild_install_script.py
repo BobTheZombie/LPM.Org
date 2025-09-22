@@ -257,6 +257,87 @@ def test_run_lpmbuild_install_phase_allows_install_command(tmp_path, monkeypatch
         shutil.rmtree(Path(f"/tmp/{suffix}"), ignore_errors=True)
 
 
+def test_run_lpmbuild_phase_wrapper_preserves_common_variable_names(tmp_path, monkeypatch):
+    script = tmp_path / "phase-vars.lpmbuild"
+    script.write_text(
+        textwrap.dedent(
+            r"""
+            NAME=phase-vars
+            VERSION=1
+
+            log_phase_vars() {
+                local label="$1"
+                shift || true
+                local log="$SRCROOT/var-check.log"
+                for var in phase def new; do
+                    eval "present=\${${var}+x}"
+                    if [ "$present" = "x" ]; then
+                        eval "value=\${${var}}"
+                        printf '%s %s:%s\n' "$label" "$var" "$value" >> "$log"
+                    else
+                        printf '%s %s:unset\n' "$label" "$var" >> "$log"
+                    fi
+                done
+            }
+
+            prepare() {
+                log_phase_vars prepare
+                phase="prepare-phase"
+                def="prepare-def"
+                new="prepare-new"
+            }
+
+            build() {
+                log_phase_vars build
+                phase="build-phase"
+                def="build-def"
+                new="build-new"
+            }
+
+            install() {
+                log_phase_vars install
+                phase="install-phase"
+                def="install-def"
+                new="install-new"
+            }
+            """
+        ).strip()
+        + "\n"
+    )
+
+    monkeypatch.setitem(lpm.CONF, "SANDBOX_MODE", "none")
+    monkeypatch.setattr(lpm, "generate_install_script", lambda stagedir: ":")
+
+    def fake_build_package(stagedir, meta, out, sign=True):
+        out.write_text("pkg")
+
+    monkeypatch.setattr(lpm, "build_package", fake_build_package)
+
+    lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    log_path = Path("/tmp/src-phase-vars/var-check.log")
+    assert log_path.exists()
+    assert log_path.read_text().splitlines() == [
+        "prepare phase:unset",
+        "prepare def:unset",
+        "prepare new:unset",
+        "build phase:unset",
+        "build def:unset",
+        "build new:unset",
+        "install phase:unset",
+        "install def:unset",
+        "install new:unset",
+    ]
+
+    for suffix in ("pkg-phase-vars", "build-phase-vars", "src-phase-vars"):
+        shutil.rmtree(Path(f"/tmp/{suffix}"), ignore_errors=True)
+
+
 def test_run_lpmbuild_runs_phases_under_bwrap(tmp_path, monkeypatch):
     script_dir = tmp_path / "pkg"
     script_dir.mkdir()
