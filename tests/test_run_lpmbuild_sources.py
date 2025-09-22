@@ -79,6 +79,29 @@ def _stub_build_pipeline(lpm, monkeypatch):
     monkeypatch.setattr(lpm, "build_package", fake_build_package)
 
 
+def _make_git_subprocess_stub(commands, delegate=None, create_file=True):
+    def fake_run(cmd, check=True, **kwargs):
+        if cmd and cmd[0] == "git":
+            commands.append(cmd)
+            if len(cmd) >= 2 and cmd[1] == "clone":
+                dest = Path(cmd[-1])
+                dest.mkdir(parents=True, exist_ok=True)
+                if create_file:
+                    (dest / "cloned.txt").write_text("git payload", encoding="utf-8")
+            return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        if delegate is not None:
+            return delegate(cmd, check=check, **kwargs)
+
+        return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    return fake_run
+
+
+def _fail_urlread(*args, **kwargs):
+    raise AssertionError("urlread should not be used")
+
+
 def test_run_lpmbuild_fetches_relative_sources(lpm_module, tmp_path, monkeypatch):
     lpm = lpm_module
     script = tmp_path / "foo.lpmbuild"
@@ -297,6 +320,114 @@ def test_run_lpmbuild_skips_metadata_url_fetch(lpm_module, tmp_path, monkeypatch
     srcroot = Path("/tmp/src-foo")
     assert (srcroot / "foo-1.tar.gz").read_bytes() == b"payload"
     assert fetched_urls == ["https://downloads.example.com/foo-1.tar.gz"]
+
+    out_path.unlink()
+    for suffix in ("pkg-foo", "build-foo", "src-foo"):
+        shutil.rmtree(Path(f"/tmp/{suffix}"), ignore_errors=True)
+
+
+def test_run_lpmbuild_supports_git_sources(lpm_module, tmp_path, monkeypatch):
+    lpm = lpm_module
+    script = tmp_path / "foo.lpmbuild"
+    script.write_text(
+        textwrap.dedent(
+            """
+            NAME=foo
+            VERSION=1
+            RELEASE=1
+            ARCH=noarch
+            SOURCE=(
+              'git+https://github.com/pop-os/cosmic-files.git#tag=v1.0.0'
+            )
+            prepare() { :; }
+            build() { :; }
+            install() { :; }
+            """
+        )
+    )
+
+    _stub_build_pipeline(lpm, monkeypatch)
+    monkeypatch.setattr(lpm, "ok", lambda msg: None)
+    monkeypatch.setattr(lpm, "warn", lambda msg: None)
+    monkeypatch.setattr(lpm, "urlread", _fail_urlread)
+
+    commands: list[list[str]] = []
+    real_run = lpm.subprocess.run
+    fake_run = _make_git_subprocess_stub(commands, delegate=real_run)
+    monkeypatch.setattr(lpm.subprocess, "run", fake_run)
+
+    out_path, _, _, _ = lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    assert out_path.exists()
+
+    srcroot = Path("/tmp/src-foo")
+    repo_dir = srcroot / "cosmic-files"
+    assert repo_dir.exists()
+    assert (repo_dir / "cloned.txt").read_text(encoding="utf-8") == "git payload"
+
+    assert commands
+    assert commands[0][0:2] == ["git", "clone"]
+    assert commands[0][2] == "https://github.com/pop-os/cosmic-files.git"
+    assert any(cmd[-1] == "v1.0.0" for cmd in commands if cmd and cmd[0] == "git")
+
+    out_path.unlink()
+    for suffix in ("pkg-foo", "build-foo", "src-foo"):
+        shutil.rmtree(Path(f"/tmp/{suffix}"), ignore_errors=True)
+
+
+def test_run_lpmbuild_git_source_respects_alias_and_commit(lpm_module, tmp_path, monkeypatch):
+    lpm = lpm_module
+    script = tmp_path / "foo.lpmbuild"
+    script.write_text(
+        textwrap.dedent(
+            """
+            NAME=foo
+            VERSION=1
+            RELEASE=1
+            ARCH=noarch
+            SOURCE=(
+              'custom-src::git+https://example.com/project.git#commit=deadbeef'
+            )
+            prepare() { :; }
+            build() { :; }
+            install() { :; }
+            """
+        )
+    )
+
+    _stub_build_pipeline(lpm, monkeypatch)
+    monkeypatch.setattr(lpm, "ok", lambda msg: None)
+    monkeypatch.setattr(lpm, "warn", lambda msg: None)
+    monkeypatch.setattr(lpm, "urlread", _fail_urlread)
+
+    commands: list[list[str]] = []
+    real_run = lpm.subprocess.run
+    fake_run = _make_git_subprocess_stub(commands, delegate=real_run)
+    monkeypatch.setattr(lpm.subprocess, "run", fake_run)
+
+    out_path, _, _, _ = lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    assert out_path.exists()
+
+    srcroot = Path("/tmp/src-foo")
+    repo_dir = srcroot / "custom-src"
+    assert repo_dir.exists()
+    assert (repo_dir / "cloned.txt").read_text(encoding="utf-8") == "git payload"
+
+    assert commands
+    assert commands[0][0:2] == ["git", "clone"]
+    assert commands[0][2] == "https://example.com/project.git"
+    assert any(cmd[-1] == "deadbeef" for cmd in commands if cmd and cmd[0] == "git")
 
     out_path.unlink()
     for suffix in ("pkg-foo", "build-foo", "src-foo"):

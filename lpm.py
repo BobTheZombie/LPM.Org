@@ -1824,6 +1824,59 @@ def _maybe_fetch_source(url: str, dst_dir: Path, *, filename: Optional[str] = No
     except Exception as e:
         warn(f"Failed to cache source {url}: {e}")
 
+
+def _fetch_git_source(url: str, dst_dir: Path, *, alias: Optional[str] = None) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme or ""
+    if not scheme.startswith("git+"):
+        return False
+
+    actual_scheme = scheme.split("+", 1)[1] if "+" in scheme else "git"
+    rewritten = parsed._replace(scheme=actual_scheme, fragment="", query="")
+    git_url = urllib.parse.urlunparse(rewritten)
+
+    target_name: Optional[str]
+    if alias:
+        target_name = alias
+    else:
+        target_name = os.path.basename(parsed.path.rstrip("/"))
+        if target_name.endswith(".git"):
+            target_name = target_name[: -len(".git")]
+    if not target_name:
+        target_name = "source"
+
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    target_path = dst_dir / target_name
+    if target_path.exists():
+        return True
+
+    tmp_target = target_path.parent / f".{target_path.name}.tmp"
+    if tmp_target.exists():
+        shutil.rmtree(tmp_target)
+
+    ok(f"Fetching git source: {git_url}")
+
+    clone_cmd = ["git", "clone", git_url, str(tmp_target)]
+    subprocess.run(clone_cmd, check=True)
+
+    fragment = urllib.parse.parse_qs(parsed.fragment, keep_blank_values=True)
+
+    def _checkout(param: str):
+        values = fragment.get(param)
+        if not values:
+            return
+        ref = values[-1]
+        if not ref:
+            return
+        subprocess.run(["git", "-C", str(tmp_target), "checkout", ref], check=True)
+
+    _checkout("branch")
+    _checkout("tag")
+    _checkout("commit")
+
+    tmp_target.replace(target_path)
+    return True
+
 # ======================= LPMBUILD =============================================
 def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
     """
@@ -2167,6 +2220,9 @@ def run_lpmbuild(
                     target_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(local_candidate, target_path)
                 continue
+
+        if _fetch_git_source(source_ref, srcroot, alias=alias):
+            continue
 
         _maybe_fetch_source(source_ref, srcroot, filename=alias)
 
