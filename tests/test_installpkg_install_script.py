@@ -5,6 +5,7 @@ import shutil
 import sqlite3
 import sys
 import tarfile
+import textwrap
 import types
 from pathlib import Path
 
@@ -89,6 +90,9 @@ def _import_lpm(tmp_path, monkeypatch):
                     def update(self, *args, **kwargs):
                         return None
 
+                    def set_description(self, *args, **kwargs):
+                        return None
+
                 module.tqdm = _DummyTqdm  # type: ignore[attr-defined]
             monkeypatch.setitem(sys.modules, name, module)
     for mod in ["lpm", "src.config"]:
@@ -156,6 +160,65 @@ def _make_simple_pkg(lpm, tmp_path, *, name="scripted", version="1", release="1"
     return out
 
 
+def _build_pkg_from_lpmbuild(lpm, tmp_path, monkeypatch, *, name, version, release, install_body):
+    workdir = tmp_path / f"{name}-{version}-{release}-src"
+    workdir.mkdir()
+
+    script_path = workdir / f"{name}.lpmbuild"
+    script_path.write_text(
+        textwrap.dedent(
+            f"""
+            NAME={name}
+            VERSION={version}
+            RELEASE={release}
+            install=foo.install
+            prepare(){{ :; }}
+            build(){{ :; }}
+            install(){{ :; }}
+            """
+        ).strip()
+        + "\n"
+    )
+
+    install_path = workdir / "foo.install"
+    install_path.write_text(install_body.strip() + "\n")
+
+    payload_contents = "payload\n"
+
+    def fake_sandboxed_run(func, cwd, env, script_path_arg, stagedir, buildroot, srcroot):
+        if func == "install":
+            target = stagedir / "installed.txt"
+            target.write_text(payload_contents)
+
+    def fail_generate(_stagedir):
+        raise AssertionError("generate_install_script should not run when install= is provided")
+
+    def fake_build_package(stagedir, meta, out, sign=True):
+        manifest = lpm.collect_manifest(stagedir)
+        (stagedir / ".lpm-meta.json").write_text(json.dumps(dataclasses.asdict(meta)))
+        (stagedir / ".lpm-manifest.json").write_text(json.dumps(manifest))
+        with out.open("wb") as f:
+            cctx = lpm.zstd.ZstdCompressor()
+            with cctx.stream_writer(f) as compressor:
+                with tarfile.open(fileobj=compressor, mode="w|") as tf:
+                    for path in sorted(stagedir.rglob("*")):
+                        tf.add(path, arcname=str(path.relative_to(stagedir)))
+
+    monkeypatch.setattr(lpm, "sandboxed_run", fake_sandboxed_run)
+    monkeypatch.setattr(lpm, "generate_install_script", fail_generate)
+    monkeypatch.setattr(lpm, "build_package", fake_build_package)
+
+    pkg_path, *_ = lpm.run_lpmbuild(
+        script_path,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    shutil.rmtree(workdir)
+    return pkg_path
+
+
 def test_installpkg_runs_embedded_script(tmp_path, monkeypatch):
     lpm = _import_lpm(tmp_path, monkeypatch)
     root = tmp_path / "root"
@@ -209,3 +272,54 @@ def test_post_upgrade_hook_runs_with_previous_version(tmp_path, monkeypatch):
 
     lines = log.read_text().splitlines()
     assert lines == ["sample 2.0 1.0 1"]
+
+
+def test_installpkg_lpmbuild_install_hooks(tmp_path, monkeypatch):
+    lpm = _import_lpm(tmp_path, monkeypatch)
+    root = tmp_path / "root"
+    root.mkdir()
+
+    install_body = textwrap.dedent(
+        """
+        post_install() {
+            printf 'post_install %s %s\n' "$1" "${LPM_INSTALL_ACTION:-}" >> "$LPM_ROOT/hook.log"
+        }
+
+        post_upgrade() {
+            printf 'post_upgrade %s %s\n' "$1" "$2" >> "$LPM_ROOT/hook.log"
+        }
+        """
+    )
+
+    pkg_v1 = _build_pkg_from_lpmbuild(
+        lpm,
+        tmp_path,
+        monkeypatch,
+        name="hooks",
+        version="1.0",
+        release="1",
+        install_body=install_body,
+    )
+
+    lpm.installpkg(pkg_v1, root=root, dry_run=False, verify=False, force=False, explicit=True)
+
+    log_path = root / "hook.log"
+    assert log_path.read_text().splitlines() == ["post_install 1.0-1 install"]
+
+    pkg_v2 = _build_pkg_from_lpmbuild(
+        lpm,
+        tmp_path,
+        monkeypatch,
+        name="hooks",
+        version="2.0",
+        release="3",
+        install_body=install_body,
+    )
+
+    lpm.installpkg(pkg_v2, root=root, dry_run=False, verify=False, force=False, explicit=True)
+
+    assert log_path.read_text().splitlines() == [
+        "post_install 1.0-1 install",
+        "post_install 2.0-3 upgrade",
+        "post_upgrade 2.0-3 1.0-1",
+    ]
