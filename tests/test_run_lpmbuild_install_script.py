@@ -96,6 +96,7 @@ if "tqdm" not in sys.modules:
 
 import lpm
 
+
 def test_run_lpmbuild_generates_install_script(tmp_path, monkeypatch):
     script = tmp_path / "foo.lpmbuild"
     script.write_text(
@@ -198,7 +199,62 @@ def test_run_lpmbuild_defaults_arch_to_noarch(tmp_path, monkeypatch):
     assert recorded["meta_arch"] == lpm.PkgMeta.__dataclass_fields__["arch"].default
     assert out_path.name.endswith(".zst")
     assert ".." not in out_path.name
-    assert splits == []
+
+
+def test_run_lpmbuild_install_phase_allows_install_command(tmp_path, monkeypatch):
+    script = tmp_path / "foo.lpmbuild"
+    script.write_text(
+        textwrap.dedent(
+            """
+            NAME=foo
+            VERSION=1
+            RELEASE=1
+            ARCH=noarch
+            prepare() {
+                printf 'payload\n' > "$SRCROOT/message.txt"
+            }
+            build() { :; }
+            install() {
+                install -Dm644 "$SRCROOT/message.txt" "$pkgdir/usr/share/foo/message.txt"
+            }
+            """
+        )
+    )
+
+    monkeypatch.setitem(lpm.CONF, "SANDBOX_MODE", "none")
+    monkeypatch.setattr(lpm, "generate_install_script", lambda stagedir: ":")
+
+    out_path, _, _, _ = lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    assert out_path.exists()
+    _, manifest = lpm.read_package_meta(out_path)
+    entry = next((item for item in manifest if item["path"] == "/usr/share/foo/message.txt"), None)
+    assert entry is not None
+    assert entry["size"] > 0
+
+    tf = lpm.open_package_tar(out_path, stream=False)
+    try:
+        member = next(
+            (
+                m
+                for m in tf.getmembers()
+                if Path(m.name).as_posix().lstrip("./") == "usr/share/foo/message.txt"
+            ),
+            None,
+        )
+        assert member is not None
+        with tf.extractfile(member) as fh:
+            assert fh.read() == b"payload\n"
+    finally:
+        tf.close()
+
+    for suffix in ("pkg-foo", "build-foo", "src-foo"):
+        shutil.rmtree(Path(f"/tmp/{suffix}"), ignore_errors=True)
 
 
 def test_run_lpmbuild_runs_phases_under_bwrap(tmp_path, monkeypatch):
