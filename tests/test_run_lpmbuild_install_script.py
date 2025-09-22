@@ -1,5 +1,7 @@
 import os
+import shlex
 import shutil
+import subprocess
 import sys
 import textwrap
 import types
@@ -198,4 +200,71 @@ def test_run_lpmbuild_defaults_arch_to_noarch(tmp_path, monkeypatch):
     assert ".." not in out_path.name
     assert splits == []
 
-    shutil.rmtree(recorded["stagedir"])
+
+def test_run_lpmbuild_runs_phases_under_bwrap(tmp_path, monkeypatch):
+    script_dir = tmp_path / "pkg"
+    script_dir.mkdir()
+    script = script_dir / "foo.lpmbuild"
+    script.write_text(
+        textwrap.dedent(
+            """
+            NAME=foo
+            VERSION=1
+
+            prepare() {
+                echo prepare >> "$SRCROOT/phases.log"
+            }
+
+            build() {
+                echo build >> "$SRCROOT/phases.log"
+            }
+
+            install() {
+                echo install >> "$SRCROOT/phases.log"
+            }
+            """
+        ).strip()
+    )
+
+    monkeypatch.setitem(lpm.CONF, "SANDBOX_MODE", "bwrap")
+    monkeypatch.setattr(lpm, "generate_install_script", lambda stagedir: "echo hi")
+
+    recorded = {}
+
+    def fake_build_package(stagedir, meta, out, sign=True):
+        recorded["stagedir"] = stagedir
+        out.write_text("pkg")
+
+    monkeypatch.setattr(lpm, "build_package", fake_build_package)
+
+    real_run = subprocess.run
+    last_srcroot = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and cmd and cmd[0] == "bwrap":
+            command_str = cmd[-1]
+            env = kwargs.get("env") or {}
+            srcroot = Path(env["SRCROOT"])
+            last_srcroot["path"] = srcroot
+            assert str(script.resolve()) in command_str
+            adjusted = command_str.replace("cd /src", f"cd {shlex.quote(str(srcroot))}")
+            return real_run(["bash", "-c", adjusted], *args, **kwargs)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    out_path, _, _, _ = lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    assert out_path.exists()
+
+    srcroot = last_srcroot.get("path")
+    assert srcroot is not None
+    phases_log = srcroot / "phases.log"
+    assert phases_log.read_text().splitlines() == ["prepare", "build", "install"]
+
+    shutil.rmtree(recorded["stagedir"], ignore_errors=True)
