@@ -234,8 +234,11 @@ def sandboxed_run(func: str, cwd: Path, env: dict, script_path: Path, stagedir: 
     script_abs = script_path.resolve()
     script_quoted = shlex.quote(str(script_abs))
 
+    wrapper_body = f"""__lpm_run_phase() {{\n    local phase=\"$1\"\n    shift || true\n    local def\n    if def=\"$(declare -f \"$phase\")\"; then\n        local new=\"__lpm_phase_${{phase}}\"\n        eval \"${{def/$phase/$new}}\"\n        unset -f \"$phase\"\n        \"$new\" \"$@\"\n    else\n        \"$phase\" \"$@\"\n    fi\n}}\n__lpm_run_phase {shlex.quote(func)}\n"""
+    wrapper = f"set -e\nsource {script_quoted}\n{wrapper_body}"
+
     if mode == "fakeroot":
-        cmd = ["fakeroot", "bash", "-c", f"set -e; source {script_quoted}; {func}"]
+        cmd = ["fakeroot", "bash", "-c", wrapper]
         subprocess.run(cmd, check=True, env=env, cwd=str(cwd))
         return
 
@@ -252,13 +255,13 @@ def sandboxed_run(func: str, cwd: Path, env: dict, script_path: Path, stagedir: 
             "--unshare-all",
             "--share-net",             # allow networking (remove for full isolation)
             "--die-with-parent",
-            "bash", "-c", f"set -e; cd /src; source {script_quoted}; {func}"
+            "bash", "-c", f"set -e\ncd /src\nsource {script_quoted}\n{wrapper_body}"
         ]
         subprocess.run(cmd, check=True, env=env, cwd=str(cwd))
         return
 
     # Default: no sandbox
-    cmd = ["bash", "-c", f"set -e; source {script_quoted}; {func}"]
+    cmd = ["bash", "-c", wrapper]
     subprocess.run(cmd, check=True, env=env, cwd=str(cwd))
 
 # ================ PACKAGING  ================
