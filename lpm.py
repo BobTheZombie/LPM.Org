@@ -1668,7 +1668,7 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
         '  fi',
         '  printf "\\n"',
         "}",
-        "for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE CFLAGS KERNEL MKINITCPIO_PRESET; do _emit_scalar \"$v\"; done",
+        "for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE CFLAGS KERNEL MKINITCPIO_PRESET install INSTALL; do _emit_scalar \"$v\"; done",
         "for a in SOURCE REQUIRES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS; do _emit_array \"$a\"; done",
     ]
     bcmd = "\n".join(lines)
@@ -1704,6 +1704,15 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
             j = data.find(b"\n", i)
             if j==-1: break
             i = j+1
+
+    install_value = None
+    for key in ("INSTALL", "install"):
+        value = scalars.get(key)
+        if value:
+            install_value = value
+            break
+    if install_value is not None:
+        scalars["INSTALL"] = install_value
 
     return scalars, arrays
 
@@ -2294,30 +2303,78 @@ def run_lpmbuild(
 
     # --- Generate or capture install script ---
     install_sh = stagedir / ".lpm-install.sh"
-    try:
-        custom = subprocess.run(
-            ["bash", "-c", f'source "{script_path}"; declare -f install_script'],
-            capture_output=True, text=True
-        )
-        if custom.stdout.strip():
-            log(f"[lpm] Embedding custom install_script() from {script.name}")
-            with install_sh.open("w", encoding="utf-8") as f:
-                f.write("#!/bin/sh\nset -e\n")
-                f.write(custom.stdout)
-                f.write("\ninstall_script \"$@\"\n")
-            install_sh.chmod(0o755)
+    install_embedded = False
+    install_spec = scal.get("INSTALL", "").strip()
+
+    if install_spec:
+        candidates: List[Path] = []
+        spec_path = Path(install_spec)
+        if spec_path.is_absolute():
+            candidates.append(spec_path)
         else:
-            script = generate_install_script(stagedir)
+            candidates.append(srcroot / spec_path)
+            if script_dir != srcroot:
+                candidates.append(script_dir / spec_path)
+
+        for candidate in candidates:
+            if not candidate.exists() or not candidate.is_file():
+                continue
+            try:
+                body = candidate.read_text(encoding="utf-8")
+            except Exception as exc:
+                warn(f"Failed to read install script {candidate}: {exc}")
+                continue
+
+            log(f"[lpm] Embedding install hooks from {candidate.name}")
             with install_sh.open("w", encoding="utf-8") as f:
-                f.write("#!/bin/sh\nset -e\n")
-                f.write(script)
-                if not script.endswith("\n"):
-                    f.write("\n")
+                f.write("#!/bin/bash\n")
+                f.write("set -euo pipefail\n\n")
+                f.write("action=${1:-install}\n")
+                f.write("new_full=${2:-}\n")
+                f.write("old_full=${3:-}\n")
+                f.write("source /dev/stdin <<'__LPM_INSTALL_BODY__'\n")
+                if body:
+                    f.write(body)
+                    if not body.endswith("\n"):
+                        f.write("\n")
+                f.write("__LPM_INSTALL_BODY__\n\n")
+                f.write("if declare -f post_install >/dev/null; then\n")
+                f.write("  post_install \"$new_full\"\n")
+                f.write("fi\n")
+                f.write("if [[ \"$action\" == \"upgrade\" ]] && declare -f post_upgrade >/dev/null; then\n")
+                f.write("  post_upgrade \"$new_full\" \"$old_full\"\n")
+                f.write("fi\n")
             install_sh.chmod(0o755)
+            install_embedded = True
+            break
 
+        if not install_embedded:
+            warn(f"install script '{install_spec}' requested but not found; falling back to default installer")
 
-    except Exception as e:
-        warn(f"Could not embed install script for {name}: {e}")
+    if not install_embedded:
+        try:
+            custom = subprocess.run(
+                ["bash", "-c", f'source "{script_path}"; declare -f install_script'],
+                capture_output=True,
+                text=True,
+            )
+            if custom.stdout.strip():
+                log(f"[lpm] Embedding custom install_script() from {script.name}")
+                with install_sh.open("w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\nset -e\n")
+                    f.write(custom.stdout)
+                    f.write("\ninstall_script \"$@\"\n")
+                install_sh.chmod(0o755)
+            else:
+                script_text = generate_install_script(stagedir)
+                with install_sh.open("w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\nset -e\n")
+                    f.write(script_text)
+                    if not script_text.endswith("\n"):
+                        f.write("\n")
+                install_sh.chmod(0o755)
+        except Exception as e:
+            warn(f"Could not embed install script for {name}: {e}")
 
     # --- Package metadata ---
     meta = PkgMeta(
@@ -3234,9 +3291,34 @@ def installpkg(
 
             if script_to_run and os.access(script_to_run, os.X_OK):
                 env = os.environ.copy()
-                env["LPM_ROOT"] = str(root)
+                env.update({
+                    "LPM_ROOT": str(root),
+                    "LPM_PKG": meta.name,
+                    "LPM_VERSION": meta.version,
+                    "LPM_RELEASE": meta.release,
+                })
+
+                action = "upgrade" if previous_version is not None else "install"
+                env["LPM_INSTALL_ACTION"] = action
+                if previous_version is not None:
+                    env["LPM_PREVIOUS_VERSION"] = previous_version
+                if previous_release is not None:
+                    env["LPM_PREVIOUS_RELEASE"] = previous_release
+
+                def _format_version(ver: Optional[str], rel: Optional[str]) -> str:
+                    if not ver:
+                        return ""
+                    return f"{ver}-{rel}" if rel else ver
+
+                new_full = _format_version(meta.version, meta.release)
+                old_full = _format_version(previous_version, previous_release)
+
+                argv = [str(script_to_run), action, new_full]
+                if action == "upgrade":
+                    argv.append(old_full)
+
                 log(f"[lpm] Running embedded install script: {script_to_run}")
-                subprocess.run([str(script_to_run)], check=False, cwd=str(root), env=env)
+                subprocess.run(argv, check=False, cwd=str(root), env=env)
 
             if script_entry and not script_entry.get("keep", False):
                 for candidate in (installed_script, staged_script):
