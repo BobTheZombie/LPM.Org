@@ -1964,6 +1964,7 @@ def run_lpmbuild(
     is_dep: bool = False,
     build_deps: bool = True,
     fetcher: Optional[Callable[[str, Path], Path]] = None,
+    _building_stack: Optional[Tuple[str, ...]] = None,
 ) -> Tuple[Path, float, int, List[Tuple[Path, PkgMeta]]]:
     script_path = script.resolve()
     script_dir = script_path.parent
@@ -1992,6 +1993,13 @@ def run_lpmbuild(
     mkinitcpio_preset = scal.get("MKINITCPIO_PRESET") or None
     if not name or not version:
         die("lpmbuild missing NAME or VERSION")
+
+    building_stack = tuple(_building_stack or ())
+    if name in building_stack:
+        cycle = " -> ".join((*building_stack, name))
+        die(f"dependency cycle detected: {cycle}")
+    building_stack = (*building_stack, name)
+    building_stack_set = set(building_stack)
 
     # --- Auto-build dependencies before continuing ---
     fetch_fn = fetcher or fetch_lpmbuild
@@ -2025,6 +2033,9 @@ def run_lpmbuild(
                 log(f"[deps] ({idx}/{total}) building required package: {depname}")
             else:
                 log(f"[deps] building required package: {depname}")
+            if depname in building_stack_set:
+                cycle = " -> ".join((*building_stack, depname))
+                die(f"dependency cycle detected: {cycle}")
             tmp = Path(f"/tmp/lpm-dep-{depname}.lpmbuild")
             fetch_fn(depname, tmp)
             return run_lpmbuild(
@@ -2035,6 +2046,7 @@ def run_lpmbuild(
                 is_dep=True,
                 build_deps=True,
                 fetcher=fetch_fn,
+                _building_stack=building_stack,
             )[0]
         if deps_to_build:
             if prompt_install:

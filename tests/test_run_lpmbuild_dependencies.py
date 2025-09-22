@@ -82,6 +82,74 @@ def _stub_build_pipeline(monkeypatch):
     monkeypatch.setattr(lpm, "build_package", fake_build_package)
 
 
+def test_run_lpmbuild_detects_dependency_cycle(tmp_path, monkeypatch, capsys):
+    cycle_scripts = {
+        "foo": tmp_path / "foo.lpmbuild",
+        "bar": tmp_path / "bar.lpmbuild",
+    }
+
+    cycle_scripts["foo"].write_text(
+        textwrap.dedent(
+            """
+            NAME=foo
+            VERSION=1
+            RELEASE=1
+            ARCH=noarch
+            REQUIRES=('bar')
+            prepare() { :; }
+            build() { :; }
+            install() { :; }
+            """
+        )
+    )
+    cycle_scripts["bar"].write_text(
+        textwrap.dedent(
+            """
+            NAME=bar
+            VERSION=1
+            RELEASE=1
+            ARCH=noarch
+            REQUIRES=('foo')
+            prepare() { :; }
+            build() { :; }
+            install() { :; }
+            """
+        )
+    )
+
+    monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "state"))
+    _stub_build_pipeline(monkeypatch)
+
+    class DummyConn:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(lpm, "db", lambda: DummyConn())
+    monkeypatch.setattr(lpm, "db_installed", lambda conn: {})
+
+    def fake_fetch_lpmbuild(pkgname: str, dest: Path) -> Path:
+        src = cycle_scripts.get(pkgname)
+        if src is None:
+            raise AssertionError(f"unexpected dependency fetch: {pkgname}")
+        shutil.copy2(src, dest)
+        return dest
+
+    monkeypatch.setattr(lpm, "fetch_lpmbuild", fake_fetch_lpmbuild)
+
+    with pytest.raises(SystemExit) as exc:
+        lpm.run_lpmbuild(
+            cycle_scripts["foo"],
+            outdir=tmp_path,
+            prompt_install=False,
+            build_deps=True,
+        )
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err.lower()
+    assert "dependency cycle detected" in err
+    assert "foo -> bar -> foo" in err
+
+
 def test_run_lpmbuild_collects_dependency_arrays(tmp_path, monkeypatch):
     script = tmp_path / "arrays.lpmbuild"
     script.write_text(
