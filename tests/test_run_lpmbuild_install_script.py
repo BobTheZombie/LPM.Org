@@ -100,7 +100,7 @@ import lpm
 def test_run_lpmbuild_generates_install_script(tmp_path, monkeypatch):
     script = tmp_path / "foo.lpmbuild"
     script.write_text(
-        "NAME=foo\nVERSION=1\n\nprepare(){ :; }\nbuild(){ :; }\ninstall(){ :; }\n"
+        "NAME=foo\nVERSION=1\n\nprepare(){ :; }\nbuild(){ :; }\nstaging(){ :; }\n"
     )
 
     called = {}
@@ -129,7 +129,7 @@ def test_run_lpmbuild_wraps_named_install_script(tmp_path, monkeypatch):
     script = tmp_path / "foo.lpmbuild"
     script.write_text(
         "NAME=foo\nVERSION=1\ninstall=foo.install\n"
-        "prepare(){ :; }\nbuild(){ :; }\ninstall(){ :; }\n"
+        "prepare(){ :; }\nbuild(){ :; }\nstaging(){ :; }\n"
     )
 
     install_source = tmp_path / "foo.install"
@@ -177,7 +177,7 @@ def test_run_lpmbuild_wraps_named_install_script(tmp_path, monkeypatch):
 def test_run_lpmbuild_defaults_arch_to_noarch(tmp_path, monkeypatch):
     script = tmp_path / "foo.lpmbuild"
     script.write_text(
-        "NAME=foo\nVERSION=1\nRELEASE=1\nprepare(){ :; }\nbuild(){ :; }\ninstall(){ :; }\n"
+        "NAME=foo\nVERSION=1\nRELEASE=1\nprepare(){ :; }\nbuild(){ :; }\nstaging(){ :; }\n"
     )
 
     monkeypatch.setattr(lpm, "ARCH", "")
@@ -201,7 +201,41 @@ def test_run_lpmbuild_defaults_arch_to_noarch(tmp_path, monkeypatch):
     assert ".." not in out_path.name
 
 
-def test_run_lpmbuild_install_phase_allows_install_command(tmp_path, monkeypatch):
+def test_run_lpmbuild_accepts_legacy_install_phase(tmp_path, monkeypatch):
+    script = tmp_path / "legacy.lpmbuild"
+    script.write_text(
+        "NAME=legacy\nVERSION=1\nprepare(){ :; }\nbuild(){ :; }\ninstall(){ :; }\n"
+    )
+
+    calls = []
+
+    def fake_sandboxed_run(
+        func,
+        cwd,
+        env,
+        script_path_arg,
+        stagedir,
+        buildroot,
+        srcroot,
+        *,
+        aliases=(),
+    ):
+        calls.append((func, tuple(aliases)))
+
+    monkeypatch.setattr(lpm, "sandboxed_run", fake_sandboxed_run)
+
+    def fake_build_package(stagedir, meta, out, sign=True):
+        out.write_text("pkg")
+
+    monkeypatch.setattr(lpm, "build_package", fake_build_package)
+    monkeypatch.setattr(lpm, "generate_install_script", lambda stagedir: ":")
+
+    lpm.run_lpmbuild(script, outdir=tmp_path, prompt_install=False, build_deps=False)
+
+    assert ("staging", ("install",)) in calls
+
+
+def test_run_lpmbuild_staging_phase_allows_install_command(tmp_path, monkeypatch):
     script = tmp_path / "foo.lpmbuild"
     script.write_text(
         textwrap.dedent(
@@ -214,7 +248,7 @@ def test_run_lpmbuild_install_phase_allows_install_command(tmp_path, monkeypatch
                 printf 'payload\n' > "$SRCROOT/message.txt"
             }
             build() { :; }
-            install() {
+            staging() {
                 install -Dm644 "$SRCROOT/message.txt" "$pkgdir/usr/share/foo/message.txt"
             }
             """
@@ -294,11 +328,11 @@ def test_run_lpmbuild_phase_wrapper_preserves_common_variable_names(tmp_path, mo
                 new="build-new"
             }
 
-            install() {
-                log_phase_vars install
-                phase="install-phase"
-                def="install-def"
-                new="install-new"
+            staging() {
+                log_phase_vars staging
+                phase="staging-phase"
+                def="staging-def"
+                new="staging-new"
             }
             """
         ).strip()
@@ -329,9 +363,9 @@ def test_run_lpmbuild_phase_wrapper_preserves_common_variable_names(tmp_path, mo
         "build phase:unset",
         "build def:unset",
         "build new:unset",
-        "install phase:unset",
-        "install def:unset",
-        "install new:unset",
+        "staging phase:unset",
+        "staging def:unset",
+        "staging new:unset",
     ]
 
     for suffix in ("pkg-phase-vars", "build-phase-vars", "src-phase-vars"):
@@ -356,8 +390,8 @@ def test_run_lpmbuild_runs_phases_under_bwrap(tmp_path, monkeypatch):
                 echo build >> "$SRCROOT/phases.log"
             }
 
-            install() {
-                echo install >> "$SRCROOT/phases.log"
+            staging() {
+                echo staging >> "$SRCROOT/phases.log"
             }
             """
         ).strip()
@@ -402,6 +436,6 @@ def test_run_lpmbuild_runs_phases_under_bwrap(tmp_path, monkeypatch):
     srcroot = last_srcroot.get("path")
     assert srcroot is not None
     phases_log = srcroot / "phases.log"
-    assert phases_log.read_text().splitlines() == ["prepare", "build", "install"]
+    assert phases_log.read_text().splitlines() == ["prepare", "build", "staging"]
 
     shutil.rmtree(recorded["stagedir"], ignore_errors=True)

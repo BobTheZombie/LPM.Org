@@ -13,7 +13,7 @@ def test_cmd_buildpkg_shows_progress_and_summary(monkeypatch, tmp_path, capsys):
     script.write_text("")
 
     def fake_run_lpmbuild(script, outdir=None, **kwargs):
-        for i, phase in enumerate(["prepare", "build", "install"], start=1):
+        for i, phase in enumerate(["prepare", "build", "staging"], start=1):
             print(f"[{i}/3] {phase}", file=sys.stderr)
         out = (outdir or script.parent) / "foo-1-1.noarch.zst"
         out.write_text("dummy")
@@ -32,6 +32,6 @@ def test_cmd_buildpkg_shows_progress_and_summary(monkeypatch, tmp_path, capsys):
     captured = capsys.readouterr()
     assert "[1/3] prepare" in captured.err
     assert "[2/3] build" in captured.err
-    assert "[3/3] install" in captured.err
+    assert "[3/3] staging" in captured.err
     assert "Summary" in captured.out
     assert "Name         foo" in captured.out
