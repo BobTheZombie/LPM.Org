@@ -2579,6 +2579,8 @@ def run_lpmbuild(
 
     if prompt_install:
         prompt_install_pkg(out, kind="dependency" if is_dep else "package", default=prompt_default)
+        for split_path, _split_meta in split_records:
+            prompt_install_pkg(split_path, kind="split package", default=prompt_default)
     return out, duration, phase_count, split_records
 
 # =========================== CLI commands =====================================
