@@ -1,3 +1,4 @@
+import builtins
 import contextlib
 import importlib
 import os
@@ -131,6 +132,58 @@ def test_run_lpmbuild_creates_split_packages(tmp_path, lpm_module):
             assert meta.summary == "Alpha compiler"
         if meta.name == "foo-beta":
             assert meta.provides == ["foo-beta-bin"]
+
+
+def test_run_lpmbuild_prompts_for_split_packages(tmp_path, monkeypatch, lpm_module):
+    script = tmp_path / "split.lpmbuild"
+    script.write_text(
+        "\n".join(
+            [
+                "NAME=foo",
+                "VERSION=1.2.3",
+                "RELEASE=2",
+                "ARCH=noarch",
+                "SUMMARY=\"Base package\"",
+                "prepare(){ :; }",
+                "build(){ :; }",
+                "staging(){",
+                "  mkdir -p \"$pkgdir/usr/bin\"",
+                "  echo base > \"$pkgdir/usr/bin/foo\"",
+                "  split_a=\"$BUILDROOT/split-a\"",
+                "  mkdir -p \"$split_a/usr/bin\"",
+                "  echo alpha > \"$split_a/usr/bin/foo-alpha\"",
+                "  $LPM_SPLIT_PACKAGE --stagedir \"$split_a\" --name foo-alpha",
+                "  split_b=\"$BUILDROOT/split-b\"",
+                "  mkdir -p \"$split_b/usr/bin\"",
+                "  echo beta > \"$split_b/usr/bin/foo-beta\"",
+                "  $LPM_SPLIT_PACKAGE --stagedir \"$split_b\" --name foo-beta",
+                "}",
+            ]
+        )
+    )
+
+    responses = iter(["y", "y", "y"])
+    monkeypatch.setattr(builtins, "input", lambda *_args, **_kwargs: next(responses))
+
+    installed = []
+
+    def fake_installpkg(file, **_kwargs):
+        installed.append(file)
+
+    monkeypatch.setattr(lpm_module, "installpkg", fake_installpkg)
+
+    dummy_meta = lpm_module.PkgMeta(name="foo", version="1", release="1", arch="noarch")
+    monkeypatch.setattr(lpm_module, "read_package_meta", lambda _path: (dummy_meta, []))
+
+    out_path, _, _, splits = lpm_module.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=True,
+        build_deps=False,
+    )
+
+    expected_order = [out_path] + [path for path, _meta in splits]
+    assert [path for path in installed] == expected_order
 
 
 def test_split_package_helper_includes_module_for_interpreter(tmp_path, monkeypatch, lpm_module):
