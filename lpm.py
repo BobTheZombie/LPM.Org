@@ -17,12 +17,17 @@ License: MIT
 
 from __future__ import annotations
 import argparse, contextlib, dataclasses, fnmatch, hashlib, io, json, os, re, shlex, shutil, sqlite3, stat, subprocess, sys, tarfile, tempfile, time, urllib.parse
+from email.parser import Parser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Iterable, Callable
 from collections import deque
 import zstandard as zstd
+from packaging.markers import default_environment
+from packaging.requirements import Requirement
+from packaging.specifiers import Specifier, SpecifierSet
+from packaging.utils import canonicalize_name
 
 # =========================== Runtime metadata =================================
 _ENV_NAME = "LPM_NAME"
@@ -1182,7 +1187,252 @@ def collect_manifest(stagedir: Path) -> List[Dict[str, object]]:
 
     return sorted(mani, key=lambda e: e["path"])
 
-    
+
+def _normalize_metadata_text(value: Optional[str]) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    return " ".join(text.split())
+
+
+def _python_package_name(dist_name: str) -> str:
+    canonical = canonicalize_name(dist_name or "")
+    normalized = canonical.replace(".", "-")
+    if not normalized:
+        die("pip build: package metadata missing name")
+    return f"python-{normalized}"
+
+
+def _format_specifier(spec: Specifier) -> Optional[str]:
+    op = spec.operator
+    version = spec.version
+    if not op or not version:
+        return None
+    if op == "!==" or op == "!=":
+        return None
+    if op == "===":
+        op = "=="
+    if version.endswith(".*"):
+        version = version[:-2]
+        if op in {"==", "="}:
+            op = "~="
+    if op == "=":
+        op = "=="
+    if not version:
+        return None
+    return f"{op}{version}"
+
+
+def _specifier_parts(spec_set: SpecifierSet) -> List[str]:
+    parts: List[str] = []
+    for spec in spec_set:
+        formatted = _format_specifier(spec)
+        if formatted:
+            parts.append(formatted)
+    return parts
+
+
+def _requires_python_to_deps(spec_text: Optional[str]) -> List[str]:
+    if not spec_text:
+        return ["python"]
+    try:
+        spec_set = SpecifierSet(spec_text)
+    except Exception:
+        return ["python"]
+    parts = _specifier_parts(spec_set)
+    if not parts:
+        return ["python"]
+    dep = "python" + parts[0]
+    for extra in parts[1:]:
+        dep += f", {extra}"
+    return [dep]
+
+
+def _requirements_from_requires_dist(entries: Iterable[str]) -> List[str]:
+    env = default_environment()
+    env.setdefault("extra", "")
+    deps: List[str] = []
+    for raw in entries:
+        if raw is None:
+            continue
+        try:
+            requirement = Requirement(str(raw))
+        except Exception:
+            continue
+        if requirement.marker and not requirement.marker.evaluate(env):
+            continue
+        if requirement.extras:
+            continue
+        name = _python_package_name(requirement.name)
+        parts = _specifier_parts(requirement.specifier)
+        if parts:
+            dep = name + parts[0]
+            for extra in parts[1:]:
+                dep += f", {extra}"
+        else:
+            dep = name
+        deps.append(dep)
+    return deps
+
+
+def _detect_python_package_arch(stagedir: Path) -> str:
+    for path in stagedir.rglob("*"):
+        if not path.is_file():
+            continue
+        name = path.name
+        if name.endswith((".so", ".pyd", ".dll", ".dylib")) or ".so." in name:
+            return ARCH or (os.uname().machine if hasattr(os, "uname") else "") or "noarch"
+    return "noarch"
+
+
+def _collect_python_package_metadata(stagedir: Path, *, include_requires_dist: bool) -> Dict[str, object]:
+    metadata_paths = sorted(stagedir.rglob("*.dist-info/METADATA"))
+    parser = Parser()
+    chosen: Optional[Tuple[Path, object]] = None
+    for meta_path in metadata_paths:
+        try:
+            message = parser.parsestr(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        name = _normalize_metadata_text(message.get("Name"))
+        version = _normalize_metadata_text(message.get("Version"))
+        if name and version:
+            chosen = (meta_path, message)
+            break
+    if not chosen:
+        die("pip build: unable to locate package metadata after installation")
+
+    _path, message = chosen
+    dist_name = _normalize_metadata_text(message.get("Name"))
+    version = _normalize_metadata_text(message.get("Version"))
+    if not dist_name or not version:
+        die("pip build: package metadata missing name/version")
+
+    pkg_name = _python_package_name(dist_name)
+    summary = _normalize_metadata_text(message.get("Summary"))
+    home = _normalize_metadata_text(message.get("Home-page"))
+    license_ = _normalize_metadata_text(message.get("License"))
+
+    requires = _requires_python_to_deps(message.get("Requires-Python"))
+    if include_requires_dist:
+        requires.extend(_requirements_from_requires_dist(message.get_all("Requires-Dist") or []))
+
+    requires = list(dict.fromkeys(req for req in requires if req))
+    arch = _detect_python_package_arch(stagedir)
+    provides: List[str] = []
+    canonical = canonicalize_name(dist_name)
+    if canonical:
+        provides.append(f"pypi({canonical})")
+
+    return {
+        "name": pkg_name,
+        "version": version,
+        "summary": summary,
+        "url": home,
+        "license": license_,
+        "requires": requires,
+        "arch": arch,
+        "provides": provides,
+    }
+
+
+def _select_downloaded_sdist(download_dir: Path) -> Path:
+    candidates = []
+    for path in sorted(download_dir.iterdir()):
+        if not path.is_file():
+            continue
+        name = path.name.lower()
+        if name.endswith(".whl"):
+            continue
+        if name.endswith((".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".zip")):
+            candidates.append(path)
+    if not candidates:
+        die("pip build: unable to locate source distribution (sdist) in download directory")
+    return candidates[0]
+
+
+def build_python_package_from_pip(
+    spec: str,
+    outdir: Path,
+    *,
+    include_deps: bool,
+) -> Tuple[Path, PkgMeta, float]:
+    start = time.time()
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix="lpm-pip-") as tmp:
+        stagedir = Path(tmp) / "root"
+        stagedir.mkdir(parents=True, exist_ok=True)
+
+        download_dir = Path(tmp) / "download"
+        download_dir.mkdir(parents=True, exist_ok=True)
+
+        download_cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "download",
+            spec,
+            "--no-deps",
+            "--no-binary",
+            ":all:",
+            "--dest",
+            str(download_dir),
+            "--progress-bar",
+            "off",
+            "--disable-pip-version-check",
+        ]
+        log(f"[pip] downloading {spec} source distribution")
+        env = os.environ.copy()
+        env.setdefault("PYTHONNOUSERSITE", "1")
+        subprocess.run(download_cmd, check=True, env=env)
+
+        sdist_path = _select_downloaded_sdist(download_dir)
+
+        pip_cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            str(sdist_path),
+            "--no-deps",
+            "--prefix",
+            "/usr",
+            "--root",
+            str(stagedir),
+            "--no-compile",
+            "--disable-pip-version-check",
+            "--no-warn-script-location",
+            "--progress-bar",
+            "off",
+            "--ignore-installed",
+        ]
+        log(f"[pip] building from sdist {sdist_path.name} into staging root {stagedir}")
+        subprocess.run(pip_cmd, check=True, env=env)
+
+        info = _collect_python_package_metadata(stagedir, include_requires_dist=include_deps)
+        meta = PkgMeta(
+            name=info["name"],
+            version=info["version"],
+            release="1",
+            arch=info["arch"],
+            summary=info["summary"],
+            url=info["url"],
+            license=info["license"],
+            requires=info["requires"],
+            provides=info["provides"],
+        )
+
+        out = outdir / f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}"
+        build_package(stagedir, meta, out, sign=True)
+
+    duration = time.time() - start
+    return out, meta, duration
+
+
 # =========================== Unified package tar opener =========================
 def open_package_tar(blob: Path, stream: bool = True) -> tarfile.TarFile:
     """
@@ -3138,6 +3388,22 @@ def cmd_splitpkg(a):
     ok(f"Built split package {out}")
 
 def cmd_buildpkg(a):
+    if a.python_pip:
+        if a.script:
+            die("Cannot specify both a .lpmbuild script and --python-pip")
+        out, meta, duration = build_python_package_from_pip(
+            a.python_pip,
+            a.outdir,
+            include_deps=not a.no_deps,
+        )
+        prompt_install_pkg(out, default=a.install_default)
+        print_build_summary(meta, out, duration, len(meta.requires), 1)
+        ok(f"Built {out}")
+        return
+
+    if not a.script:
+        die("buildpkg requires a .lpmbuild script or --python-pip")
+
     script_path = Path(a.script)
     if not script_path.exists():
         die(f".lpmbuild script not found: {script_path}")
@@ -3705,10 +3971,11 @@ def build_parser()->argparse.ArgumentParser:
     sp.set_defaults(func=cmd_splitpkg)
 
     sp=sub.add_parser("buildpkg", help=f"Build a {EXT} package from a .lpmbuild script")
-    sp.add_argument("script", type=Path)
+    sp.add_argument("script", nargs="?", type=Path)
     sp.add_argument("--outdir", default=Path.cwd(), type=Path)
     sp.add_argument("--no-deps", action="store_true", help="do not fetch or build dependencies")
     sp.add_argument("--install-default", choices=["y", "n"], help="default answer for install prompt")
+    sp.add_argument("--python-pip", metavar="SPEC", help="build a package from a Python distribution fetched via pip")
     sp.set_defaults(func=cmd_buildpkg)
 
     sp=sub.add_parser("genindex", help=f"Generate index.json for a repo directory of {EXT} files")
