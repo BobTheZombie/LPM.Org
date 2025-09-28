@@ -1,4 +1,6 @@
+import json
 import os
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -41,6 +43,8 @@ for name in ("zstandard", "tqdm"):
         sys.modules[name] = module
 
 import lpm
+import pytest
+from src.liblpmhooks import HookTransactionManager, load_hooks
 
 
 def test_python_hook(tmp_path, monkeypatch):
@@ -145,3 +149,156 @@ def test_kernel_install_hook(tmp_path, monkeypatch):
     assert "mkinitcpio -p test" in calls
     assert "bootctl update" in calls
     assert "grub-mkconfig -o /boot/grub/grub.cfg" in calls
+
+
+def _create_hook_recorder(tmp_path: Path, script_name: str) -> Path:
+    script_path = tmp_path / script_name
+    script_path.write_text(
+        "#!" + sys.executable + "\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "log = Path(sys.argv[1])\n"
+        "payload = {\"hook\": os.environ.get(\"LPM_HOOK_NAME\"), \"args\": sys.argv[2:], \"targets\": os.environ.get(\"LPM_TARGETS\", \"\") }\n"
+        "with log.open('a', encoding='utf-8') as fh:\n"
+        "    fh.write(json.dumps(payload) + \"\\n\")\n"
+    )
+    script_path.chmod(0o755)
+    return script_path
+
+
+def test_transaction_manager_package_hooks(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    system = tmp_path / "system"
+    admin = tmp_path / "admin"
+    system.mkdir()
+    admin.mkdir()
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+
+    log_path = tmp_path / "log.jsonl"
+    recorder = _create_hook_recorder(scripts, "record.py")
+
+    (system / "alpha.hook").write_text(
+        "[Trigger]\n"
+        "Type = Package\n"
+        "Operation = Install\n"
+        "Target = foo\n"
+        "\n"
+        "[Action]\n"
+        "When = PreTransaction\n"
+        f"Exec = {recorder} {log_path}\n"
+        "NeedsTargets = true\n"
+    )
+
+    (system / "beta.hook").write_text(
+        "[Trigger]\n"
+        "Type = Package\n"
+        "Operation = Install\n"
+        "Target = foo\n"
+        "\n"
+        "[Action]\n"
+        "When = PreTransaction\n"
+        f"Exec = {recorder} {log_path}\n"
+        "NeedsTargets = true\n"
+        "Depends = alpha\n"
+    )
+
+    hooks = load_hooks([system, admin])
+    txn = HookTransactionManager(hooks=hooks, root=root)
+    txn.add_package_event(name="foo", operation="Install", version="1.0", release="1", paths=["/usr/bin/foo"])
+    txn.ensure_pre_transaction()
+
+    entries = [json.loads(line) for line in log_path.read_text().splitlines()]
+    assert [entry["hook"] for entry in entries] == ["alpha", "beta"]
+    assert entries[0]["args"] == ["foo-1.0-1"]
+    assert entries[0]["targets"] == "foo-1.0-1"
+
+
+def test_transaction_manager_path_hooks(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+
+    log_path = tmp_path / "paths.jsonl"
+    recorder = _create_hook_recorder(scripts, "record_paths.py")
+
+    (hooks_dir / "pathcheck.hook").write_text(
+        "[Trigger]\n"
+        "Type = Path\n"
+        "Operation = Install\n"
+        "Target = usr/bin/foo\n"
+        "\n"
+        "[Action]\n"
+        "When = PostTransaction\n"
+        f"Exec = {recorder} {log_path}\n"
+        "NeedsTargets = true\n"
+    )
+
+    hooks = load_hooks([hooks_dir])
+    txn = HookTransactionManager(hooks=hooks, root=root)
+    txn.add_package_event(
+        name="foo",
+        operation="Install",
+        version="1.0",
+        release="1",
+        paths=["/usr/bin/foo", "/usr/share/doc/readme"],
+    )
+    txn.ensure_pre_transaction()
+    txn.run_post_transaction()
+
+    entries = [json.loads(line) for line in log_path.read_text().splitlines()]
+    assert entries[0]["hook"] == "pathcheck"
+    assert entries[0]["args"] == ["/usr/bin/foo"]
+    assert entries[0]["targets"] == "/usr/bin/foo"
+
+
+def test_transaction_manager_failure_handling(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+
+    fail_script = tmp_path / "fail.sh"
+    fail_script.write_text("#!/bin/sh\nexit 1\n")
+    fail_script.chmod(0o755)
+
+    (hooks_dir / "fatal.hook").write_text(
+        "[Trigger]\n"
+        "Type = Package\n"
+        "Operation = Install\n"
+        "Target = failpkg\n"
+        "\n"
+        "[Action]\n"
+        "When = PreTransaction\n"
+        f"Exec = {fail_script}\n"
+        "AbortOnFail = true\n"
+    )
+
+    hooks = load_hooks([hooks_dir])
+    txn = HookTransactionManager(hooks=hooks, root=root)
+    txn.add_package_event(name="failpkg", operation="Install", version="1", release="1", paths=["/tmp/file"])
+
+    with pytest.raises(subprocess.CalledProcessError):
+        txn.ensure_pre_transaction()
+
+    (hooks_dir / "fatal.hook").unlink()
+    (hooks_dir / "nonfatal.hook").write_text(
+        "[Trigger]\n"
+        "Type = Package\n"
+        "Operation = Install\n"
+        "Target = failpkg\n"
+        "\n"
+        "[Action]\n"
+        "When = PreTransaction\n"
+        f"Exec = {fail_script}\n"
+        "AbortOnFail = false\n"
+    )
+
+    hooks = load_hooks([hooks_dir])
+    txn = HookTransactionManager(hooks=hooks, root=root)
+    txn.add_package_event(name="failpkg", operation="Install", version="1", release="1", paths=["/tmp/file"])
+    txn.ensure_pre_transaction()

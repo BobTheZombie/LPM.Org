@@ -18,6 +18,9 @@ SNAPSHOT_DIR = STATE_DIR / "snapshots"
 REPO_LIST = STATE_DIR / "repos.json"       # [{"name":"core","url":"file:///srv/repo","priority":10}, ...]
 PIN_FILE  = STATE_DIR / "pins.json"        # {"hold":["pkg"], "prefer":{"pkg":"~=3.3"}}
 HOOK_DIR  = Path("/usr/share/lpm/hooks")
+LIBLPM_SYSTEM_HOOK_DIR = Path("/usr/share/liblpm/hooks")
+LIBLPM_ADMIN_HOOK_DIR = Path("/etc/lpm/hooks")
+LIBLPM_HOOK_DIRS = (LIBLPM_SYSTEM_HOOK_DIR, LIBLPM_ADMIN_HOOK_DIR)
 SIGN_KEY  = Path("/etc/lpm/private/lpm_signing.pem")   # OpenSSL PEM private key for signing
 TRUST_DIR = Path("/etc/lpm/trust")                     # dir of *.pem public keys for verification
 DEFAULT_ROOT = "/"
