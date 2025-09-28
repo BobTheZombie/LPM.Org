@@ -101,6 +101,8 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
     (root / "usr/share/icons/hicolor/index.theme").write_text("[Icon Theme]")
     (root / "usr/share/applications").mkdir(parents=True)
     (root / "usr/share/applications/foo.desktop").write_text("[Desktop Entry]")
+    (root / "usr/share/mime/packages").mkdir(parents=True)
+    (root / "usr/share/mime/packages/foo.xml").write_text("<mime-info>")
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -108,6 +110,7 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
     for name in (
         "update-desktop-database",
         "gtk-update-icon-cache",
+        "update-mime-database",
         "ldconfig",
         "systemd-sysusers",
         "systemd-tmpfiles",
@@ -131,6 +134,7 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
         paths=[
             "/usr/share/applications/foo.desktop",
             "/usr/share/icons/hicolor/index.theme",
+            "/usr/share/mime/packages/foo.xml",
             "/usr/lib/libfoo.so",
             "/etc/sysusers.d/foo.conf",
             "/usr/lib/tmpfiles.d/foo.conf",
@@ -145,6 +149,8 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
     assert any("usr/share/applications" in line for line in calls)
     assert any(line.startswith("gtk-update-icon-cache") for line in calls)
     assert any("usr/share/icons/hicolor" in line for line in calls)
+    assert any(line.startswith("update-mime-database") for line in calls)
+    assert any(str(root / "usr/share/mime") in line for line in calls)
     assert any(
         line == f"systemd-sysusers --root {root}" for line in calls
     )
