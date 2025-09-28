@@ -83,6 +83,7 @@ from src.config import (
     DB_PATH,
     DEFAULT_ROOT,
     HOOK_DIR,
+    LIBLPM_HOOK_DIRS,
     MAX_LEARNT_CLAUSES,
     INSTALL_PROMPT_DEFAULT,
     MAX_SNAPSHOTS,
@@ -102,6 +103,7 @@ from src.fs import read_json, write_json, urlread
 from src.installgen import generate_install_script
 from src.solver import CNF, CDCLSolver
 from src.first_run_ui import run_first_run_wizard
+from src.liblpmhooks import HookTransactionManager, load_hooks
 
 # =========================== Protected packages ===============================
 PROTECTED_FILE = Path("/etc/lpm/protected.json")
@@ -1699,49 +1701,81 @@ def do_install(
     global PROTECTED
     PROTECTED = load_protected()
 
+    root = Path(root)
+
     explicit = set(explicit or [])
 
     to_fetch = [p for p in pkgs if not (p.name in PROTECTED and not force)]
     downloads = fetch_all(to_fetch)
 
-    def worker(p: PkgMeta):
-        if p.name in PROTECTED and not force:
-            warn(f"{p.name} is protected (from {PROTECTED_FILE}) and cannot be installed/upgraded without --force")
-            return
-        res = downloads.get(p.name)
+    hook_txn: Optional[HookTransactionManager] = None
+    installed_state: Dict[str, dict] = {}
+    if not dry:
+        hook_txn = HookTransactionManager(
+            hooks=load_hooks(LIBLPM_HOOK_DIRS),
+            root=root,
+            base_env={"LPM_ROOT": str(root)},
+        )
+        conn = db()
+        try:
+            installed_state = db_installed(conn)
+        finally:
+            conn.close()
+
+    jobs: List[Tuple[PkgMeta, Path]] = []
+    for pkg in pkgs:
+        if pkg.name in PROTECTED and not force:
+            warn(f"{pkg.name} is protected (from {PROTECTED_FILE}) and cannot be installed/upgraded without --force")
+            continue
+        res = downloads.get(pkg.name)
         if isinstance(res, Exception):
             if not allow_fallback:
                 die(
-                    f"Failed to fetch {p.name}: {res}. GitLab fallback is disabled. "
+                    f"Failed to fetch {pkg.name}: {res}. GitLab fallback is disabled. "
                     "Re-run with --allow-fallback or set ALLOW_LPMBUILD_FALLBACK=1 in lpm.conf"
                 )
-            warn(f"Could not fetch {p.name} from repos ({res}), trying GitLab fallback...")
-            tmp = Path(f"/tmp/lpm-dep-{p.name}.lpmbuild")
-            fetch_lpmbuild(p.name, tmp)
-            built, _, _, _ = run_lpmbuild(tmp, prompt_install=False, is_dep=True, build_deps=True)
-            meta = installpkg(
-                built,
-                root=root,
-                dry_run=dry,
-                verify=verify,
-                force=force,
-                explicit=(p.name in explicit),
-                allow_fallback=allow_fallback,
-            )
+            warn(f"Could not fetch {pkg.name} from repos ({res}), trying GitLab fallback...")
+            tmp = Path(f"/tmp/lpm-dep-{pkg.name}.lpmbuild")
+            fetch_lpmbuild(pkg.name, tmp)
+            blob_path, _, _, _ = run_lpmbuild(tmp, prompt_install=False, is_dep=True, build_deps=True)
         else:
             if res is None:
-                blob, sig = fetch_blob(p)
+                blob_path, _ = fetch_blob(pkg)
             else:
-                blob, sig = res
+                blob_path = res[0]
+        jobs.append((pkg, blob_path))
+
+        if hook_txn is not None:
+            meta, mani = read_package_meta(blob_path)
+            manifest_paths = _normalize_manifest_paths(mani)
+            operation = "Upgrade" if pkg.name in installed_state else "Install"
+            hook_txn.add_package_event(
+                name=meta.name,
+                operation=operation,
+                version=meta.version,
+                release=meta.release,
+                paths=manifest_paths,
+            )
+
+    if hook_txn is not None:
+        hook_txn.ensure_pre_transaction()
+
+    for pkg, blob_path in progress_bar(jobs, desc="Installing", unit="pkg"):
+        try:
             meta = installpkg(
-                blob,
+                blob_path,
                 root=root,
                 dry_run=dry,
                 verify=verify,
                 force=force,
-                explicit=(p.name in explicit),
+                explicit=(pkg.name in explicit),
                 allow_fallback=allow_fallback,
+                hook_transaction=hook_txn,
+                register_event=(hook_txn is None),
             )
+        except Exception as e:
+            warn(f"install {pkg.name}: {e}")
+            continue
 
         if not dry and meta and getattr(meta, "kernel", False):
             run_hook(
@@ -1753,19 +1787,8 @@ def do_install(
                 },
             )
 
-    max_workers = min(8, len(pkgs))
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        future_map = {ex.submit(worker, p): p.name for p in pkgs}
-        for fut in progress_bar(
-            as_completed(future_map),
-            total=len(future_map),
-            desc="Installing",
-            unit="pkg",
-        ):
-            try:
-                fut.result()
-            except Exception as e:
-                warn(f"install {future_map[fut]}: {e}")
+    if hook_txn is not None:
+        hook_txn.run_post_transaction()
 
 
 def _remove_installed_package(meta: dict, root: Path, dry_run: bool, conn):
@@ -3498,6 +3521,8 @@ def installpkg(
     force: bool = False,
     explicit: bool = False,
     allow_fallback: bool = ALLOW_LPMBUILD_FALLBACK,
+    hook_transaction: Optional[HookTransactionManager] = None,
+    register_event: bool = True,
 ):
     """
     Production-grade .zst package installer with protected package + dep resolution.
@@ -3552,6 +3577,8 @@ def installpkg(
             return meta
 
 
+    manifest_paths = _normalize_manifest_paths(mani)
+
     # --- Step 4: Dry-run ---
     if dry_run:
         log(f"[dry-run] Would install {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
@@ -3561,13 +3588,27 @@ def installpkg(
 
     # --- Step 5: Transaction (unchanged below) ---
     conn = db()
+    row = conn.execute(
+        "SELECT version, release FROM installed WHERE name=?",
+        (meta.name,),
+    ).fetchone()
+    previous_version = row[0] if row else None
+    previous_release = row[1] if row else None
+
+    if txn is not None and register_event:
+        operation = "Upgrade" if row else "Install"
+        txn.add_package_event(
+            name=meta.name,
+            operation=operation,
+            version=meta.version,
+            release=meta.release,
+            paths=manifest_paths,
+        )
+
+    if txn is not None:
+        txn.ensure_pre_transaction()
+
     with transaction(conn, f"install {meta.name}", dry_run):
-        row = conn.execute(
-            "SELECT version, release FROM installed WHERE name=?",
-            (meta.name,),
-        ).fetchone()
-        previous_version = row[0] if row else None
-        previous_release = row[1] if row else None
 
         hook_env = {
             "LPM_PKG": meta.name,
@@ -3793,32 +3834,71 @@ def installpkg(
         # New: init system service integration
         handle_service_files(meta.name, root, mani)
 
+    if txn is not None and owns_txn:
+        txn.run_post_transaction()
+
     ok(f"Installed {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
     return meta
 
 
-def removepkg(name: str, root: Path = Path(DEFAULT_ROOT), dry_run: bool = False, force: bool = False):
+def removepkg(
+    name: str,
+    root: Path = Path(DEFAULT_ROOT),
+    dry_run: bool = False,
+    force: bool = False,
+    hook_transaction: Optional[HookTransactionManager] = None,
+    register_event: bool = True,
+):
     global PROTECTED
     PROTECTED = load_protected()
+
+    root = Path(root)
+    txn = hook_transaction
+    owns_txn = False
+    if txn is None and not dry_run:
+        txn = HookTransactionManager(
+            hooks=load_hooks(LIBLPM_HOOK_DIRS),
+            root=root,
+            base_env={"LPM_ROOT": str(root)},
+        )
+        owns_txn = True
 
     if name in PROTECTED and not force:
         warn(f"{name} is protected (from {PROTECTED_FILE}) and cannot be removed without --force")
         return
 
     conn = db()
-    cur = conn.execute("SELECT version, manifest FROM installed WHERE name=?", (name,))
+    cur = conn.execute("SELECT version, release, manifest FROM installed WHERE name=?", (name,))
     row = cur.fetchone()
     if not row:
         warn(f"{name} not installed")
         return
 
-    version, manifest_json = row
-    meta = {"name": name, "version": version, "manifest": json.loads(manifest_json) if manifest_json else []}
+    version, release, manifest_json = row
+    manifest = json.loads(manifest_json) if manifest_json else []
+    meta = {"name": name, "version": version, "release": release, "manifest": manifest}
+
+    manifest_paths = _normalize_manifest_paths(manifest)
+
+    if txn is not None and register_event and not dry_run:
+        txn.add_package_event(
+            name=name,
+            operation="Remove",
+            version=version,
+            release=release,
+            paths=manifest_paths,
+        )
+
+    if txn is not None and not dry_run:
+        txn.ensure_pre_transaction()
 
     with transaction(conn, f"remove {name}", dry_run):
         run_hook("pre_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)})
         _remove_installed_package(meta, root, dry_run, conn)
         run_hook("post_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)})
+
+    if txn is not None and owns_txn and not dry_run:
+        txn.run_post_transaction()
 
     ok(f"Removed {name}-{version}")
 

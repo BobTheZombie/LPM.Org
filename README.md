@@ -201,13 +201,44 @@ chroot‑ready filesystem tree with verified packages.
 
 ## Hooks
 
-Hook scripts placed in `/usr/share/lpm/hooks` or within `<hook>.d` directories
-run at key points during package operations. These hooks may be either shell or
-Python scripts, with Python hooks executed using the current Python interpreter.
+LPM supports two complementary hook systems: transaction-scoped `.hook` files
+and the legacy per-package script directories.
 
-### Post-install and post-upgrade hooks
+### Transaction hooks (`.hook` files)
 
-LPM ships with several hooks that run after a package is installed:
+`liblpmhooks` loads ALPM-compatible hook definitions from the system directory
+`/usr/share/liblpm/hooks` and the administrator override directory
+`/etc/lpm/hooks`. Each `.hook` file contains one or more `[Trigger]` sections
+describing which package names or filesystem paths should activate the hook and
+an `[Action]` section describing what to run. Supported keys are:
+
+| Key | Section | Description |
+| --- | --- | --- |
+| `Type` | `[Trigger]` | `Package` (match package globs) or `Path` (match manifest paths). |
+| `Operation` | `[Trigger]` | `Install`, `Upgrade`, or `Remove`. Multiple values are allowed. |
+| `Target` | `[Trigger]` | Glob pattern matched against package names or relative paths. |
+| `When` | `[Action]` | `PreTransaction` or `PostTransaction`. |
+| `Exec` | `[Action]` | Command to execute. |
+| `NeedsTargets` | `[Action]` | When present, target values are appended to the command line and exposed via `LPM_TARGETS` / `LPM_TARGET_COUNT`. |
+| `Depends` | `[Action]` | Names of other hooks that must run first. |
+| `AbortOnFail` | `[Action]` | Abort the transaction if the command exits with a non-zero status. |
+
+Hooks are queued once per transaction. All matching `PreTransaction` hooks run
+before any filesystem changes are made, while `PostTransaction` hooks run after
+the package set has been applied. `Depends` relationships are resolved within a
+phase to ensure deterministic ordering. Commands inherit the standard process
+environment along with `LPM_HOOK_NAME`, `LPM_HOOK_WHEN`, and `LPM_ROOT`.
+
+### Legacy script directories
+
+The original script hook mechanism remains available for compatibility. Any
+executable placed in `/usr/share/lpm/hooks` or within `<hook>.d` directories runs
+at the appropriate per-package lifecycle point. These hooks may be shell or
+Python scripts; Python hooks execute with the interpreter used to run `lpm`.
+
+#### Post-install and post-upgrade scripts
+
+LPM ships with several scripts that run after a package is installed:
 
 - `010-ldconfig.py` – runs `ldconfig` when installing into the real root (`/`).
 - `020-update-desktop-database.py` – refreshes the desktop file database if
@@ -215,10 +246,10 @@ LPM ships with several hooks that run after a package is installed:
 - `030-update-icon-cache.py` – updates icon caches for themes in
   `/usr/share/icons` using `gtk-update-icon-cache`.
 
-Each hook checks for the presence of its corresponding tool and exits quietly
+Each script checks for the presence of its corresponding tool and exits quietly
 if it is not installed.
 
-In addition to the per-package `post_install` hook, upgrades now trigger a
+In addition to the per-package `post_install` hook, upgrades trigger a
 `post_upgrade` entry point after the new files have been committed. Both hooks
 receive the same environment variables:
 
@@ -244,7 +275,9 @@ systemctl reload my-service.service
 ```
 
 The script is executed automatically after each upgrade. Similar scripts placed
-in `post_install.d/` run after every installation (including upgrades).
+in `post_install.d/` run after every installation (including upgrades). Script
+hooks execute alongside the transaction hooks described above, making it easy to
+combine coarse-grained `.hook` automation with fine-grained per-package logic.
 
 ### Kernel installation hook
 
