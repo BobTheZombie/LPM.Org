@@ -110,6 +110,7 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
         "gtk-update-icon-cache",
         "ldconfig",
         "systemd-sysusers",
+        "systemd-tmpfiles",
     ):
         p = bin_dir / name
         p.write_text(f"#!/bin/sh\necho {name} \"$@\" >> {log}\n")
@@ -128,6 +129,7 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
             "/usr/share/icons/hicolor/index.theme",
             "/usr/lib/libfoo.so",
             "/etc/sysusers.d/foo.conf",
+            "/usr/lib/tmpfiles.d/foo.conf",
         ],
     )
     txn.ensure_pre_transaction()
@@ -140,6 +142,11 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
     assert any("usr/share/icons/hicolor" in line for line in calls)
     assert any(
         line == f"systemd-sysusers --root {root}" for line in calls
+    )
+    assert any(
+        line
+        == "systemd-tmpfiles --create --remove --boot --root " f"{root}"
+        for line in calls
     )
     assert all(not line.startswith("ldconfig") for line in calls)
 

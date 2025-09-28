@@ -1,0 +1,12 @@
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Target = usr/lib/tmpfiles.d/*.conf
+Target = etc/tmpfiles.d/*.conf
+
+[Action]
+When = PostTransaction
+Exec = /usr/libexec/lpm/hooks/systemd-tmpfiles
+NeedsTargets = false
