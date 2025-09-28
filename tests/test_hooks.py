@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 import types
@@ -82,7 +83,19 @@ def test_python_hook_falls_back_when_sys_executable_is_not_python(tmp_path, monk
     assert marker.read_text() == "fallback"
 
 
-def test_post_install_hooks_run(tmp_path, monkeypatch):
+@pytest.fixture
+def system_hook_dir(tmp_path: Path) -> Path:
+    source = Path(__file__).resolve().parent.parent / "usr/share/liblpm/hooks"
+    destination = tmp_path / "hooks"
+    shutil.copytree(source, destination)
+    exec_prefix = Path(__file__).resolve().parent.parent / "usr/libexec/lpm/hooks"
+    for hook_file in destination.glob("*.hook"):
+        text = hook_file.read_text()
+        hook_file.write_text(text.replace("/usr/libexec/lpm/hooks/", f"{exec_prefix}/"))
+    return destination
+
+
+def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_hook_dir):
     root = tmp_path / "root"
     (root / "usr/share/icons/hicolor").mkdir(parents=True)
     (root / "usr/share/icons/hicolor/index.theme").write_text("[Icon Theme]")
@@ -91,43 +104,71 @@ def test_post_install_hooks_run(tmp_path, monkeypatch):
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    log = tmp_path / "log"
+    log = tmp_path / "commands.log"
     for name in ("update-desktop-database", "gtk-update-icon-cache", "ldconfig"):
         p = bin_dir / name
-        p.write_text(f"#!/bin/sh\necho {name} >> {log}\n")
+        p.write_text(f"#!/bin/sh\necho {name} \"$@\" >> {log}\n")
         p.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
 
-    hook_dir = Path(__file__).resolve().parent.parent / "usr/share/lpm/hooks"
-    monkeypatch.setattr(lpm, "HOOK_DIR", hook_dir)
-
-    lpm.run_hook("post_install", {"LPM_ROOT": str(root)})
+    hooks = load_hooks([system_hook_dir])
+    txn = HookTransactionManager(hooks=hooks, root=root)
+    txn.add_package_event(
+        name="foo",
+        operation="Install",
+        version="1.0",
+        release="1",
+        paths=[
+            "/usr/share/applications/foo.desktop",
+            "/usr/share/icons/hicolor/index.theme",
+            "/usr/lib/libfoo.so",
+        ],
+    )
+    txn.ensure_pre_transaction()
+    txn.run_post_transaction()
 
     calls = log.read_text().splitlines()
-    assert "update-desktop-database" in calls
-    assert "gtk-update-icon-cache" in calls
-    assert "ldconfig" not in calls
+    assert any(line.startswith("update-desktop-database") for line in calls)
+    assert any("usr/share/applications" in line for line in calls)
+    assert any(line.startswith("gtk-update-icon-cache") for line in calls)
+    assert any("usr/share/icons/hicolor" in line for line in calls)
+    assert all(not line.startswith("ldconfig") for line in calls)
 
 
-def test_ldconfig_only_for_real_root(tmp_path, monkeypatch):
-    hook_dir = Path(__file__).resolve().parent.parent / "usr/share/lpm/hooks"
-    monkeypatch.setattr(lpm, "HOOK_DIR", hook_dir)
-
+def test_ldconfig_runs_only_for_real_root(tmp_path, monkeypatch, system_hook_dir):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    log = tmp_path / "log"
-    for name in ("ldconfig", "update-desktop-database", "gtk-update-icon-cache"):
-        p = bin_dir / name
-        p.write_text(f"#!/bin/sh\necho {name} >> {log}\n")
-        p.chmod(0o755)
+    log = tmp_path / "ldconfig.log"
+    p = bin_dir / "ldconfig"
+    p.write_text(f"#!/bin/sh\necho ldconfig >> {log}\n")
+    p.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
 
-    lpm.run_hook("post_install", {"LPM_ROOT": "/"})
+    hooks = load_hooks([system_hook_dir])
+    txn = HookTransactionManager(hooks=hooks, root=Path("/"))
+    txn.add_package_event(
+        name="glibc",
+        operation="Upgrade",
+        version="2.0",
+        release="1",
+        paths=["/usr/lib/libc.so"],
+    )
+    txn.ensure_pre_transaction()
+    txn.run_post_transaction()
     assert "ldconfig" in log.read_text().splitlines()
 
     log.write_text("")
-    lpm.run_hook("post_install", {"LPM_ROOT": str(tmp_path)})
-    assert "ldconfig" not in log.read_text().splitlines()
+    txn = HookTransactionManager(hooks=hooks, root=tmp_path / "root")
+    txn.add_package_event(
+        name="glibc",
+        operation="Upgrade",
+        version="2.0",
+        release="1",
+        paths=["/usr/lib/libc.so"],
+    )
+    txn.ensure_pre_transaction()
+    txn.run_post_transaction()
+    assert log.read_text().strip() == ""
 
 
 def test_kernel_install_hook(tmp_path, monkeypatch):
