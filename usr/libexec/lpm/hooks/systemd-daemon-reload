@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+import os
+import shutil
+import subprocess
+
+
+def main() -> None:
+    if os.environ.get("LPM_ROOT", "/") != "/":
+        return
+    tool = shutil.which("systemctl")
+    if not tool:
+        return
+    subprocess.run([tool, "daemon-reload"], check=False)
+
+
+if __name__ == "__main__":
+    main()

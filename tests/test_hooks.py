@@ -187,6 +187,45 @@ def test_ldconfig_runs_only_for_real_root(tmp_path, monkeypatch, system_hook_dir
     assert log.read_text().strip() == ""
 
 
+def test_systemd_daemon_reload_runs_only_for_real_root(
+    tmp_path, monkeypatch, system_hook_dir
+):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "systemctl.log"
+    log.write_text("")
+    p = bin_dir / "systemctl"
+    p.write_text(f"#!/bin/sh\necho systemctl \"$@\" >> {log}\n")
+    p.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    hooks = load_hooks([system_hook_dir])
+    txn = HookTransactionManager(hooks=hooks, root=Path("/"))
+    txn.add_package_event(
+        name="systemd-unit",
+        operation="Install",
+        version="1.0",
+        release="1",
+        paths=["/usr/lib/systemd/system/example.service"],
+    )
+    txn.ensure_pre_transaction()
+    txn.run_post_transaction()
+    assert "systemctl daemon-reload" in log.read_text().splitlines()
+
+    log.write_text("")
+    txn = HookTransactionManager(hooks=hooks, root=tmp_path / "root")
+    txn.add_package_event(
+        name="systemd-unit",
+        operation="Install",
+        version="1.0",
+        release="1",
+        paths=["/usr/lib/systemd/system/example.service"],
+    )
+    txn.ensure_pre_transaction()
+    txn.run_post_transaction()
+    assert log.read_text().strip() == ""
+
+
 def test_kernel_install_hook(tmp_path, monkeypatch):
     hook_dir = Path(__file__).resolve().parent.parent / "usr/share/lpm/hooks"
     monkeypatch.setattr(lpm, "HOOK_DIR", hook_dir)
