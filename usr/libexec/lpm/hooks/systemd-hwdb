@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+import os
+import shutil
+import subprocess
+
+def main() -> None:
+    root = os.environ.get("LPM_ROOT", "/")
+    systemd_hwdb = shutil.which("systemd-hwdb")
+    if systemd_hwdb:
+        subprocess.run([systemd_hwdb, "update", "--root", root], check=False)
+        return
+    udevadm = shutil.which("udevadm")
+    if udevadm:
+        subprocess.run([udevadm, "hwdb", "--update", "--root", root], check=False)
+        return
+
+
+if __name__ == "__main__":
+    main()

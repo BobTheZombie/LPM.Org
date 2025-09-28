@@ -111,10 +111,14 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
         "ldconfig",
         "systemd-sysusers",
         "systemd-tmpfiles",
+        "udevadm",
     ):
         p = bin_dir / name
         p.write_text(f"#!/bin/sh\necho {name} \"$@\" >> {log}\n")
         p.chmod(0o755)
+    systemd_hwdb = bin_dir / "systemd-hwdb"
+    systemd_hwdb.write_text(f"#!/bin/sh\necho systemd-hwdb \"$@\" >> {log}\n")
+    systemd_hwdb.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
 
     hooks = load_hooks([system_hook_dir])
@@ -130,6 +134,7 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
             "/usr/lib/libfoo.so",
             "/etc/sysusers.d/foo.conf",
             "/usr/lib/tmpfiles.d/foo.conf",
+            "/usr/lib/udev/hwdb.d/20-foo.hwdb",
         ],
     )
     txn.ensure_pre_transaction()
@@ -146,6 +151,14 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
     assert any(
         line
         == "systemd-tmpfiles --create --remove --boot --root " f"{root}"
+        for line in calls
+    )
+    assert sum(
+        line.startswith("systemd-hwdb") or line.startswith("udevadm")
+        for line in calls
+    ) == 1
+    assert any(
+        line == f"systemd-hwdb update --root {root}"
         for line in calls
     )
     assert all(not line.startswith("ldconfig") for line in calls)
