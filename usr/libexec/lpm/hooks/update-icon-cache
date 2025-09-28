@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Iterable, List, Set
+
+
+def _iter_icon_dirs(root: Path, targets: Iterable[str]) -> List[Path]:
+    seen: Set[Path] = set()
+    dirs: List[Path] = []
+    for target in targets:
+        rel = str(target).lstrip("/")
+        if not rel:
+            continue
+        path = Path(rel)
+        if path.name != "index.theme":
+            continue
+        candidate = root / path.parent
+        if candidate in seen or not candidate.is_dir():
+            continue
+        seen.add(candidate)
+        dirs.append(candidate)
+    if dirs:
+        return dirs
+    icons_root = root / "usr/share/icons"
+    if icons_root.is_dir():
+        for directory in icons_root.iterdir():
+            if directory.is_dir() and (directory / "index.theme").exists():
+                dirs.append(directory)
+    return dirs
+
+
+def main(argv: List[str]) -> None:
+    tool = shutil.which("gtk-update-icon-cache")
+    if not tool:
+        return
+    root = Path(os.environ.get("LPM_ROOT", "/"))
+    targets = _iter_icon_dirs(root, argv)
+    for directory in targets:
+        subprocess.run([tool, str(directory)], check=False)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

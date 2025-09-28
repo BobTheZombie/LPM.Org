@@ -1,0 +1,11 @@
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Target = usr/share/icons/*/index.theme
+
+[Action]
+When = PostTransaction
+Exec = /usr/libexec/lpm/hooks/update-icon-cache
+NeedsTargets = true
