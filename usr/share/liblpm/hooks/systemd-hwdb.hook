@@ -1,0 +1,11 @@
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Target = usr/lib/udev/hwdb.d/*.hwdb
+Target = etc/udev/hwdb.d/*.hwdb
+
+[Action]
+When = PostTransaction
+Exec = /usr/libexec/lpm/hooks/systemd-hwdb
