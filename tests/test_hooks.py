@@ -105,7 +105,12 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "commands.log"
-    for name in ("update-desktop-database", "gtk-update-icon-cache", "ldconfig"):
+    for name in (
+        "update-desktop-database",
+        "gtk-update-icon-cache",
+        "ldconfig",
+        "systemd-sysusers",
+    ):
         p = bin_dir / name
         p.write_text(f"#!/bin/sh\necho {name} \"$@\" >> {log}\n")
         p.chmod(0o755)
@@ -122,6 +127,7 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
             "/usr/share/applications/foo.desktop",
             "/usr/share/icons/hicolor/index.theme",
             "/usr/lib/libfoo.so",
+            "/etc/sysusers.d/foo.conf",
         ],
     )
     txn.ensure_pre_transaction()
@@ -132,6 +138,9 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
     assert any("usr/share/applications" in line for line in calls)
     assert any(line.startswith("gtk-update-icon-cache") for line in calls)
     assert any("usr/share/icons/hicolor" in line for line in calls)
+    assert any(
+        line == f"systemd-sysusers --root {root}" for line in calls
+    )
     assert all(not line.startswith("ldconfig") for line in calls)
 
 

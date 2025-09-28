@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+import os
+import shutil
+import subprocess
+
+
+def main() -> None:
+    tool = shutil.which("systemd-sysusers")
+    if not tool:
+        return
+    root = os.environ.get("LPM_ROOT", "/")
+    subprocess.run([tool, "--root", root], check=False)
+
+
+if __name__ == "__main__":
+    main()
