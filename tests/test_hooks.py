@@ -108,6 +108,9 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
         "<schemalist>"
     )
     (root / "usr/lib/gio/modules").mkdir(parents=True)
+    loader_dir = root / "usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"
+    loader_dir.mkdir(parents=True)
+    (loader_dir / "libpixbufloader-svg.so").write_text("")
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -121,7 +124,6 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
         "systemd-sysusers",
         "systemd-tmpfiles",
         "udevadm",
-        "gio-querymodules",
     ):
         p = bin_dir / name
         p.write_text(f"#!/bin/sh\necho {name} \"$@\" >> {log}\n")
@@ -129,6 +131,20 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
     systemd_hwdb = bin_dir / "systemd-hwdb"
     systemd_hwdb.write_text(f"#!/bin/sh\necho systemd-hwdb \"$@\" >> {log}\n")
     systemd_hwdb.chmod(0o755)
+    gio_query = bin_dir / "gio-querymodules"
+    gio_query.write_text(f"#!/bin/sh\necho gio-querymodules \"$@\" >> {log}\n")
+    gio_query.chmod(0o755)
+    gdk_pixbuf = bin_dir / "gdk-pixbuf-query-loaders"
+    gdk_pixbuf.write_text(
+        (
+            "#!/bin/sh\n"
+            "echo gdk-pixbuf-query-loaders \"$@\" "
+            "GDK_PIXBUF_MODULEDIR=$GDK_PIXBUF_MODULEDIR "
+            "GDK_PIXBUF_MODULE_FILE=$GDK_PIXBUF_MODULE_FILE >> "
+            f"{log}\n"
+        )
+    )
+    gdk_pixbuf.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
 
     hooks = load_hooks([system_hook_dir])
@@ -148,6 +164,7 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
             "/usr/lib/tmpfiles.d/foo.conf",
             "/usr/lib/udev/hwdb.d/20-foo.hwdb",
             "/usr/lib/gio/modules/libfoo.so",
+            "/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-svg.so",
         ],
     )
     txn.ensure_pre_transaction()
@@ -186,6 +203,12 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
             f"{root / 'usr/lib/gio/modules/giomodule.cache'} "
             f"{root / 'usr/lib/gio/modules'}"
         )
+        for line in calls
+    )
+    assert any(
+        line.startswith("gdk-pixbuf-query-loaders --update-cache")
+        and f"GDK_PIXBUF_MODULEDIR={loader_dir}" in line
+        and f"GDK_PIXBUF_MODULE_FILE={loader_dir.parent / 'loaders.cache'}" in line
         for line in calls
     )
 
