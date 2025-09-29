@@ -834,6 +834,10 @@ def _shebang_command(script: Path) -> Optional[List[str]]:
 
 def _run_hook_script(script: Path, env: Dict[str, str]):
     merged_env = {**os.environ, **env}
+    if os.access(script, os.X_OK):
+        subprocess.run([str(script)], env=merged_env, check=True)
+        return
+
     if script.suffix == ".py":
         interpreter = _detect_python_for_hooks()
         if interpreter:
@@ -847,8 +851,9 @@ def _run_hook_script(script: Path, env: Dict[str, str]):
 
         raise RuntimeError(f"Unable to locate Python interpreter for hook {script}")
 
-    if os.access(script, os.X_OK):
-        subprocess.run([str(script)], env=merged_env, check=True)
+    shebang_cmd = _shebang_command(script)
+    if shebang_cmd:
+        subprocess.run([*shebang_cmd, str(script)], env=merged_env, check=True)
 
 
 def run_hook(hook: str, env: Dict[str,str]):
