@@ -107,6 +107,8 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
     (root / "usr/share/glib-2.0/schemas/org.example.gschema.xml").write_text(
         "<schemalist>"
     )
+    (root / "usr/share/fonts/OTF").mkdir(parents=True)
+    (root / "usr/share/fonts/OTF/foo.otf").write_text("")
     (root / "usr/lib/gio/modules").mkdir(parents=True)
     loader_dir = root / "usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"
     loader_dir.mkdir(parents=True)
@@ -119,6 +121,7 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
         "update-desktop-database",
         "gtk-update-icon-cache",
         "update-mime-database",
+        "fc-cache",
         "ldconfig",
         "glib-compile-schemas",
         "systemd-sysusers",
@@ -159,6 +162,7 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
             "/usr/share/icons/hicolor/index.theme",
             "/usr/share/mime/packages/foo.xml",
             "/usr/share/glib-2.0/schemas/org.example.gschema.xml",
+            "/usr/share/fonts/OTF/foo.otf",
             "/usr/lib/libfoo.so",
             "/etc/sysusers.d/foo.conf",
             "/usr/lib/tmpfiles.d/foo.conf",
@@ -193,6 +197,10 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
     ) == 1
     assert any(
         line == f"systemd-hwdb update --root {root}"
+        for line in calls
+    )
+    assert any(
+        line == f"fc-cache --sysroot {root} --force"
         for line in calls
     )
     assert all(not line.startswith("ldconfig") for line in calls)
