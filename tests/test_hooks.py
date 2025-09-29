@@ -103,6 +103,10 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
     (root / "usr/share/applications/foo.desktop").write_text("[Desktop Entry]")
     (root / "usr/share/mime/packages").mkdir(parents=True)
     (root / "usr/share/mime/packages/foo.xml").write_text("<mime-info>")
+    (root / "usr/share/glib-2.0/schemas").mkdir(parents=True)
+    (root / "usr/share/glib-2.0/schemas/org.example.gschema.xml").write_text(
+        "<schemalist>"
+    )
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -112,6 +116,7 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
         "gtk-update-icon-cache",
         "update-mime-database",
         "ldconfig",
+        "glib-compile-schemas",
         "systemd-sysusers",
         "systemd-tmpfiles",
         "udevadm",
@@ -135,6 +140,7 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
             "/usr/share/applications/foo.desktop",
             "/usr/share/icons/hicolor/index.theme",
             "/usr/share/mime/packages/foo.xml",
+            "/usr/share/glib-2.0/schemas/org.example.gschema.xml",
             "/usr/lib/libfoo.so",
             "/etc/sysusers.d/foo.conf",
             "/usr/lib/tmpfiles.d/foo.conf",
@@ -151,6 +157,8 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
     assert any("usr/share/icons/hicolor" in line for line in calls)
     assert any(line.startswith("update-mime-database") for line in calls)
     assert any(str(root / "usr/share/mime") in line for line in calls)
+    assert any(line.startswith("glib-compile-schemas") for line in calls)
+    assert any("--targetdir=" in line for line in calls)
     assert any(
         line == f"systemd-sysusers --root {root}" for line in calls
     )
