@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Iterable, List, Set, Tuple
+
+
+def _iter_module_dirs(root: Path, targets: Iterable[str]) -> List[Tuple[Path, Path]]:
+    seen: Set[Path] = set()
+    result: List[Tuple[Path, Path]] = []
+    for target in targets:
+        if not target:
+            continue
+        rel_text = target.lstrip("/")
+        if not rel_text:
+            continue
+        rel_path = Path(rel_text)
+        if rel_path.suffix != ".so":
+            continue
+        rel_dir = rel_path.parent
+        if not rel_dir.parts:
+            continue
+        if rel_dir not in seen:
+            seen.add(rel_dir)
+        else:
+            continue
+        module_dir = root / rel_dir
+        if module_dir.is_dir():
+            result.append((module_dir, rel_dir))
+    return result
+
+
+def main(argv: List[str]) -> None:
+    tool = shutil.which("gio-querymodules")
+    if not tool:
+        return
+    root = Path(os.environ.get("LPM_ROOT", "/"))
+    modules = _iter_module_dirs(root, argv)
+    for module_dir, rel_dir in modules:
+        output = root / rel_dir / "giomodule.cache"
+        subprocess.run(
+            [tool, "--output", str(output), str(module_dir)],
+            check=False,
+        )
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

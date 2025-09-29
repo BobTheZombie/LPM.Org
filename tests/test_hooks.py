@@ -107,6 +107,7 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
     (root / "usr/share/glib-2.0/schemas/org.example.gschema.xml").write_text(
         "<schemalist>"
     )
+    (root / "usr/lib/gio/modules").mkdir(parents=True)
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -120,6 +121,7 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
         "systemd-sysusers",
         "systemd-tmpfiles",
         "udevadm",
+        "gio-querymodules",
     ):
         p = bin_dir / name
         p.write_text(f"#!/bin/sh\necho {name} \"$@\" >> {log}\n")
@@ -145,6 +147,7 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
             "/etc/sysusers.d/foo.conf",
             "/usr/lib/tmpfiles.d/foo.conf",
             "/usr/lib/udev/hwdb.d/20-foo.hwdb",
+            "/usr/lib/gio/modules/libfoo.so",
         ],
     )
     txn.ensure_pre_transaction()
@@ -176,6 +179,15 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
         for line in calls
     )
     assert all(not line.startswith("ldconfig") for line in calls)
+    assert any(
+        line
+        == (
+            "gio-querymodules --output "
+            f"{root / 'usr/lib/gio/modules/giomodule.cache'} "
+            f"{root / 'usr/lib/gio/modules'}"
+        )
+        for line in calls
+    )
 
 
 def test_ldconfig_runs_only_for_real_root(tmp_path, monkeypatch, system_hook_dir):
