@@ -24,27 +24,27 @@ HOOK_BINARIES := $(patsubst $(HOOK_SRC)/%, $(HOOK_BUILD_DIR)/%, $(HOOK_PYTHON_SC
 all: $(BIN_TARGET) $(HOOK_BINARIES)
 
 $(BIN_TARGET): lpm.py $(SRC_FILES)
-        @mkdir -p $(BUILD_DIR)
-        $(NUITKA) --onefile --include-package=src --follow-imports --output-dir=$(BUILD_DIR) --output-filename=$(APP).bin $(ENTRY)
+	@mkdir -p $(BUILD_DIR)
+	$(NUITKA) --onefile --include-package=src --follow-imports --output-dir=$(BUILD_DIR) --output-filename=$(APP).bin $(ENTRY)
 
 $(HOOK_BUILD_DIR)/%: $(HOOK_SRC)/%
-        @mkdir -p $(dir $@)
-        $(NUITKA) --onefile --include-package=src --follow-imports --output-dir=$(dir $@) --output-filename=$(notdir $@) $<
+	@mkdir -p $(dir $@)
+	$(NUITKA) --onefile --include-package=src --follow-imports --output-dir=$(dir $@) --output-filename=$(notdir $@) $<
 
 $(STAGING_DIR): $(BIN_TARGET) README.md LICENSE etc/lpm/lpm.conf $(HOOK_BINARIES)
-        @mkdir -p $(DIST_DIR)
-        @rm -rf $@
-        mkdir -p $@/bin
-        cp $(BIN_TARGET) $@/bin/$(APP)
-        mkdir -p $@/usr/share/lpm
-        cp -R $(HOOK_SRC) $@/usr/share/lpm/
-        if [ -n "$(HOOK_BINARIES)" ]; then \
-            for hook in $(HOOK_BINARIES); do \
-                rel=$${hook#$(HOOK_BUILD_DIR)/}; \
-                dest="$@/usr/share/lpm/hooks/$${rel}"; \
-                install -D -m 0755 "$$hook" "$$dest"; \
-            done; \
-        fi
+	@mkdir -p $(DIST_DIR)
+	@rm -rf $@
+	mkdir -p $@/bin
+	cp $(BIN_TARGET) $@/bin/$(APP)
+	mkdir -p $@/usr/share/lpm
+	cp -R $(HOOK_SRC) $@/usr/share/lpm/
+	if [ -n "$(HOOK_BINARIES)" ]; then \
+	    for hook in $(HOOK_BINARIES); do \
+	        rel=$${hook#$(HOOK_BUILD_DIR)/}; \
+	        dest="$@/usr/share/lpm/hooks/$${rel}"; \
+	        install -D -m 0755 "$$hook" "$$dest"; \
+	    done; \
+	fi
 	mkdir -p $@/etc/lpm
 	cp etc/lpm/lpm.conf $@/etc/lpm/lpm.conf
 	cp README.md LICENSE $@
