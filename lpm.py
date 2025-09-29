@@ -3332,12 +3332,15 @@ def cmd_splitpkg(a):
     stagedir = Path(a.stagedir)
 
     base_meta_path = os.environ.get("LPM_SPLIT_BASE_META")
+    base_meta_file: Optional[Path] = None
     base_meta: Dict[str, object] = {}
     if base_meta_path:
         try:
-            base_meta = read_json(Path(base_meta_path))
+            base_meta_file = Path(base_meta_path)
+            base_meta = read_json(base_meta_file)
         except Exception as e:
             warn(f"Could not read split package defaults: {e}")
+            base_meta_file = None
 
     def _get_default(key: str, fallback=None):
         value = getattr(a, key, None)
@@ -3400,6 +3403,84 @@ def cmd_splitpkg(a):
     else:
         out = outdir / f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}"
     out.parent.mkdir(parents=True, exist_ok=True)
+
+    install_sh = stagedir / ".lpm-install.sh"
+    if install_sh.exists():
+        with contextlib.suppress(Exception):
+            install_sh.chmod(0o755)
+    else:
+        install_spec: Optional[str] = None
+        for key in ("INSTALL", "install"):
+            value = base_meta.get(key)
+            if isinstance(value, str) and value.strip():
+                install_spec = value.strip()
+                break
+
+        embedded = False
+        if install_spec:
+            candidates: List[Path] = []
+            spec_path = Path(install_spec)
+            if spec_path.is_absolute():
+                candidates.append(spec_path)
+            else:
+                candidates.append(stagedir / spec_path)
+                if base_meta_file is not None:
+                    candidates.append(base_meta_file.parent / spec_path)
+
+            for candidate in candidates:
+                if not candidate.exists() or not candidate.is_file():
+                    continue
+                try:
+                    body = candidate.read_text(encoding="utf-8")
+                except Exception as exc:
+                    warn(f"Failed to read install script {candidate}: {exc}")
+                    continue
+
+                try:
+                    with install_sh.open("w", encoding="utf-8") as f:
+                        f.write("#!/bin/bash\n")
+                        f.write("set -euo pipefail\n\n")
+                        f.write("action=${1:-install}\n")
+                        f.write("new_full=${2:-}\n")
+                        f.write("old_full=${3:-}\n")
+                        f.write("source /dev/stdin <<'__LPM_INSTALL_BODY__'\n")
+                        if body:
+                            f.write(body)
+                            if not body.endswith("\n"):
+                                f.write("\n")
+                        f.write("__LPM_INSTALL_BODY__\n\n")
+                        f.write("if declare -f post_install >/dev/null; then\n")
+                        f.write("  post_install \"$new_full\"\n")
+                        f.write("fi\n")
+                        f.write("if [[ \"$action\" == \"upgrade\" ]] && declare -f post_upgrade >/dev/null; then\n")
+                        f.write("  post_upgrade \"$new_full\" \"$old_full\"\n")
+                        f.write("fi\n")
+                    install_sh.chmod(0o755)
+                    embedded = True
+                except Exception as exc:
+                    warn(f"Could not embed install script from {candidate}: {exc}")
+                    continue
+
+                if embedded:
+                    break
+
+            if not embedded:
+                warn(
+                    f"install script '{install_spec}' requested but not found; "
+                    "falling back to default installer"
+                )
+
+        if not install_sh.exists():
+            try:
+                script_text = generate_install_script(stagedir)
+                with install_sh.open("w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\nset -e\n")
+                    f.write(script_text)
+                    if not script_text.endswith("\n"):
+                        f.write("\n")
+                install_sh.chmod(0o755)
+            except Exception as exc:
+                warn(f"Could not embed install script for {name}: {exc}")
 
     build_package(stagedir, meta, out, sign=(not a.no_sign))
 
