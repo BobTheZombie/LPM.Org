@@ -3535,6 +3535,16 @@ def installpkg(
     global PROTECTED
     PROTECTED = load_protected()
 
+    txn = hook_transaction
+    owns_txn = False
+    if txn is None and not dry_run:
+        txn = HookTransactionManager(
+            hooks=load_hooks(LIBLPM_HOOK_DIRS),
+            root=root,
+            base_env={"LPM_ROOT": str(root)},
+        )
+        owns_txn = True
+
     # --- Step 1: Validate extension + magic ---
     if file.suffix != EXT:
         die(f"{file.name} is not a {EXT} package")
