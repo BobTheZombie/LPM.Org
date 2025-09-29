@@ -1,11 +1,14 @@
 import builtins
 import contextlib
 import importlib
+import json
 import os
 import shlex
+import stat
 import sys
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -353,3 +356,50 @@ def test_split_package_helper_for_frozen_executable(tmp_path, monkeypatch, lpm_m
     assert str(module_path) not in helper_contents
 
     original_unlink(helper_path)
+
+
+def test_splitpkg_generates_install_script_for_shared_library(tmp_path, monkeypatch, lpm_module):
+    stagedir = tmp_path / "split-stage"
+    libdir = stagedir / "usr/lib"
+    libdir.mkdir(parents=True, exist_ok=True)
+    (libdir / "libfoo.so").write_text("", encoding="utf-8")
+
+    base_meta = {
+        "name": "foo-lib",
+        "version": "1.0.0",
+        "release": "1",
+        "arch": "noarch",
+    }
+    meta_path = tmp_path / "base-meta.json"
+    meta_path.write_text(json.dumps(base_meta), encoding="utf-8")
+    monkeypatch.setenv("LPM_SPLIT_BASE_META", str(meta_path))
+
+    outdir = tmp_path / "out"
+    args = SimpleNamespace(
+        stagedir=stagedir,
+        name=None,
+        version=None,
+        release=None,
+        arch=None,
+        summary=None,
+        url=None,
+        license=None,
+        requires=None,
+        provides=None,
+        conflicts=None,
+        obsoletes=None,
+        recommends=None,
+        suggests=None,
+        outdir=outdir,
+        output=None,
+        no_sign=True,
+    )
+
+    lpm_module.cmd_splitpkg(args)
+
+    install_script = stagedir / ".lpm-install.sh"
+    assert install_script.exists()
+    content = install_script.read_text(encoding="utf-8")
+    assert content.startswith("#!/bin/sh\nset -e\n")
+    assert "ldconfig" in content
+    assert install_script.stat().st_mode & stat.S_IXUSR
