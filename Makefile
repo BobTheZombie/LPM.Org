@@ -10,26 +10,41 @@ VERSION ?= $(shell $(PYTHON) tools/get_version.py)
 export PYTHONPATH := $(PWD)$(if $(PYTHONPATH),:$(PYTHONPATH),)
 
 BIN_TARGET = $(BUILD_DIR)/$(APP).bin
+HOOK_BUILD_DIR = $(BUILD_DIR)/hooks
 STAGING_DIR = $(DIST_DIR)/$(APP)-$(VERSION)
 TARBALL = $(DIST_DIR)/$(APP)-$(VERSION).tar.gz
 HOOK_SRC = usr/share/lpm/hooks
 
+HOOK_PYTHON_SCRIPTS := $(shell $(PYTHON) tools/list_python_hooks.py $(HOOK_SRC))
+HOOK_BINARIES := $(patsubst $(HOOK_SRC)/%, $(HOOK_BUILD_DIR)/%, $(HOOK_PYTHON_SCRIPTS))
+
 .PHONY: all stage tarball clean distclean
 .ONESHELL:
 
-all: $(BIN_TARGET)
+all: $(BIN_TARGET) $(HOOK_BINARIES)
 
 $(BIN_TARGET): lpm.py $(SRC_FILES)
-	@mkdir -p $(BUILD_DIR)
-	$(NUITKA) --onefile --include-package=src --follow-imports --output-dir=$(BUILD_DIR) --output-filename=$(APP).bin $(ENTRY)
+        @mkdir -p $(BUILD_DIR)
+        $(NUITKA) --onefile --include-package=src --follow-imports --output-dir=$(BUILD_DIR) --output-filename=$(APP).bin $(ENTRY)
 
-$(STAGING_DIR): $(BIN_TARGET) README.md LICENSE etc/lpm/lpm.conf
-	@mkdir -p $(DIST_DIR)
-	@rm -rf $@
-	mkdir -p $@/bin
-	cp $(BIN_TARGET) $@/bin/$(APP)
-	mkdir -p $@/usr/share/lpm
-	cp -R $(HOOK_SRC) $@/usr/share/lpm/
+$(HOOK_BUILD_DIR)/%: $(HOOK_SRC)/%
+        @mkdir -p $(dir $@)
+        $(NUITKA) --onefile --include-package=src --follow-imports --output-dir=$(dir $@) --output-filename=$(notdir $@) $<
+
+$(STAGING_DIR): $(BIN_TARGET) README.md LICENSE etc/lpm/lpm.conf $(HOOK_BINARIES)
+        @mkdir -p $(DIST_DIR)
+        @rm -rf $@
+        mkdir -p $@/bin
+        cp $(BIN_TARGET) $@/bin/$(APP)
+        mkdir -p $@/usr/share/lpm
+        cp -R $(HOOK_SRC) $@/usr/share/lpm/
+        if [ -n "$(HOOK_BINARIES)" ]; then \
+            for hook in $(HOOK_BINARIES); do \
+                rel=$${hook#$(HOOK_BUILD_DIR)/}; \
+                dest="$@/usr/share/lpm/hooks/$${rel}"; \
+                install -D -m 0755 "$$hook" "$$dest"; \
+            done; \
+        fi
 	mkdir -p $@/etc/lpm
 	cp etc/lpm/lpm.conf $@/etc/lpm/lpm.conf
 	cp README.md LICENSE $@
