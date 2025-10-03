@@ -1378,76 +1378,134 @@ def build_python_package_from_pip(
 
     with tempfile.TemporaryDirectory(prefix="lpm-pip-") as tmp:
         stagedir = Path(tmp) / "root"
-        stagedir.mkdir(parents=True, exist_ok=True)
-
         download_dir = Path(tmp) / "download"
-        download_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            requirement = Requirement(spec)
+        except Exception as exc:
+            raise RuntimeError(f"pip build: invalid requirement '{spec}': {exc}") from exc
+
+        canonical_name = canonicalize_name(requirement.name or "")
+
+        def _format_requirement(name: str) -> str:
+            extras = ""
+            if requirement.extras:
+                extras = f"[{','.join(sorted(requirement.extras))}]"
+            specifier = str(requirement.specifier)
+            marker = f"; {requirement.marker}" if requirement.marker else ""
+            return f"{name}{extras}{specifier}{marker}"
+
+        attempt_specs: List[str] = []
+        seen_specs: Set[str] = set()
+
+        normalized_name = canonical_name or (requirement.name or "")
+        if normalized_name:
+            primary_spec = _format_requirement(normalized_name)
+            if primary_spec and primary_spec not in seen_specs:
+                attempt_specs.append(primary_spec)
+                seen_specs.add(primary_spec)
+
+        if canonical_name.startswith("python-"):
+            trimmed_name = canonical_name[len("python-") :]
+            if trimmed_name:
+                trimmed_spec = _format_requirement(trimmed_name)
+                if trimmed_spec and trimmed_spec not in seen_specs:
+                    attempt_specs.append(trimmed_spec)
+                    seen_specs.add(trimmed_spec)
+
+        if not attempt_specs:
+            attempt_specs.append(spec)
+
+        def _prepare_dirs() -> None:
+            if stagedir.exists():
+                shutil.rmtree(stagedir)
+            stagedir.mkdir(parents=True, exist_ok=True)
+            if download_dir.exists():
+                shutil.rmtree(download_dir)
+            download_dir.mkdir(parents=True, exist_ok=True)
 
         interpreter = _detect_python_interpreter()
         if not interpreter:
             raise RuntimeError("pip build: unable to locate Python interpreter for pip execution")
 
-        download_cmd = [
-            interpreter,
-            "-m",
-            "pip",
-            "download",
-            spec,
-            "--no-deps",
-            "--no-binary",
-            ":all:",
-            "--dest",
-            str(download_dir),
-            "--progress-bar",
-            "off",
-            "--disable-pip-version-check",
-        ]
-        log(f"[pip] downloading {spec} source distribution")
         env = os.environ.copy()
         env.setdefault("PYTHONNOUSERSITE", "1")
-        subprocess.run(download_cmd, check=True, env=env)
 
-        sdist_path = _select_downloaded_sdist(download_dir)
+        last_error: Optional[Exception] = None
 
-        pip_cmd = [
-            interpreter,
-            "-m",
-            "pip",
-            "install",
-            str(sdist_path),
-            "--no-deps",
-            "--prefix",
-            "/usr",
-            "--root",
-            str(stagedir),
-            "--no-compile",
-            "--disable-pip-version-check",
-            "--no-warn-script-location",
-            "--progress-bar",
-            "off",
-            "--ignore-installed",
-        ]
-        log(f"[pip] building from sdist {sdist_path.name} into staging root {stagedir}")
-        subprocess.run(pip_cmd, check=True, env=env)
+        for attempt_spec in attempt_specs:
+            _prepare_dirs()
+            download_cmd = [
+                interpreter,
+                "-m",
+                "pip",
+                "download",
+                attempt_spec,
+                "--no-deps",
+                "--no-binary",
+                ":all:",
+                "--dest",
+                str(download_dir),
+                "--progress-bar",
+                "off",
+                "--disable-pip-version-check",
+            ]
+            log(f"[pip] downloading {attempt_spec} source distribution")
+            try:
+                subprocess.run(download_cmd, check=True, env=env)
+            except subprocess.CalledProcessError as exc:
+                last_error = exc
+                continue
 
-        info = _collect_python_package_metadata(stagedir, include_requires_dist=include_deps)
-        meta = PkgMeta(
-            name=info["name"],
-            version=info["version"],
-            release="1",
-            arch=info["arch"],
-            summary=info["summary"],
-            url=info["url"],
-            license=info["license"],
-            requires=info["requires"],
-            provides=info["provides"],
-        )
+            sdist_path = _select_downloaded_sdist(download_dir)
 
-        out = outdir / f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}"
-        build_package(stagedir, meta, out, sign=True)
+            pip_cmd = [
+                interpreter,
+                "-m",
+                "pip",
+                "install",
+                str(sdist_path),
+                "--no-deps",
+                "--prefix",
+                "/usr",
+                "--root",
+                str(stagedir),
+                "--no-compile",
+                "--disable-pip-version-check",
+                "--no-warn-script-location",
+                "--progress-bar",
+                "off",
+                "--ignore-installed",
+            ]
+            log(f"[pip] building from sdist {sdist_path.name} into staging root {stagedir}")
+            try:
+                subprocess.run(pip_cmd, check=True, env=env)
+            except subprocess.CalledProcessError as exc:
+                last_error = exc
+                continue
 
-    duration = time.time() - start
-    return out, meta, duration
+            info = _collect_python_package_metadata(stagedir, include_requires_dist=include_deps)
+            meta = PkgMeta(
+                name=info["name"],
+                version=info["version"],
+                release="1",
+                arch=info["arch"],
+                summary=info["summary"],
+                url=info["url"],
+                license=info["license"],
+                requires=info["requires"],
+                provides=info["provides"],
+            )
+
+            out = outdir / f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}"
+            build_package(stagedir, meta, out, sign=True)
+
+            duration = time.time() - start
+            return out, meta, duration
+
+    if last_error:
+        raise last_error
+    raise RuntimeError(f"pip build: unable to download or build requirement '{spec}'")
 
 
 # =========================== Unified package tar opener =========================
@@ -2508,13 +2566,26 @@ def run_lpmbuild(
             canonical_name = canonicalize_name(requirement.name or "")
             if not canonical_name:
                 continue
-            capability = f"pypi({canonical_name})"
-            if capability in capabilities:
+            capability_names = {canonical_name}
+            trimmed_name: Optional[str] = None
+            if canonical_name.startswith("python-"):
+                trimmed_name = canonical_name[len("python-") :]
+                if trimmed_name:
+                    capability_names.add(trimmed_name)
+            if any(f"pypi({name})" in capabilities for name in capability_names):
                 continue
             key = ("python", canonical_name)
             if key in seen:
                 continue
+            alt_keys: List[Tuple[str, str]] = []
+            if trimmed_name:
+                alt_key = ("python", trimmed_name)
+                if alt_key in seen:
+                    continue
+                alt_keys.append(alt_key)
             seen.add(key)
+            for alt_key in alt_keys:
+                seen.add(alt_key)
             python_to_build.append((spec, canonical_name))
 
         def _build_python_dep(spec: str, canonical_name: str, idx: Optional[int] = None, total: Optional[int] = None):
@@ -2528,7 +2599,17 @@ def run_lpmbuild(
                 include_deps=True,
             )
             _register_meta_capabilities(meta)
-            capabilities.add(f"pypi({canonical_name})")
+            provided_caps = [
+                cap
+                for cap in getattr(meta, "provides", []) or []
+                if isinstance(cap, str) and cap.startswith("pypi(") and cap.endswith(")")
+            ]
+            if provided_caps:
+                capabilities.update(provided_caps)
+            else:
+                meta_canonical = canonicalize_name(getattr(meta, "name", "") or "")
+                if meta_canonical:
+                    capabilities.add(f"pypi({meta_canonical})")
             if prompt_install:
                 prompt_install_pkg(out, kind="dependency", default=prompt_default)
             return out
