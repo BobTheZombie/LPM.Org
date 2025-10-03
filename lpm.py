@@ -1209,6 +1209,8 @@ def _python_package_name(dist_name: str) -> str:
     normalized = canonical.replace(".", "-")
     if not normalized:
         die("pip build: package metadata missing name")
+    if normalized.startswith("python-"):
+        return normalized
     return f"python-{normalized}"
 
 
