@@ -2366,6 +2366,23 @@ def run_lpmbuild(
         conn = db()
         try:
             installed = db_installed(conn)
+            capabilities: Set[str] = set(installed)
+            for meta in installed.values():
+                provides = meta.get("provides") if isinstance(meta, dict) else None
+                if not provides:
+                    continue
+                for provide in provides:
+                    if not isinstance(provide, str):
+                        continue
+                    capability = re.split(r"[<>=]", provide, 1)[0].strip()
+                    if not capability:
+                        continue
+                    # Also handle qualifiers like "foo >= 1" that may leave trailing
+                    # whitespace when splitting on comparison operators.
+                    parts = capability.split()
+                    capability = parts[0] if parts else capability
+                    if capability:
+                        capabilities.add(capability)
             for dep in arr.get("REQUIRES", []):
                 try:
                     e = parse_dep_expr(dep)
@@ -2379,7 +2396,7 @@ def run_lpmbuild(
                             continue
                         seen.add(depname)
 
-                        if depname not in installed:
+                        if depname not in capabilities:
                             deps_to_build.append(depname)
         finally:
             conn.close()
