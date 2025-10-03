@@ -798,17 +798,21 @@ def solve(goals: List[str], universe: Universe) -> List[PkgMeta]:
     return sorted(chosen.values(), key=lambda p: depth_of(p))
 
 # =========================== Hooks =============================================
-def _detect_python_for_hooks() -> Optional[str]:
-    exe = sys.executable
+def _detect_python_interpreter() -> Optional[str]:
+    exe = getattr(sys, "executable", None)
     if exe:
         exe_name = Path(exe).name.lower()
         if ("python" in exe_name or "pypy" in exe_name) and os.access(exe, os.X_OK):
             return exe
     for candidate in ("python3", "python", "pypy3", "pypy"):
         resolved = shutil.which(candidate)
-        if resolved:
+        if resolved and os.access(resolved, os.X_OK):
             return resolved
     return None
+
+
+def _detect_python_for_hooks() -> Optional[str]:
+    return _detect_python_interpreter()
 
 
 def _shebang_command(script: Path) -> Optional[List[str]]:
@@ -1379,8 +1383,12 @@ def build_python_package_from_pip(
         download_dir = Path(tmp) / "download"
         download_dir.mkdir(parents=True, exist_ok=True)
 
+        interpreter = _detect_python_interpreter()
+        if not interpreter:
+            raise RuntimeError("pip build: unable to locate Python interpreter for pip execution")
+
         download_cmd = [
-            sys.executable,
+            interpreter,
             "-m",
             "pip",
             "download",
@@ -1402,7 +1410,7 @@ def build_python_package_from_pip(
         sdist_path = _select_downloaded_sdist(download_dir)
 
         pip_cmd = [
-            sys.executable,
+            interpreter,
             "-m",
             "pip",
             "install",
