@@ -2572,6 +2572,8 @@ def run_lpmbuild(
                 trimmed_name = canonical_name[len("python-") :]
                 if trimmed_name:
                     capability_names.add(trimmed_name)
+            if any(name in capabilities for name in capability_names):
+                continue
             if any(f"pypi({name})" in capabilities for name in capability_names):
                 continue
             key = ("python", canonical_name)

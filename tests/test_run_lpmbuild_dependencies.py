@@ -218,6 +218,44 @@ def test_run_lpmbuild_skips_python_dependencies_when_provided(tmp_path, monkeypa
     shutil.rmtree(Path("/tmp/src-foo"), ignore_errors=True)
 
 
+def test_run_lpmbuild_skips_python_dependencies_when_installed(tmp_path, monkeypatch):
+    script = tmp_path / "foo.lpmbuild"
+    _write_dummy_lpmbuild(script, [], python_deps=["python-docutils"])
+
+    monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "state"))
+    _stub_build_pipeline(monkeypatch)
+
+    class DummyConn:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(lpm, "db", lambda: DummyConn())
+    monkeypatch.setattr(
+        lpm,
+        "db_installed",
+        lambda conn: {"python-docutils": {"provides": []}},
+    )
+
+    def fake_build_python_package_from_pip(*args, **kwargs):
+        raise AssertionError("unexpected Python dependency build")
+
+    monkeypatch.setattr(lpm, "build_python_package_from_pip", fake_build_python_package_from_pip)
+
+    out_path, _, _, _ = lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=True,
+    )
+
+    assert out_path.exists()
+
+    out_path.unlink()
+    shutil.rmtree(Path("/tmp/pkg-foo"), ignore_errors=True)
+    shutil.rmtree(Path("/tmp/build-foo"), ignore_errors=True)
+    shutil.rmtree(Path("/tmp/src-foo"), ignore_errors=True)
+
+
 def test_run_lpmbuild_skips_dependencies_satisfied_by_provides(tmp_path, monkeypatch):
     script = tmp_path / "foo.lpmbuild"
     _write_dummy_lpmbuild(script, ["virtual-pkg"])
