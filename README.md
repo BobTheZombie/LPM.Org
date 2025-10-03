@@ -109,6 +109,12 @@ contents and runs common maintenance commands based on what it finds:
   `{LPMBUILD_REPO}/{pkgname}/{filename}`, matching Arch Linux's `source=()`
   behaviour, while explicit URLs and `foo::https://example.com/src` rename
   syntax are honoured as-is.【F:lpm.py†L2116-L2159】
+  For Python dependencies that should be sourced from PyPI, add a
+  `REQUIRES_PYTHON_DEPENDENCIES=()` array with standard pip requirement
+  strings such as `('requests==2.0')`; `lpm buildpkg` canonicalises the
+  distribution names, skips entries already provided by packages exposing
+  `pypi(<name>)`, and otherwise invokes the built-in pip builder (with
+  dependency resolution enabled) before executing your script.【F:lpm.py†L2367-L2486】
 - `lpm genindex REPO_DIR [--base-url URL] [--arch ARCH]` – generate an
   `index.json` for a directory of packages.
 - `lpm installpkg FILE... [--root PATH] [--dry-run] [--verify] [--force]`
