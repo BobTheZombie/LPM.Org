@@ -132,6 +132,54 @@ def test_run_lpmbuild_builds_python_dependencies_when_missing(tmp_path, monkeypa
     shutil.rmtree(Path("/tmp/src-foo"), ignore_errors=True)
 
 
+def test_run_lpmbuild_builds_python_alias_dependencies(tmp_path, monkeypatch):
+    script = tmp_path / "foo.lpmbuild"
+    _write_dummy_lpmbuild(script, [], python_deps=["python-docutils"])
+
+    monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "state"))
+    _stub_build_pipeline(monkeypatch)
+
+    class DummyConn:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(lpm, "db", lambda: DummyConn())
+    monkeypatch.setattr(lpm, "db_installed", lambda conn: {})
+
+    calls = []
+
+    def fake_build_python_package_from_pip(spec, outdir, include_deps):
+        calls.append((spec, Path(outdir), include_deps))
+        assert spec == "python-docutils"
+        out_path = Path(outdir) / "python-docutils-1-1.noarch.zst"
+        out_path.write_text("pkg")
+        meta = lpm.PkgMeta(
+            name="python-docutils",
+            version="1",
+            release="1",
+            arch="noarch",
+            provides=["pypi(docutils)"],
+        )
+        return out_path, meta, 0.1
+
+    monkeypatch.setattr(lpm, "build_python_package_from_pip", fake_build_python_package_from_pip)
+
+    out_path, _, _, _ = lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=True,
+    )
+
+    assert calls == [("python-docutils", tmp_path, True)]
+    assert out_path.exists()
+
+    out_path.unlink()
+    shutil.rmtree(Path("/tmp/pkg-foo"), ignore_errors=True)
+    shutil.rmtree(Path("/tmp/build-foo"), ignore_errors=True)
+    shutil.rmtree(Path("/tmp/src-foo"), ignore_errors=True)
+
+
 def test_run_lpmbuild_skips_python_dependencies_when_provided(tmp_path, monkeypatch):
     script = tmp_path / "foo.lpmbuild"
     _write_dummy_lpmbuild(script, [], python_deps=["requests==2.0"])
