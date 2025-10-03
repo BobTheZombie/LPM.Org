@@ -247,3 +247,29 @@ def test_cmd_buildpkg_python_pip_native_arch(monkeypatch, tmp_path):
     meta, _ = lpm.read_package_meta(built)
     expected_arch = lpm.ARCH or (os.uname().machine if hasattr(os, "uname") else "") or "noarch"
     assert meta.arch == expected_arch
+
+
+def test_cmd_buildpkg_python_pip_preserves_existing_python_prefix(monkeypatch, tmp_path):
+    metadata = textwrap.dedent(
+        """
+        Metadata-Version: 2.1
+        Name: python-dateutil
+        Version: 2.9.0
+        """
+    ).strip()
+    _prepare_fake_pip(monkeypatch, metadata)
+    monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *args, **kwargs: None)
+
+    args = SimpleNamespace(
+        script=None,
+        python_pip="python-dateutil",
+        outdir=tmp_path,
+        no_deps=True,
+        install_default=None,
+    )
+    lpm.cmd_buildpkg(args)
+
+    built = tmp_path / "python-dateutil-2.9.0-1.noarch.zst"
+    assert built.exists()
+    meta, _ = lpm.read_package_meta(built)
+    assert meta.name == "python-dateutil"
