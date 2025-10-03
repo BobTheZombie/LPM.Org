@@ -128,7 +128,6 @@ def _prepare_fake_pip(monkeypatch, metadata_text, *, create_native=False):
         if (
             isinstance(cmd, (list, tuple))
             and len(cmd) >= 4
-            and cmd[0] == sys.executable
             and cmd[1] == "-m"
             and cmd[2] == "pip"
         ):
@@ -273,3 +272,44 @@ def test_cmd_buildpkg_python_pip_preserves_existing_python_prefix(monkeypatch, t
     assert built.exists()
     meta, _ = lpm.read_package_meta(built)
     assert meta.name == "python-dateutil"
+
+
+def test_cmd_buildpkg_python_pip_falls_back_to_python_from_which(monkeypatch, tmp_path):
+    metadata = textwrap.dedent(
+        """
+        Metadata-Version: 2.1
+        Name: Demo
+        Version: 1.2
+        """
+    ).strip()
+    _prepare_fake_pip(monkeypatch, metadata)
+    monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *args, **kwargs: None)
+
+    missing = tmp_path / "missing-python"
+    monkeypatch.setattr(lpm.sys, "executable", str(missing))
+
+    fallback = tmp_path / "bin" / "python3"
+    fallback.parent.mkdir(parents=True, exist_ok=True)
+    fallback.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fallback.chmod(0o755)
+
+    original_which = lpm.shutil.which
+
+    def fake_which(name):
+        if name == "python3":
+            return str(fallback)
+        return original_which(name)
+
+    monkeypatch.setattr(lpm.shutil, "which", fake_which)
+
+    args = SimpleNamespace(
+        script=None,
+        python_pip="demo",
+        outdir=tmp_path,
+        no_deps=True,
+        install_default=None,
+    )
+    lpm.cmd_buildpkg(args)
+
+    built = tmp_path / "python-demo-1.2-1.noarch.zst"
+    assert built.exists()
