@@ -2027,7 +2027,7 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
         '  printf "\\n"',
         "}",
         "for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE CFLAGS KERNEL MKINITCPIO_PRESET install INSTALL; do _emit_scalar \"$v\"; done",
-        "for a in SOURCE REQUIRES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS; do _emit_array \"$a\"; done",
+        "for a in SOURCE REQUIRES REQUIRES_PYTHON_DEPENDENCIES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS; do _emit_array \"$a\"; done",
     ]
     bcmd = "\n".join(lines)
 
@@ -2039,7 +2039,16 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
 
     data = proc.stdout
     scalars: Dict[str,str] = {}
-    arrays: Dict[str,List[str]] = {k: [] for k in ["SOURCE","REQUIRES","PROVIDES","CONFLICTS","OBSOLETES","RECOMMENDS","SUGGESTS"]}
+    arrays: Dict[str,List[str]] = {k: [] for k in [
+        "SOURCE",
+        "REQUIRES",
+        "REQUIRES_PYTHON_DEPENDENCIES",
+        "PROVIDES",
+        "CONFLICTS",
+        "OBSOLETES",
+        "RECOMMENDS",
+        "SUGGESTS",
+    ]}
 
     i=0; n=len(data)
     while i < n:
@@ -2371,45 +2380,74 @@ def run_lpmbuild(
     fetch_fn = fetcher or fetch_lpmbuild
 
     if build_deps:
-        seen = set()
+        seen: Set[Tuple[str, str]] = set()
         deps_to_build: List[str] = []
+        python_to_build: List[Tuple[str, str]] = []
+
+        capabilities: Set[str] = set()
+
+        def _canonical_capability(value: str) -> Optional[str]:
+            if not isinstance(value, str):
+                return None
+            capability = re.split(r"[<>=]", value, 1)[0].strip()
+            if not capability:
+                return None
+            parts = capability.split()
+            return parts[0] if parts else capability
+
+        def _register_meta_capabilities(meta: PkgMeta) -> None:
+            if not meta:
+                return
+            if meta.name:
+                capabilities.add(meta.name)
+            for provide in getattr(meta, "provides", []) or []:
+                cap = _canonical_capability(provide)
+                if cap:
+                    capabilities.add(cap)
+
         conn = db()
         try:
             installed = db_installed(conn)
-            capabilities: Set[str] = set(installed)
-            for meta in installed.values():
-                provides = meta.get("provides") if isinstance(meta, dict) else None
+            capabilities.update(installed)
+            for pkg_name, meta in installed.items():
+                if pkg_name:
+                    capabilities.add(pkg_name)
+                provides = meta.get("provides") if isinstance(meta, dict) else getattr(meta, "provides", None)
                 if not provides:
                     continue
                 for provide in provides:
-                    if not isinstance(provide, str):
-                        continue
-                    capability = re.split(r"[<>=]", provide, 1)[0].strip()
-                    if not capability:
-                        continue
-                    # Also handle qualifiers like "foo >= 1" that may leave trailing
-                    # whitespace when splitting on comparison operators.
-                    parts = capability.split()
-                    capability = parts[0] if parts else capability
-                    if capability:
-                        capabilities.add(capability)
-            for dep in arr.get("REQUIRES", []):
-                try:
-                    e = parse_dep_expr(dep)
-                except Exception:
-                    continue
-                parts = flatten_and(e) if e.kind == "and" else [e]
-                for part in parts:
-                    if part.kind == "atom":
-                        depname = part.atom.name
-                        if depname in seen:
-                            continue
-                        seen.add(depname)
-
-                        if depname not in capabilities:
-                            deps_to_build.append(depname)
+                    cap = _canonical_capability(provide)
+                    if cap:
+                        capabilities.add(cap)
         finally:
             conn.close()
+
+        for dep in arr.get("REQUIRES", []):
+            try:
+                e = parse_dep_expr(dep)
+            except Exception:
+                continue
+            parts = flatten_and(e) if e.kind == "and" else [e]
+            for part in parts:
+                if part.kind == "atom":
+                    depname = part.atom.name
+                    key = ("pkg", depname)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+
+                    if depname not in capabilities:
+                        deps_to_build.append(depname)
+
+        def _register_built_dependency_blob(blob: Path) -> None:
+            if not blob:
+                return
+            try:
+                meta, _ = read_package_meta(blob)
+            except Exception as exc:
+                warn(f"[deps] unable to inspect built dependency {blob}: {exc}")
+                return
+            _register_meta_capabilities(meta)
 
         def _build_dep(depname: str, idx: Optional[int] = None, total: Optional[int] = None):
             if idx is not None and total is not None:
@@ -2431,6 +2469,7 @@ def run_lpmbuild(
                 fetcher=fetch_fn,
                 _building_stack=building_stack,
             )[0]
+
         if deps_to_build:
             if prompt_install:
                 total = len(deps_to_build)
@@ -2442,20 +2481,69 @@ def run_lpmbuild(
                 ) as pbar:
                     for idx, dep in enumerate(pbar, start=1):
                         pbar.set_description(f"[deps] {dep}")
-                        _build_dep(dep, idx, total)
+                        blob = _build_dep(dep, idx, total)
+                        _register_built_dependency_blob(blob)
             else:
                 max_workers = min(4, len(deps_to_build))
                 with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                    list(
-                        progress_bar(
-                            ex.map(_build_dep, deps_to_build),
-                            total=len(deps_to_build),
-                            desc="[deps] building",
-                            unit="pkg",
-                            mode="ninja",
-                            leave=True,
-                        )
-                    )
+                    for blob in progress_bar(
+                        ex.map(_build_dep, deps_to_build),
+                        total=len(deps_to_build),
+                        desc="[deps] building",
+                        unit="pkg",
+                        mode="ninja",
+                        leave=True,
+                    ):
+                        _register_built_dependency_blob(blob)
+
+        for raw_spec in arr.get("REQUIRES_PYTHON_DEPENDENCIES", []):
+            spec = (raw_spec or "").strip()
+            if not spec:
+                continue
+            try:
+                requirement = Requirement(spec)
+            except Exception as exc:
+                warn(f"[deps] invalid Python dependency '{spec}': {exc}")
+                continue
+            canonical_name = canonicalize_name(requirement.name or "")
+            if not canonical_name:
+                continue
+            capability = f"pypi({canonical_name})"
+            if capability in capabilities:
+                continue
+            key = ("python", canonical_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            python_to_build.append((spec, canonical_name))
+
+        def _build_python_dep(spec: str, canonical_name: str, idx: Optional[int] = None, total: Optional[int] = None):
+            if idx is not None and total is not None:
+                log(f"[deps] ({idx}/{total}) building required Python package: {spec}")
+            else:
+                log(f"[deps] building required Python package: {spec}")
+            out, meta, _ = build_python_package_from_pip(
+                spec,
+                outdir or script_dir,
+                include_deps=True,
+            )
+            _register_meta_capabilities(meta)
+            capabilities.add(f"pypi({canonical_name})")
+            if prompt_install:
+                prompt_install_pkg(out, kind="dependency", default=prompt_default)
+            return out
+
+        if python_to_build:
+            total = len(python_to_build)
+            with progress_bar(
+                python_to_build,
+                unit="pkg",
+                mode="ninja",
+                leave=True,
+            ) as pbar:
+                for idx, (spec, canonical_name) in enumerate(pbar, start=1):
+                    pbar.set_description(f"[deps] pip {canonical_name}")
+                    _build_python_dep(spec, canonical_name, idx, total)
 
     stagedir = Path(f"/tmp/pkg-{name}")
     buildroot = Path(f"/tmp/build-{name}")
