@@ -82,6 +82,50 @@ def _stub_build_pipeline(monkeypatch):
     monkeypatch.setattr(lpm, "build_package", fake_build_package)
 
 
+def test_run_lpmbuild_skips_dependencies_satisfied_by_provides(tmp_path, monkeypatch):
+    script = tmp_path / "foo.lpmbuild"
+    _write_dummy_lpmbuild(script, ["virtual-pkg"])
+
+    monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "state"))
+    _stub_build_pipeline(monkeypatch)
+
+    class DummyConn:
+        def close(self):
+            return None
+
+    def fake_db():
+        return DummyConn()
+
+    def fake_db_installed(conn):
+        return {
+            "provider": {
+                "provides": ["virtual-pkg=1.0"],
+            }
+        }
+
+    monkeypatch.setattr(lpm, "db", fake_db)
+    monkeypatch.setattr(lpm, "db_installed", fake_db_installed)
+
+    def fake_fetch_lpmbuild(pkgname: str, dest: Path) -> Path:
+        raise AssertionError(f"unexpected dependency fetch: {pkgname}")
+
+    monkeypatch.setattr(lpm, "fetch_lpmbuild", fake_fetch_lpmbuild)
+
+    out_path, _, _, _ = lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=True,
+    )
+
+    assert out_path.exists()
+
+    out_path.unlink()
+    shutil.rmtree(Path("/tmp/pkg-foo"), ignore_errors=True)
+    shutil.rmtree(Path("/tmp/build-foo"), ignore_errors=True)
+    shutil.rmtree(Path("/tmp/src-foo"), ignore_errors=True)
+
+
 def test_run_lpmbuild_detects_dependency_cycle(tmp_path, monkeypatch, capsys):
     cycle_scripts = {
         "foo": tmp_path / "foo.lpmbuild",
