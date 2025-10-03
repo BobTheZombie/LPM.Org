@@ -777,24 +777,48 @@ def solve(goals: List[str], universe: Universe) -> List[PkgMeta]:
     chosen: Dict[str,PkgMeta] = {}
     for vid,val in res.assign.items():
         if not val: continue
-        key = inv.get(vid); 
+        key = inv.get(vid);
         if not key: continue
         name,ver = key
         for p in universe.candidates_by_name.get(name, []):
             if p.version==ver: chosen[name]=p; break
     # topo-ish order by requires depth
     chosen_names=set(chosen.keys()); dep_depth: Dict[str,int]={}
+    visiting: Set[str] = set()
+    stack: List[str] = []
     def depth_of(p: PkgMeta)->int:
         if p.name in dep_depth: return dep_depth[p.name]
-        d=0
-        for s in p.requires:
-            e=parse_dep_expr(s); parts=flatten_and(e) if e.kind=="and" else [e]
-            for part in parts:
-                if part.kind=="atom":
-                    for q in providers_for(universe, part.atom):
-                        if q.name in chosen_names:
-                            d=max(d, 1+depth_of(chosen[q.name]))
-        dep_depth[p.name]=d; return d
+        if p.name in visiting:
+            try:
+                idx = stack.index(p.name)
+            except ValueError:
+                cycle = [p.name]
+            else:
+                cycle = stack[idx:] + [p.name]
+            cycle_descr = []
+            for name in cycle:
+                pkg = chosen.get(name)
+                if pkg:
+                    cycle_descr.append(f"{pkg.name}=={pkg.version}")
+                else:
+                    cycle_descr.append(name)
+            raise ResolutionError("Dependency cycle detected: " + " -> ".join(cycle_descr))
+        visiting.add(p.name)
+        stack.append(p.name)
+        try:
+            d=0
+            for s in p.requires:
+                e=parse_dep_expr(s); parts=flatten_and(e) if e.kind=="and" else [e]
+                for part in parts:
+                    if part.kind=="atom":
+                        for q in providers_for(universe, part.atom):
+                            if q.name in chosen_names:
+                                d=max(d, 1+depth_of(chosen[q.name]))
+            dep_depth[p.name]=d
+            return d
+        finally:
+            stack.pop()
+            visiting.remove(p.name)
     return sorted(chosen.values(), key=lambda p: depth_of(p))
 
 # =========================== Hooks =============================================
