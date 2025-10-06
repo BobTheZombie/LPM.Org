@@ -1,13 +1,13 @@
 """Minimal :mod:`zstandard` compatibility layer for the test environment."""
 
+from __future__ import annotations
+
+from typing import BinaryIO, Optional
+
 # ``nuitka`` queries :mod:`zstandard` for a ``__version__`` attribute when it is
 # installed.  The real third-party package exposes this constant, so we provide
 # a placeholder value to keep tools that import the shim behaving as expected.
 __version__ = "0.0"
-
-from __future__ import annotations
-
-from typing import BinaryIO, Optional
 
 _MAGIC = b"\x28\xB5\x2F\xFD"
 
