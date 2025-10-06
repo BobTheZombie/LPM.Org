@@ -1531,6 +1531,30 @@ def build_python_package_from_pip(
 
 
 # =========================== Unified package tar opener =========================
+_ZSTD_STUB: Optional[bool] = None
+_ZSTD_STUB_HELP = (
+    "Unable to read Zstandard-compressed package. Install the 'zstandard' "
+    "Python module to handle .zst files."
+)
+
+
+def _zstd_is_stub() -> bool:
+    """Detect whether we're running with the lightweight test shim."""
+
+    global _ZSTD_STUB
+    if _ZSTD_STUB is None:
+        try:
+            # The real ``zstandard`` module will raise on this invalid frame,
+            # whereas the repository's shim simply strips the magic header and
+            # returns the payload unmodified.
+            zstd.ZstdDecompressor().decompress(b"\x28\xb5\x2f\xfdnot-a-frame")
+        except Exception:
+            _ZSTD_STUB = False
+        else:
+            _ZSTD_STUB = True
+    return _ZSTD_STUB
+
+
 def open_package_tar(blob: Path, stream: bool = True) -> tarfile.TarFile:
     """
     Open a .zst (tar+zstd) package safely using the zstandard library.
@@ -1554,19 +1578,35 @@ def open_package_tar(blob: Path, stream: bool = True) -> tarfile.TarFile:
         # Stream directly into tarfile (used for extraction)
         f = blob.open("rb")
         reader = dctx.stream_reader(f)
-        return tarfile.open(fileobj=reader, mode="r|")
+        try:
+            return tarfile.open(fileobj=reader, mode="r|")
+        except tarfile.ReadError:
+            reader.close()
+            f.close()
+            if _zstd_is_stub():
+                die(_ZSTD_STUB_HELP)
+            raise
     else:
         # Buffer the decompression into memory for random-access tarfile
         f = blob.open("rb")
         reader = dctx.stream_reader(f)
         buf = io.BytesIO()
-        while True:
-            chunk = reader.read(16384)
-            if not chunk:
-                break
-            buf.write(chunk)
+        try:
+            while True:
+                chunk = reader.read(16384)
+                if not chunk:
+                    break
+                buf.write(chunk)
+        finally:
+            reader.close()
+            f.close()
         buf.seek(0)
-        return tarfile.open(fileobj=buf, mode="r:")
+        try:
+            return tarfile.open(fileobj=buf, mode="r:")
+        except tarfile.ReadError:
+            if _zstd_is_stub():
+                die(_ZSTD_STUB_HELP)
+            raise
 
 
 # =============== BUILDPKG Function ==============================
