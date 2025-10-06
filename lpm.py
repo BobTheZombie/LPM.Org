@@ -1690,7 +1690,18 @@ def extract_tar(blob: Path, root: Path) -> List[str]:
                 dest.mkdir(parents=True, exist_ok=True)
             else:
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                tf.extract(m, path=str(root), filter="data")
+                try:
+                    tf.extract(m, path=str(root), filter="data")
+                except tarfile.ExtractError as exc:
+                    if m.issym() and "absolute path" in str(exc).lower():
+                        target = m.linkname or ""
+                        if not target:
+                            raise
+                        if dest.exists() or dest.is_symlink():
+                            dest.unlink()
+                        os.symlink(target, dest)
+                    else:
+                        raise
             manifest.append("/" + rel)
 
     return manifest
