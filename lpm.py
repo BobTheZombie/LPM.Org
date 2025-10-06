@@ -29,6 +29,10 @@ from packaging.requirements import Requirement
 from packaging.specifiers import Specifier, SpecifierSet
 from packaging.utils import canonicalize_name
 
+_TAR_EXTRACT_ERRORS = (tarfile.ExtractError,)
+if hasattr(tarfile, "FilterError"):
+    _TAR_EXTRACT_ERRORS = _TAR_EXTRACT_ERRORS + (tarfile.FilterError,)  # type: ignore[attr-defined]
+
 # =========================== Runtime metadata =================================
 _ENV_NAME = "LPM_NAME"
 _ENV_VERSION = "LPM_VERSION"
@@ -1710,8 +1714,9 @@ def extract_tar(blob: Path, root: Path) -> List[str]:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 try:
                     tf.extract(m, path=str(root), filter="data")
-                except tarfile.ExtractError as exc:
-                    if m.issym() and "absolute path" in str(exc).lower():
+                except _TAR_EXTRACT_ERRORS as exc:
+                    msg = str(exc).lower()
+                    if m.issym() and "absolute path" in msg:
                         target = m.linkname or ""
                         if not target:
                             raise
