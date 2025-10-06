@@ -16,7 +16,7 @@ License: MIT
 """
 
 from __future__ import annotations
-import argparse, contextlib, dataclasses, fnmatch, hashlib, io, json, os, re, shlex, shutil, sqlite3, stat, subprocess, sys, tarfile, tempfile, time, urllib.parse
+import argparse, contextlib, dataclasses, errno, fnmatch, hashlib, io, json, os, re, shlex, shutil, sqlite3, stat, subprocess, sys, tarfile, tempfile, time, urllib.parse
 from email.parser import Parser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -181,6 +181,15 @@ class _TrackedTqdm(tqdm):
         self.completed = self.n
         return super().__exit__(exc_type, exc, tb)
 
+    def set_description(self, *args, **kwargs):  # pragma: no cover - passthrough shim
+        setter = getattr(super(), "set_description", None)
+        if setter is not None:
+            return setter(*args, **kwargs)
+        # ``tqdm`` is stubbed in the test environment; gracefully accept the call
+        if args:
+            self.desc = args[0]
+        return None
+
 
 def progress_bar(
     iterable,
@@ -219,7 +228,7 @@ def progress_bar(
 
     cls = _TrackedTqdm if track else tqdm
 
-    return cls(
+    bar = cls(
         iterable,
         desc=desc,
         unit=unit,
@@ -230,6 +239,11 @@ def progress_bar(
         leave=leave,
         **kwargs,
     )
+
+    if not hasattr(bar, "set_description"):
+        bar.set_description = lambda *args, **kwargs: None  # type: ignore[attr-defined]
+
+    return bar
 
 # ============================ Build Isolation =======================
 def sandboxed_run(
@@ -839,8 +853,12 @@ def _shebang_command(script: Path) -> Optional[List[str]]:
 def _run_hook_script(script: Path, env: Dict[str, str]):
     merged_env = {**os.environ, **env}
     if os.access(script, os.X_OK):
-        subprocess.run([str(script)], env=merged_env, check=True)
-        return
+        try:
+            subprocess.run([str(script)], env=merged_env, check=True)
+            return
+        except OSError as exc:
+            if exc.errno not in {errno.ENOEXEC, errno.EACCES}:
+                raise
 
     if script.suffix == ".py":
         interpreter = _detect_python_for_hooks()
