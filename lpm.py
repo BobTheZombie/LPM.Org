@@ -21,7 +21,7 @@ from email.parser import Parser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Iterable, Callable
+from typing import Dict, List, Optional, Set, Tuple, Iterable, Callable, BinaryIO
 from collections import deque
 import zstandard as zstd
 from packaging.markers import default_environment
@@ -1538,6 +1538,92 @@ _ZSTD_STUB_HELP = (
 )
 
 
+class _StreamingProcessReader(io.RawIOBase):
+    """File-like wrapper around ``zstd -dc`` for streaming extraction."""
+
+    def __init__(self, cmd: List[str]):
+        self._cmd = cmd
+        self._proc: Optional[subprocess.Popen[bytes]] = None
+        self._stdout: Optional[io.BufferedReader] = None
+        self._start()
+
+    def _start(self) -> None:
+        if self._proc is not None:
+            return
+        proc = subprocess.Popen(self._cmd, stdout=subprocess.PIPE)
+        if proc.stdout is None:
+            proc.kill()
+            raise RuntimeError("failed to start zstd decompressor")
+        self._proc = proc
+        self._stdout = proc.stdout
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int = -1) -> bytes:
+        if self._stdout is None:
+            return b""
+        return self._stdout.read(size)
+
+    def close(self) -> None:
+        try:
+            if self._stdout is not None:
+                self._stdout.close()
+        finally:
+            self._stdout = None
+            if self._proc is not None:
+                ret = self._proc.wait()
+                cmd = self._cmd
+                self._proc = None
+                if ret not in (0, None):
+                    raise subprocess.CalledProcessError(ret, cmd)
+        super().close()
+
+    def __enter__(self) -> "_StreamingProcessReader":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+        return None
+
+
+class _ZstdStreamReaderWrapper(io.RawIOBase):
+    """Ensure the underlying file handle closes with the zstd reader."""
+
+    def __init__(self, reader: io.BufferedIOBase, fh: BinaryIO):
+        self._reader = reader
+        self._fh = fh
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int = -1) -> bytes:
+        return self._reader.read(size)
+
+    def close(self) -> None:
+        try:
+            close = getattr(self._reader, "close", None)
+            if close is not None:
+                close()
+        finally:
+            self._fh.close()
+        super().close()
+
+    def __getattr__(self, item):
+        return getattr(self._reader, item)
+
+    def __enter__(self):
+        if hasattr(self._reader, "__enter__"):
+            self._reader.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if hasattr(self._reader, "__exit__"):
+            self._reader.__exit__(exc_type, exc, tb)
+        self.close()
+        return None
+
+
 def _zstd_is_stub() -> bool:
     """Detect whether we're running with the lightweight test shim."""
 
@@ -1572,23 +1658,32 @@ def open_package_tar(blob: Path, stream: bool = True) -> tarfile.TarFile:
     if magic != b"\x28\xb5\x2f\xfd":
         die(f"{blob} is not a valid {EXT} package (bad magic header)")
 
-    dctx = zstd.ZstdDecompressor()
+    stub = _zstd_is_stub()
 
     if stream:
         # Stream directly into tarfile (used for extraction)
         f = blob.open("rb")
-        reader = dctx.stream_reader(f)
+        dctx = zstd.ZstdDecompressor()
+        reader: io.BufferedIOBase = _ZstdStreamReaderWrapper(dctx.stream_reader(f), f)
         try:
             return tarfile.open(fileobj=reader, mode="r|")
         except tarfile.ReadError:
             reader.close()
-            f.close()
-            if _zstd_is_stub():
+            if not stub:
+                raise
+            zstd_bin = shutil.which("zstd")
+            if not zstd_bin:
                 die(_ZSTD_STUB_HELP)
-            raise
+            reader = _StreamingProcessReader([zstd_bin, "-dc", str(blob)])
+            try:
+                return tarfile.open(fileobj=reader, mode="r|")
+            except tarfile.ReadError:
+                reader.close()
+                die(_ZSTD_STUB_HELP)
     else:
         # Buffer the decompression into memory for random-access tarfile
         f = blob.open("rb")
+        dctx = zstd.ZstdDecompressor()
         reader = dctx.stream_reader(f)
         buf = io.BytesIO()
         try:
@@ -1604,9 +1699,18 @@ def open_package_tar(blob: Path, stream: bool = True) -> tarfile.TarFile:
         try:
             return tarfile.open(fileobj=buf, mode="r:")
         except tarfile.ReadError:
-            if _zstd_is_stub():
+            if not stub:
+                raise
+            zstd_bin = shutil.which("zstd")
+            if not zstd_bin:
                 die(_ZSTD_STUB_HELP)
-            raise
+            result = subprocess.run([zstd_bin, "-dc", str(blob)], check=True, stdout=subprocess.PIPE)
+            buf = io.BytesIO(result.stdout)
+            buf.seek(0)
+            try:
+                return tarfile.open(fileobj=buf, mode="r:")
+            except tarfile.ReadError:
+                die(_ZSTD_STUB_HELP)
 
 
 # =============== BUILDPKG Function ==============================

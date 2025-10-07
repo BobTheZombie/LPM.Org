@@ -66,6 +66,13 @@ class _Reader:
                 break
             yield chunk
 
+    def __enter__(self) -> "_Reader":  # pragma: no cover - compatibility shim
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:  # pragma: no cover - compatibility shim
+        self.close()
+        return None
+
 
 class ZstdCompressor:
     def stream_writer(self, fh: BinaryIO) -> _Writer:
