@@ -107,6 +107,40 @@ def _make_ldso_pkg(lpm, tmp_path):
     return out
 
 
+def _make_absolute_symlink_pkg(lpm, tmp_path):
+    staged = tmp_path / "stage-absolute"
+    (staged / "usr/bin").mkdir(parents=True)
+    (staged / "usr/lib").mkdir(parents=True)
+
+    payload = staged / "usr/lib/libabsolute.so"
+    payload.write_bytes(b"absolute")
+
+    link = staged / "usr/bin/libabsolute.so"
+    link.symlink_to("/usr/lib/libabsolute.so")
+
+    install_script = staged / ".lpm-install.sh"
+    script_body = lpm.generate_install_script(staged)
+    install_script.write_text("#!/bin/sh\nset -e\n" + script_body + "\n")
+    install_script.chmod(0o755)
+
+    manifest = lpm.collect_manifest(staged)
+    meta = lpm.PkgMeta(name="absolute-symlink", version="1", release="1", arch="noarch")
+
+    (staged / ".lpm-meta.json").write_text(json.dumps(dataclasses.asdict(meta)))
+    (staged / ".lpm-manifest.json").write_text(json.dumps(manifest))
+
+    out = tmp_path / "absolute-symlink.zst"
+    with out.open("wb") as f:
+        cctx = lpm.zstd.ZstdCompressor()
+        with cctx.stream_writer(f) as compressor:
+            with tarfile.open(fileobj=compressor, mode="w|") as tf:
+                for p in staged.iterdir():
+                    tf.add(p, arcname=p.name)
+
+    shutil.rmtree(staged)
+    return out
+
+
 def _make_conflict_pkg(lpm, tmp_path):
     staged = tmp_path / "stage-conflict"
     (staged / "etc").mkdir(parents=True)
@@ -142,6 +176,11 @@ def ldso_package(tmp_path, lpm_module):
     return _make_ldso_pkg(lpm_module, tmp_path)
 
 
+@pytest.fixture
+def absolute_symlink_package(tmp_path, lpm_module):
+    return _make_absolute_symlink_pkg(lpm_module, tmp_path)
+
+
 def test_installpkg_verifies_symlink_manifest(tmp_path, monkeypatch):
     lpm = _import_lpm(tmp_path, monkeypatch)
     root = tmp_path / "root"
@@ -167,6 +206,25 @@ def test_installpkg_accepts_file_digest_for_symlink(lpm_module, ldso_package, tm
     assert os.readlink(installed_ld) == "../lib/ld-2.38.so"
     loader = root / "usr/lib/ld-2.38.so"
     assert loader.is_file()
+
+
+def test_installpkg_recreates_absolute_symlink(lpm_module, absolute_symlink_package, tmp_path):
+    root = tmp_path / "root-absolute"
+    root.mkdir()
+
+    lpm_module.installpkg(
+        absolute_symlink_package,
+        root=root,
+        dry_run=False,
+        verify=False,
+        force=False,
+        explicit=True,
+    )
+
+    installed_link = root / "usr/bin/libabsolute.so"
+    assert installed_link.is_symlink()
+    assert os.readlink(installed_link) == "../lib/libabsolute.so"
+    assert (root / "usr/lib/libabsolute.so").is_file()
 
 
 def test_installpkg_replace_all_option(tmp_path, monkeypatch):
