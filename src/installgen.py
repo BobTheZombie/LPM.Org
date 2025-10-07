@@ -1,6 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+
+
+def _escape_double_quotes(value: str) -> str:
+    """Escape a string for safe inclusion inside double quotes."""
+
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def generate_install_script(stagedir: Path) -> str:
@@ -28,6 +35,38 @@ def generate_install_script(stagedir: Path) -> str:
         cmds.append(
             "[ \"${LPM_ROOT:-/}\" = \"/\" ] && command -v ldconfig >/dev/null 2>&1 "
             "&& ldconfig || true"
+        )
+
+    for link in stagedir.rglob("*"):
+        try:
+            if not link.is_symlink():
+                continue
+        except OSError:
+            continue
+
+        try:
+            target = os.readlink(link)
+        except OSError:
+            continue
+
+        if not target.startswith("/"):
+            continue
+
+        try:
+            rel_path = link.relative_to(stagedir).as_posix()
+            parent_rel = link.parent.relative_to(stagedir).as_posix()
+        except ValueError:
+            continue
+
+        start = parent_rel or "."
+        rel_target = os.path.relpath(target.lstrip("/"), start)
+
+        dest_expr = f"${{LPM_ROOT:-/}}/{rel_path}"
+        dest_quoted = _escape_double_quotes(dest_expr)
+        target_quoted = _escape_double_quotes(rel_target)
+
+        cmds.append(
+            f'[ -L "{dest_quoted}" ] && ln -snf "{target_quoted}" "{dest_quoted}"'
         )
 
     return "\n".join(cmds)
