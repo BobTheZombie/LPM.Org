@@ -1,4 +1,3 @@
-import io
 import os
 import subprocess
 import sys
@@ -10,49 +9,6 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-if "zstandard" not in sys.modules:
-    module = types.ModuleType("zstandard")
-
-    class _Compressor:
-        def compress(self, data):
-            return b"\x28\xb5\x2f\xfd" + data
-
-        def stream_writer(self, fo):
-            class _Writer:
-                def __enter__(self_inner):
-                    if not getattr(self_inner, "_started", False):
-                        fo.write(b"\x28\xb5\x2f\xfd")
-                        self_inner._started = True
-                    return self_inner
-
-                def __exit__(self_inner, exc_type, exc, tb):
-                    return False
-
-                def write(self_inner, data):
-                    if not getattr(self_inner, "_started", False):
-                        fo.write(b"\x28\xb5\x2f\xfd")
-                        self_inner._started = True
-                    fo.write(data)
-                    return len(data)
-
-            return _Writer()
-
-    class _Decompressor:
-        def decompress(self, data):
-            if data.startswith(b"\x28\xb5\x2f\xfd"):
-                return data[4:]
-            return data
-
-        def stream_reader(self, fo):
-            data = fo.read()
-            if data.startswith(b"\x28\xb5\x2f\xfd"):
-                data = data[4:]
-            return io.BytesIO(data)
-
-    module.ZstdCompressor = lambda *a, **k: _Compressor()
-    module.ZstdDecompressor = lambda *a, **k: _Decompressor()
-    sys.modules["zstandard"] = module
 
 if "tqdm" not in sys.modules:
     module = types.ModuleType("tqdm")

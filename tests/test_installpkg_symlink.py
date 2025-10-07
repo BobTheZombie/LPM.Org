@@ -1,7 +1,6 @@
 import json
 import os
 import sys
-import types
 import shutil
 import importlib
 import dataclasses
@@ -15,84 +14,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 def _import_lpm(tmp_path, monkeypatch):
     monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "state"))
-    for name in ("zstandard", "tqdm"):
-        if name not in sys.modules:
-            module = types.ModuleType(name)
-            if name == "zstandard":
-                class _StreamWriter:
-                    def __init__(self, fh):
-                        self._fh = fh
-                        self._started = False
+    if "tqdm" not in sys.modules:
+        import types
 
-                    def write(self, data):
-                        if not self._started:
-                            self._fh.write(b"\x28\xb5\x2f\xfd")
-                            self._started = True
-                        return self._fh.write(data)
+        module = types.ModuleType("tqdm")
 
-                    def flush(self):
-                        return self._fh.flush()
+        class _DummyTqdm:
+            def __init__(self, iterable=None, **kwargs):
+                self.iterable = iterable
+                self.n = 0
+                self.total = kwargs.get("total")
 
-                    def close(self):
-                        return None
+            def __iter__(self):
+                return iter(self.iterable or [])
 
-                    def __enter__(self):
-                        if not self._started:
-                            self._fh.write(b"\x28\xb5\x2f\xfd")
-                            self._started = True
-                        return self
+            def __enter__(self):
+                return self
 
-                    def __exit__(self, exc_type, exc, tb):
-                        return False
+            def __exit__(self, exc_type, exc, tb):
+                return False
 
-                class _Compressor:
-                    def stream_writer(self, fh):
-                        return _StreamWriter(fh)
+            def update(self, *args, **kwargs):
+                return None
 
-                class _Decompressor:
-                    def stream_reader(self, fh):
-                        class _Reader:
-                            def __init__(self, inner):
-                                self._inner = inner
-                                self._skipped = False
-
-                            def read(self, size=-1):
-                                if not self._skipped:
-                                    self._inner.read(4)
-                                    self._skipped = True
-                                return self._inner.read(size)
-
-                            def close(self):
-                                return self._inner.close()
-
-                            def readable(self):
-                                return True
-
-                        return _Reader(fh)
-
-                module.ZstdCompressor = _Compressor
-                module.ZstdDecompressor = _Decompressor
-            else:
-                class _DummyTqdm:
-                    def __init__(self, iterable=None, **kwargs):
-                        self.iterable = iterable
-                        self.n = 0
-                        self.total = kwargs.get("total")
-
-                    def __iter__(self):
-                        return iter(self.iterable or [])
-
-                    def __enter__(self):
-                        return self
-
-                    def __exit__(self, exc_type, exc, tb):
-                        return False
-
-                    def update(self, *args, **kwargs):
-                        return None
-
-                module.tqdm = _DummyTqdm  # type: ignore[attr-defined]
-            monkeypatch.setitem(sys.modules, name, module)
+        module.tqdm = _DummyTqdm  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "tqdm", module)
     for mod in ["lpm", "src.config"]:
         if mod in sys.modules:
             del sys.modules[mod]

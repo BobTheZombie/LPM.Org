@@ -1,6 +1,5 @@
 import importlib
 import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -14,31 +13,32 @@ def import_lpm():
     original = sys.modules.get("lpm")
     stubbed_modules: dict[str, bool] = {}
 
-    for name in ("zstandard", "tqdm"):
-        if name not in sys.modules:
-            module = types.ModuleType(name)
-            if name == "tqdm":
-                class _DummyTqdm:  # pragma: no cover - test helper
-                    def __init__(self, iterable=None, **kwargs):
-                        self.iterable = iterable
-                        self.n = 0
-                        self.total = kwargs.get("total")
+    if "tqdm" not in sys.modules:
+        import types
 
-                    def __iter__(self):
-                        return iter(self.iterable or [])
+        module = types.ModuleType("tqdm")
 
-                    def __enter__(self):
-                        return self
+        class _DummyTqdm:  # pragma: no cover - test helper
+            def __init__(self, iterable=None, **kwargs):
+                self.iterable = iterable
+                self.n = 0
+                self.total = kwargs.get("total")
 
-                    def __exit__(self, exc_type, exc, tb):
-                        return False
+            def __iter__(self):
+                return iter(self.iterable or [])
 
-                    def update(self, *args, **kwargs):
-                        return None
+            def __enter__(self):
+                return self
 
-                module.tqdm = _DummyTqdm  # type: ignore[attr-defined]
-            sys.modules[name] = module
-            stubbed_modules[name] = True
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def update(self, *args, **kwargs):
+                return None
+
+        module.tqdm = _DummyTqdm  # type: ignore[attr-defined]
+        sys.modules["tqdm"] = module
+        stubbed_modules["tqdm"] = True
 
     def _import():
         sys.modules.pop("lpm", None)

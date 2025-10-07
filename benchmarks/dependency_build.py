@@ -6,7 +6,6 @@ import sys
 import tempfile
 import textwrap
 import timeit
-import types
 from pathlib import Path
 from unittest import mock
 
@@ -34,47 +33,37 @@ def main():
     repo_root = Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(repo_root))
 
-    for name in ("zstandard", "tqdm"):
-        if name not in sys.modules:
-            module = types.ModuleType(name)
-            if name == "zstandard":
-                class _DummyCompressor:
-                    def stream_writer(self, fh):
-                        return fh
+    if "tqdm" not in sys.modules:
+        import types
 
-                class _DummyDecompressor:
-                    def stream_reader(self, fh):
-                        return fh
+        module = types.ModuleType("tqdm")
 
-                module.ZstdCompressor = _DummyCompressor
-                module.ZstdDecompressor = _DummyDecompressor
-            else:
-                class _DummyTqdm:
-                    def __init__(self, iterable=None, total=None, **kwargs):
-                        self.iterable = iterable or []
-                        self.total = total
-                        self.n = 0
+        class _DummyTqdm:
+            def __init__(self, iterable=None, total=None, **kwargs):
+                self.iterable = iterable or []
+                self.total = total
+                self.n = 0
 
-                    def __iter__(self):
-                        for item in self.iterable:
-                            self.n += 1
-                            yield item
+            def __iter__(self):
+                for item in self.iterable:
+                    self.n += 1
+                    yield item
 
-                    def update(self, n=1):
-                        self.n += n
+            def update(self, n=1):
+                self.n += n
 
-                    def set_description(self, _desc):
-                        return None
+            def set_description(self, _desc):
+                return None
 
-                    def __enter__(self):
-                        return self
+            def __enter__(self):
+                return self
 
-                    def __exit__(self, exc_type, exc, tb):
-                        return False
+            def __exit__(self, exc_type, exc, tb):
+                return False
 
-                module.tqdm = _DummyTqdm  # type: ignore[attr-defined]
+        module.tqdm = _DummyTqdm  # type: ignore[attr-defined]
 
-            sys.modules[name] = module
+        sys.modules["tqdm"] = module
 
     import lpm
 
