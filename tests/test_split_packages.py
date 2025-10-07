@@ -15,20 +15,6 @@ import pytest
 
 def _write_stub_modules(stub_dir: Path) -> None:
     stub_dir.mkdir(parents=True, exist_ok=True)
-    (stub_dir / "zstandard.py").write_text(
-        textwrap.dedent(
-            """
-            class ZstdCompressor:
-                def stream_writer(self, fh):
-                    return fh
-
-            class ZstdDecompressor:
-                def stream_reader(self, fh):
-                    return fh
-            """
-        ),
-        encoding="utf-8",
-    )
     (stub_dir / "tqdm.py").write_text(
         textwrap.dedent(
             """
@@ -75,7 +61,7 @@ def _import_lpm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     if str(stub_dir) not in sys.path:
         sys.path.insert(0, str(stub_dir))
 
-    for mod in ("zstandard", "tqdm", "lpm", "src.config"):
+    for mod in ("tqdm", "lpm", "src.config"):
         sys.modules.pop(mod, None)
 
     return importlib.import_module("lpm")

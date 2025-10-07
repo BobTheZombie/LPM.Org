@@ -54,67 +54,6 @@ def test_buildpkg_handles_old_db_without_symbols(tmp_path):
 
     stub_dir = tmp_path / "stubs"
     stub_dir.mkdir()
-    (stub_dir / "zstandard.py").write_text(
-        """
-class _Writer:
-    def __init__(self, fh):
-        self._fh = fh
-        self._started = False
-
-    def write(self, data):
-        if not self._started:
-            self._fh.write(b"\\x28\\xb5\\x2f\\xfd")
-            self._started = True
-        return self._fh.write(data)
-
-    def flush(self):
-        return self._fh.flush()
-
-    def close(self):
-        return self._fh.close()
-
-    def __enter__(self):
-        if not self._started:
-            self._fh.write(b"\\x28\\xb5\\x2f\\xfd")
-            self._started = True
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-
-class _Compressor:
-    def stream_writer(self, fh):
-        return _Writer(fh)
-
-
-class _Reader:
-    def __init__(self, fh):
-        self._fh = fh
-        self._skipped = False
-
-    def read(self, size=-1):
-        if not self._skipped:
-            self._fh.read(4)
-            self._skipped = True
-        return self._fh.read(size)
-
-    def close(self):
-        return self._fh.close()
-
-    def readable(self):
-        return True
-
-
-class _Decompressor:
-    def stream_reader(self, fh):
-        return _Reader(fh)
-
-
-ZstdCompressor = _Compressor
-ZstdDecompressor = _Decompressor
-"""
-    )
     (stub_dir / "tqdm.py").write_text(
         """
 class tqdm:
