@@ -7,63 +7,42 @@ DIST_DIR = dist
 SRC_FILES := $(shell find src -type f -name '*.py')
 VERSION ?= $(shell $(PYTHON) tools/get_version.py)
 
+NUITKA_FLAGS ?= \
+	--onefile \
+	--include-package=src \
+	--follow-imports \
+	--lto=yes \
+	--jobs=$(shell nproc) \
+	--python-flag=-O
+
 export PYTHONPATH := $(PWD)$(if $(PYTHONPATH),:$(PYTHONPATH),)
 
 BIN_TARGET = $(BUILD_DIR)/$(APP).bin
-HOOK_BUILD_DIR = $(BUILD_DIR)/hooks
 STAGING_DIR = $(DIST_DIR)/$(APP)-$(VERSION)
 TARBALL = $(DIST_DIR)/$(APP)-$(VERSION).tar.gz
 HOOK_SRC = usr/share/lpm/hooks
 LIBLPM_HOOK_SRC = usr/libexec/lpm/hooks
-LIBLPM_HOOK_BUILD_DIR = $(BUILD_DIR)/libexec_hooks
-
-HOOK_PYTHON_SCRIPTS := $(shell $(PYTHON) tools/list_python_hooks.py $(HOOK_SRC))
-HOOK_BINARIES := $(patsubst $(HOOK_SRC)/%, $(HOOK_BUILD_DIR)/%, $(HOOK_PYTHON_SCRIPTS))
-LIBLPM_HOOK_PYTHON_SCRIPTS := $(shell $(PYTHON) tools/list_python_hooks.py $(LIBLPM_HOOK_SRC))
-LIBLPM_HOOK_BINARIES := $(patsubst $(LIBLPM_HOOK_SRC)/%, $(LIBLPM_HOOK_BUILD_DIR)/%, $(LIBLPM_HOOK_PYTHON_SCRIPTS))
 
 .PHONY: all stage tarball clean distclean
 .ONESHELL:
 
-all: $(BIN_TARGET) $(HOOK_BINARIES) $(LIBLPM_HOOK_BINARIES)
+all: $(BIN_TARGET)
 
 $(BIN_TARGET): lpm.py $(SRC_FILES)
 	@mkdir -p $(BUILD_DIR)
-	$(NUITKA) --onefile --include-package=src --follow-imports --output-dir=$(BUILD_DIR) --output-filename=$(APP).bin $(ENTRY)
+	$(NUITKA) $(NUITKA_FLAGS) --output-dir=$(BUILD_DIR) --output-filename=$(APP).bin $(ENTRY)
 
-$(HOOK_BUILD_DIR)/%: $(HOOK_SRC)/%
-	@mkdir -p $(dir $@)
-	$(NUITKA) --onefile --include-package=src --follow-imports --output-dir=$(dir $@) --output-filename=$(notdir $@) $<
-
-$(LIBLPM_HOOK_BUILD_DIR)/%: $(LIBLPM_HOOK_SRC)/%
-	@mkdir -p $(dir $@)
-	$(NUITKA) --onefile --include-package=src --follow-imports --output-dir=$(dir $@) --output-filename=$(notdir $@) $<
-
-$(STAGING_DIR): $(BIN_TARGET) README.md LICENSE etc/lpm/lpm.conf $(HOOK_BINARIES) $(LIBLPM_HOOK_BINARIES)
+$(STAGING_DIR): $(BIN_TARGET) README.md LICENSE etc/lpm/lpm.conf
 	@mkdir -p $(DIST_DIR)
 	@rm -rf $@
 	mkdir -p $@/bin
 	cp $(BIN_TARGET) $@/bin/$(APP)
 	mkdir -p $@/usr/share/lpm
 	cp -R $(HOOK_SRC) $@/usr/share/lpm/
-	if [ -n "$(HOOK_BINARIES)" ]; then \
-		for hook in $(HOOK_BINARIES); do \
-		rel=$${hook#$(HOOK_BUILD_DIR)/}; \
-		dest="$@/usr/share/lpm/hooks/$${rel}"; \
-		install -D -m 0755 "$$hook" "$$dest"; \
-		done; \
-	fi
 	mkdir -p $@/usr/share/liblpm
 	cp -R usr/share/liblpm/hooks $@/usr/share/liblpm/
 	mkdir -p $@/usr/libexec/lpm
 	cp -R $(LIBLPM_HOOK_SRC) $@/usr/libexec/lpm/
-	if [ -n "$(LIBLPM_HOOK_BINARIES)" ]; then \
-		for hook in $(LIBLPM_HOOK_BINARIES); do \
-		rel=$${hook#$(LIBLPM_HOOK_BUILD_DIR)/}; \
-		dest="$@/usr/libexec/lpm/hooks/$${rel}"; \
-		install -D -m 0755 "$$hook" "$$dest"; \
-		done; \
-	fi
 	mkdir -p $@/etc/lpm
 	cp etc/lpm/lpm.conf $@/etc/lpm/lpm.conf
 	cp README.md LICENSE $@
