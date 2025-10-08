@@ -291,7 +291,7 @@ def test_kernel_install_hook(tmp_path, monkeypatch):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "log"
-    for name in ("mkinitcpio", "bootctl", "grub-mkconfig"):
+    for name in ("depmod", "mkinitcpio", "bootctl", "grub-mkconfig"):
         p = bin_dir / name
         p.write_text(f"#!/bin/sh\necho {name} \"$@\" >> {log}\n")
         p.chmod(0o755)
@@ -310,8 +310,10 @@ def test_kernel_install_hook(tmp_path, monkeypatch):
     )
 
     calls = log.read_text().splitlines()
-    expected = f"mkinitcpio -r {root} -k {version} -g {root / 'boot' / f'initrd-{version}.img'}"
-    assert expected in calls
+    depmod_call = f"depmod -b {root} {version}"
+    mkinitcpio_call = f"mkinitcpio -r {root} -k {version} -g {root / 'boot' / f'initrd-{version}.img'}"
+    assert depmod_call in calls
+    assert mkinitcpio_call in calls
     assert "bootctl update" in calls
     assert "grub-mkconfig -o /boot/grub/grub.cfg" in calls
 
@@ -323,7 +325,7 @@ def test_kernel_install_transaction_hook(tmp_path, monkeypatch, system_hook_dir)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "kernel.log"
-    for name in ("mkinitcpio", "bootctl", "grub-mkconfig"):
+    for name in ("depmod", "mkinitcpio", "bootctl", "grub-mkconfig"):
         p = bin_dir / name
         p.write_text(f"#!/bin/sh\necho {name} \"$@\" >> {log}\n")
         p.chmod(0o755)
@@ -343,8 +345,10 @@ def test_kernel_install_transaction_hook(tmp_path, monkeypatch, system_hook_dir)
     txn.run_post_transaction()
 
     calls = log.read_text().splitlines()
-    expected = f"mkinitcpio -r {root} -k {version} -g {root / 'boot' / f'initrd-{version}.img'}"
-    assert expected in calls
+    depmod_call = f"depmod -b {root} {version}"
+    mkinitcpio_call = f"mkinitcpio -r {root} -k {version} -g {root / 'boot' / f'initrd-{version}.img'}"
+    assert depmod_call in calls
+    assert mkinitcpio_call in calls
     assert "bootctl update" in calls
     assert "grub-mkconfig -o /boot/grub/grub.cfg" in calls
 
@@ -356,7 +360,7 @@ def test_kernel_modules_install_transaction_hook(tmp_path, monkeypatch, system_h
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "kernel.log"
-    for name in ("mkinitcpio", "bootctl", "grub-mkconfig"):
+    for name in ("depmod", "mkinitcpio", "bootctl", "grub-mkconfig"):
         p = bin_dir / name
         p.write_text(f"#!/bin/sh\necho {name} \"$@\" >> {log}\n")
         p.chmod(0o755)
@@ -376,8 +380,10 @@ def test_kernel_modules_install_transaction_hook(tmp_path, monkeypatch, system_h
     txn.run_post_transaction()
 
     calls = log.read_text().splitlines()
-    expected = f"mkinitcpio -r {root} -k {version} -g {root / 'boot' / f'initrd-{version}.img'}"
-    assert expected in calls
+    depmod_call = f"depmod -b {root} {version}"
+    mkinitcpio_call = f"mkinitcpio -r {root} -k {version} -g {root / 'boot' / f'initrd-{version}.img'}"
+    assert depmod_call in calls
+    assert mkinitcpio_call in calls
     assert "bootctl update" in calls
     assert "grub-mkconfig -o /boot/grub/grub.cfg" in calls
 

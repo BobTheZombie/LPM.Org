@@ -71,6 +71,14 @@ def _run_mkinitcpio(root: Path, version: str) -> None:
     subprocess.run(args, check=True)
 
 
+def _run_depmod(root: Path, version: str) -> None:
+    args = ["depmod"]
+    if root != Path("/"):
+        args.extend(["-b", str(root)])
+    args.append(version)
+    subprocess.run(args, check=True)
+
+
 def _run_preset(root: Path, preset: str) -> None:
     args = ["mkinitcpio"]
     if root != Path("/"):
@@ -89,6 +97,7 @@ def main(argv: List[str] | None = None) -> None:
 
     ran_any = False
     for version in versions:
+        _run_depmod(root, version)
         _run_mkinitcpio(root, version)
         ran_any = True
 

@@ -288,10 +288,11 @@ combine coarse-grained `.hook` automation with fine-grained per-package logic.
 ### Kernel installation hook
 
 When a kernel package installs files under `/usr/lib/modules/<version>/`, LPM's
-transaction hook invokes `kernel_install`. The default implementation
-regenerates `/boot/initrd-<version>.img` via `mkinitcpio` (respecting any
-`LPM_PRESET` override) and, if available, updates bootloader entries via
-`bootctl` or `grub-mkconfig`.
+transaction hook invokes `kernel_install`. The default implementation runs
+`depmod` for each affected version, regenerates
+`/boot/initrd-<version>.img` via `mkinitcpio` (respecting any `LPM_PRESET`
+override) and, if available, updates bootloader entries via `bootctl` or
+`grub-mkconfig`.
 
 ## Solver heuristics
 
