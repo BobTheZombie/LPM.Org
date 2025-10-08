@@ -34,6 +34,13 @@ stand-alone binary. Running `make` (or the explicit `make all`) will use the
 Python interpreter discovered on `PATH` and place the compiled executable in
 `build/nuitka/lpm.bin`.
 
+### Build prerequisites
+
+On Linux, Nuitka's onefile mode requires [`patchelf`](https://nixos.org/patchelf)
+to be available on the build host. Install it with your system package manager
+before running `make`; for example, `apt-get install patchelf` on Debian and
+Ubuntu derivatives.
+
 ### Using a static libpython
 
 Static linking is controlled by the `STATIC_LIBPYTHON` make variable:
@@ -53,6 +60,18 @@ make STATIC_LIBPYTHON=yes
 Set `PYTHON=/path/to/python` if you need to build with a specific interpreter.
 When a static archive is detected the make output includes the file that will
 be linked so you can confirm which Python installation is being used.
+
+### Nuitka toolchain status
+
+The `develop` branch of `https://github.com/BobTheZombie/Nuitka.git` at commit
+`43502b8cd001214ccf7c040d2f39c336b7221a2e` (tagged `Nuitka-2.8rc16`) remained
+the latest upstream revision when checked on 2025-10-08 at 18:44 UTC. Running
+`make all` on that date reinstalled Nuitka from the repository and produced
+`build/nuitka/lpm.bin`. The Makefile now performs a fresh `pip install` of
+Nuitka from the checked-out revision on every build, guaranteeing the embedded
+toolchain is recreated even when the upstream commit hash has not changed.
+Future updates should re-run the build to refresh this section with the new
+commit hash.
 
 ## Command line interface
 
