@@ -1,5 +1,7 @@
 PYTHON ?= python3
 NUITKA ?= $(PYTHON) -m nuitka
+NUITKA_REPO ?= https://github.com/BobTheZombie/Nuitka.git
+NUITKA_REF ?= develop
 APP = lpm
 ENTRY = $(PWD)/lpm.py
 BUILD_DIR = build/nuitka
@@ -48,13 +50,36 @@ STAGING_DIR = $(DIST_DIR)/$(APP)-$(VERSION)
 TARBALL = $(DIST_DIR)/$(APP)-$(VERSION).tar.gz
 HOOK_SRC = usr/share/lpm/hooks
 LIBLPM_HOOK_SRC = usr/libexec/lpm/hooks
+NUITKA_SOURCE_DIR ?= build/nuitka-src
+NUITKA_STAMP := $(NUITKA_SOURCE_DIR)/.installed-commit
+NUITKA_STAMP_FILE := $(abspath $(NUITKA_STAMP))
 
 .PHONY: all stage tarball clean distclean
 .ONESHELL:
 
 all: $(BIN_TARGET)
 
-$(BIN_TARGET): lpm.py $(SRC_FILES)
+$(NUITKA_SOURCE_DIR):
+	@mkdir -p $(dir $(NUITKA_SOURCE_DIR))
+	@if [ -d $(NUITKA_SOURCE_DIR)/.git ]; then \
+		git -C $(NUITKA_SOURCE_DIR) remote set-url origin $(NUITKA_REPO); \
+	else \
+		git clone --depth=1 --branch $(NUITKA_REF) $(NUITKA_REPO) $(NUITKA_SOURCE_DIR); \
+	fi
+	@git -C $(NUITKA_SOURCE_DIR) fetch origin $(NUITKA_REF)
+	@git -C $(NUITKA_SOURCE_DIR) checkout $(NUITKA_REF)
+	@git -C $(NUITKA_SOURCE_DIR) reset --hard origin/$(NUITKA_REF)
+
+$(NUITKA_STAMP): | $(NUITKA_SOURCE_DIR)
+	@REV=$$(git -C $(NUITKA_SOURCE_DIR) rev-parse HEAD); \
+	CURRENT=$$(cat "$(NUITKA_STAMP_FILE)" 2>/dev/null || true); \
+	if [ ! -f "$(NUITKA_STAMP_FILE)" ] || [ "$$REV" != "$$CURRENT" ]; then \
+		$(PYTHON) -m pip install --upgrade pip wheel; \
+		cd $(NUITKA_SOURCE_DIR) && $(PYTHON) -m pip install --upgrade .; \
+		echo "$$REV" > "$(NUITKA_STAMP_FILE)"; \
+	fi
+
+$(BIN_TARGET): $(NUITKA_STAMP) lpm.py $(SRC_FILES)
 	@mkdir -p $(BUILD_DIR)
 	$(NUITKA) $(NUITKA_FLAGS) --output-dir=$(BUILD_DIR) --output-filename=$(APP).bin $(ENTRY)
 
