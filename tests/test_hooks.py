@@ -98,6 +98,7 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
     (root / "usr/share/fonts/OTF").mkdir(parents=True)
     (root / "usr/share/fonts/OTF/foo.otf").write_text("")
     (root / "usr/lib/gio/modules").mkdir(parents=True)
+    (root / "etc/pki/nssdb").mkdir(parents=True)
     loader_dir = root / "usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"
     loader_dir.mkdir(parents=True)
     (loader_dir / "libpixbufloader-svg.so").write_text("")
@@ -115,6 +116,7 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
         "systemd-sysusers",
         "systemd-tmpfiles",
         "udevadm",
+        "modutil",
     ):
         p = bin_dir / name
         p.write_text(f"#!/bin/sh\necho {name} \"$@\" >> {log}\n")
@@ -157,6 +159,7 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
             "/usr/lib/udev/hwdb.d/20-foo.hwdb",
             "/usr/lib/gio/modules/libfoo.so",
             "/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-svg.so",
+            "/usr/lib/pkcs11/libfoo-pkcs11.so",
         ],
     )
     txn.ensure_pre_transaction()
@@ -207,6 +210,10 @@ def test_system_hooks_run_via_transaction_manager(tmp_path, monkeypatch, system_
         and f"GDK_PIXBUF_MODULE_FILE={loader_dir.parent / 'loaders.cache'}" in line
         for line in calls
     )
+    expected_modutil = (
+        f"modutil --dbdir sql:{root / 'etc/pki/nssdb'} --force --list"
+    )
+    assert any(line == expected_modutil for line in calls)
 
 
 def test_ldconfig_runs_only_for_real_root(tmp_path, monkeypatch, system_hook_dir):
