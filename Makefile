@@ -46,10 +46,9 @@ TARBALL = $(DIST_DIR)/$(APP)-$(VERSION).tar.gz
 HOOK_SRC = usr/share/lpm/hooks
 LIBLPM_HOOK_SRC = usr/libexec/lpm/hooks
 NUITKA_SOURCE_DIR ?= build/nuitka-src
-NUITKA_STAMP := $(NUITKA_SOURCE_DIR)/.installed-commit
-NUITKA_STAMP_FILE := $(abspath $(NUITKA_STAMP))
+NUITKA_STAMP_FILE := $(abspath $(NUITKA_SOURCE_DIR)/.installed-commit)
 
-.PHONY: all stage tarball clean distclean
+.PHONY: all stage tarball clean distclean nuitka-install
 .ONESHELL:
 
 all: $(BIN_TARGET)
@@ -65,16 +64,13 @@ $(NUITKA_SOURCE_DIR):
 	@git -C $(NUITKA_SOURCE_DIR) checkout $(NUITKA_REF)
 	@git -C $(NUITKA_SOURCE_DIR) reset --hard origin/$(NUITKA_REF)
 
-$(NUITKA_STAMP): | $(NUITKA_SOURCE_DIR)
+nuitka-install: | $(NUITKA_SOURCE_DIR)
 	@REV=$$(git -C $(NUITKA_SOURCE_DIR) rev-parse HEAD); \
-	CURRENT=$$(cat "$(NUITKA_STAMP_FILE)" 2>/dev/null || true); \
-	if [ ! -f "$(NUITKA_STAMP_FILE)" ] || [ "$$REV" != "$$CURRENT" ]; then \
-		$(PYTHON) -m pip install --upgrade pip wheel; \
-		cd $(NUITKA_SOURCE_DIR) && $(PYTHON) -m pip install --upgrade .; \
-		echo "$$REV" > "$(NUITKA_STAMP_FILE)"; \
-	fi
+	$(PYTHON) -m pip install --upgrade pip wheel; \
+	cd $(NUITKA_SOURCE_DIR) && $(PYTHON) -m pip install --upgrade .; \
+	echo "$$REV" > "$(NUITKA_STAMP_FILE)"
 
-$(BIN_TARGET): $(NUITKA_STAMP) lpm.py $(SRC_FILES)
+$(BIN_TARGET): nuitka-install lpm.py $(SRC_FILES)
 	@mkdir -p $(BUILD_DIR)
 	$(NUITKA) $(NUITKA_FLAGS) --output-dir=$(BUILD_DIR) --output-filename=$(APP).bin $(ENTRY)
 
