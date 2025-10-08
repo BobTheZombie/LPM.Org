@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import shlex
@@ -329,7 +330,7 @@ class HookTransactionManager:
 
     def _run_hook(self, hook: Hook, targets: List[str]) -> None:
         action = hook.action
-        argv = list(action.exec)
+        base_argv = list(action.exec)
         env = os.environ.copy()
         env.update(self.base_env)
         env.update(
@@ -343,9 +344,21 @@ class HookTransactionManager:
         if action.needs_targets:
             env["LPM_TARGET_COUNT"] = str(len(targets))
             env["LPM_TARGETS"] = "\n".join(targets)
-            argv.extend(targets)
+            argv = base_argv + targets
+        else:
+            argv = base_argv
         try:
             subprocess.run(argv, check=True, env=env)
+        except OSError as exc:
+            if exc.errno == errno.E2BIG and action.needs_targets:
+                logger.warning(
+                    "Hook %s command line exceeded argument limits; "
+                    "retrying without target arguments",
+                    hook.name,
+                )
+                subprocess.run(base_argv, check=True, env=env)
+                return
+            raise
         except subprocess.CalledProcessError as exc:
             logger.error("Hook %s failed: %s", hook.name, exc)
             if action.abort_on_fail:
