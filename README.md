@@ -25,6 +25,33 @@ end-user command in depth, including configuration, repository management,
 package workflows, snapshotting, verification, and package creation. Refer to
 it whenever you need detailed examples or flag reference material.
 
+## Building LPM
+
+The project ships with a `Makefile` that invokes Nuitka to produce a
+stand-alone binary. Running `make` (or the explicit `make all`) will use the
+Python interpreter discovered on `PATH` and place the compiled executable in
+`build/nuitka/lpm.bin`.
+
+### Using a static libpython
+
+Static linking is controlled by the `STATIC_LIBPYTHON` make variable:
+
+```sh
+# Possible values: auto (default), yes, or no
+make STATIC_LIBPYTHON=yes
+```
+
+- `auto` attempts to locate a `libpython*.a` archive for the selected Python
+  interpreter and enables Nuitka's `--static-libpython` flag when the archive
+  is present.
+- `yes` requires the archive to exist; the build aborts if it cannot be
+  located.
+- `no` always uses the shared `libpython`.
+
+Set `PYTHON=/path/to/python` if you need to build with a specific interpreter.
+When a static archive is detected the make output includes the file that will
+be linked so you can confirm which Python installation is being used.
+
 ## Command line interface
 
 `lpm` uses sub‑commands. Each command listed below shows its required
