@@ -329,7 +329,7 @@ class HookTransactionManager:
             raise HookError(f"Cyclic or unresolved hook dependencies: {', '.join(sorted(missing))}")
         return resolved
 
-    def _run_hook(self, hook: Hook, targets: List[str]) -> None:
+def _run_hook(self, hook: Hook, targets: List[str]) -> None:
         action = hook.action
         base_argv = list(action.exec)
         env = os.environ.copy()
@@ -346,6 +346,19 @@ class HookTransactionManager:
             env["LPM_TARGET_COUNT"] = str(len(targets))
             env["LPM_TARGETS"] = "\n".join(targets)
             argv = base_argv + targets
+            if _should_use_temp_targets(argv, env):
+                logger.info(
+                    "Hook %s command line would exceed safe argument limits; "
+                    "using temporary targets file",
+                    hook.name,
+                )
+                _run_hook_with_temp_targets(
+                    base_argv=base_argv,
+                    env=env,
+                    hook_name=hook.name,
+                    targets=targets,
+                )
+                return
         else:
             argv = base_argv
         try:
@@ -369,6 +382,36 @@ class HookTransactionManager:
             logger.error("Hook %s failed: %s", hook.name, exc)
             if action.abort_on_fail:
                 raise
+
+
+def _should_use_temp_targets(
+    argv: Sequence[str], env: Mapping[str, str]
+) -> bool:
+    arg_max = _get_arg_max()
+    if arg_max <= 0:
+        return False
+    size = _estimate_command_size(argv, env)
+    threshold = max(arg_max - 4096, int(arg_max * 0.8))
+    return size >= threshold
+
+
+def _estimate_command_size(argv: Sequence[str], env: Mapping[str, str]) -> int:
+    size = 0
+    for value in argv:
+        size += len(value) + 1
+    for key, value in env.items():
+        size += len(key) + len(value) + 2
+    return size
+
+
+def _get_arg_max() -> int:
+    try:
+        arg_max = os.sysconf("SC_ARG_MAX")
+    except (ValueError, OSError, AttributeError):
+        return 0
+    if isinstance(arg_max, int) and arg_max > 0:
+        return arg_max
+    return 0
 
 
 def _run_hook_with_temp_targets(

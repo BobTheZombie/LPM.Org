@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -9,6 +10,19 @@ from pathlib import Path
 from typing import Iterable, List
 
 from _targets import collect_targets
+
+
+def _log(message: str) -> None:
+    print(f"[lpm:kernel-install] {message}", flush=True)
+
+
+def _format_command(args: Iterable[str]) -> str:
+    return " ".join(shlex.quote(str(part)) for part in args)
+
+
+def _run_command(args: List[str], *, check: bool = True) -> subprocess.CompletedProcess:
+    _log(f"Running: {_format_command(args)}")
+    return subprocess.run(args, check=check)
 
 
 def _extract_module_version(target: str) -> str | None:
@@ -51,7 +65,7 @@ def _run_mkinitcpio(root: Path, version: str) -> None:
     if root != Path("/"):
         args.extend(["-r", str(root)])
     args.extend(["-k", version, "-g", str(output)])
-    subprocess.run(args, check=True)
+    _run_command(args)
 
 
 def _run_depmod(root: Path, version: str) -> None:
@@ -59,7 +73,7 @@ def _run_depmod(root: Path, version: str) -> None:
     if root != Path("/"):
         args.extend(["-b", str(root)])
     args.append(version)
-    subprocess.run(args, check=True)
+    _run_command(args)
 
 
 def _run_preset(root: Path, preset: str) -> None:
@@ -67,7 +81,7 @@ def _run_preset(root: Path, preset: str) -> None:
     if root != Path("/"):
         args.extend(["-r", str(root)])
     args.extend(["-p", preset])
-    subprocess.run(args, check=True)
+    _run_command(args)
 
 
 def main(argv: List[str] | None = None) -> None:
@@ -75,11 +89,19 @@ def main(argv: List[str] | None = None) -> None:
         argv = sys.argv[1:]
 
     root = Path(os.environ.get("LPM_ROOT", "/"))
+    _log(f"Using root: {root}")
     versions = _collect_versions(argv)
+    if versions:
+        _log(f"Detected kernel versions: {', '.join(versions)}")
+    else:
+        _log("No kernel versions detected from hook targets")
     preset = os.environ.get("LPM_PRESET", "").strip()
+    if preset:
+        _log(f"Using mkinitcpio preset: {preset}")
 
     ran_any = False
     for version in versions:
+        _log(f"Processing kernel version: {version}")
         _run_depmod(root, version)
         _run_mkinitcpio(root, version)
         ran_any = True
@@ -89,13 +111,18 @@ def main(argv: List[str] | None = None) -> None:
         ran_any = True
 
     if not ran_any:
+        _log("No actions to perform; exiting")
         return
 
     if shutil.which("bootctl"):
-        subprocess.run(["bootctl", "update"], check=False)
+        _run_command(["bootctl", "update"], check=False)
+    else:
+        _log("Skipping systemd-boot update; bootctl not found")
 
     if shutil.which("grub-mkconfig"):
-        subprocess.run(["grub-mkconfig", "-o", "/boot/grub/grub.cfg"], check=False)
+        _run_command(["grub-mkconfig", "-o", "/boot/grub/grub.cfg"], check=False)
+    else:
+        _log("Skipping GRUB configuration update; grub-mkconfig not found")
 
 
 if __name__ == "__main__":
