@@ -1938,16 +1938,6 @@ def do_install(
             warn(f"install {pkg.name}: {e}")
             continue
 
-        if not dry and meta and getattr(meta, "kernel", False):
-            run_hook(
-                "kernel_install",
-                {
-                    "LPM_PKG": meta.name,
-                    "LPM_VERSION": meta.version,
-                    "LPM_PRESET": meta.mkinitcpio_preset or "",
-                },
-            )
-
     if hook_txn is not None:
         hook_txn.run_post_transaction()
 
@@ -2030,16 +2020,7 @@ def do_upgrade(targets: List[str], root: Path, dry: bool, verify: bool, force: b
         warn("SAT solver failed to find upgrade set, falling back to GitLab fetch...")
         for dep in targets:
             built = build_from_gitlab(dep)
-            meta = installpkg(built, root=root, dry_run=dry, verify=verify, force=force, explicit=True)
-            if not dry and meta and getattr(meta, "kernel", False):
-                run_hook(
-                    "kernel_install",
-                    {
-                        "LPM_PKG": meta.name,
-                        "LPM_VERSION": meta.version,
-                        "LPM_PRESET": meta.mkinitcpio_preset or "",
-                    },
-                )
+            installpkg(built, root=root, dry_run=dry, verify=verify, force=force, explicit=True)
         return
 
     upgrades = []

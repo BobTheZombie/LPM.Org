@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 import os
-import shutil
-import subprocess
+import sys
+from pathlib import Path
 
-preset = os.environ.get("LPM_PRESET", "default")
-subprocess.run(["mkinitcpio", "-p", preset], check=True)
 
-if shutil.which("bootctl"):
-    subprocess.run(["bootctl", "update"], check=False)
+def main() -> None:
+    base = Path(__file__).resolve()
+    candidates = [
+        base.parents[3] / "libexec" / "lpm" / "hooks" / "kernel-install",
+        Path("/usr/libexec/lpm/hooks/kernel-install"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            os.execv(str(candidate), [str(candidate), *sys.argv[1:]])
+    raise FileNotFoundError("kernel-install helper not found in libexec")
 
-if shutil.which("grub-mkconfig"):
-    subprocess.run(["grub-mkconfig", "-o", "/boot/grub/grub.cfg"], check=False)
+
+if __name__ == "__main__":
+    main()
