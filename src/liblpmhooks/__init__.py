@@ -5,6 +5,7 @@ import logging
 import os
 import shlex
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
@@ -356,13 +357,45 @@ class HookTransactionManager:
                     "retrying without target arguments",
                     hook.name,
                 )
-                subprocess.run(base_argv, check=True, env=env)
+                _run_hook_with_temp_targets(
+                    base_argv=base_argv,
+                    env=env,
+                    hook_name=hook.name,
+                    targets=targets,
+                )
                 return
             raise
         except subprocess.CalledProcessError as exc:
             logger.error("Hook %s failed: %s", hook.name, exc)
             if action.abort_on_fail:
                 raise
+
+
+def _run_hook_with_temp_targets(
+    *, base_argv: Sequence[str], env: Mapping[str, str], hook_name: str, targets: Sequence[str]
+) -> None:
+    """Execute *base_argv* with target data stored in a temporary file."""
+
+    temp_path: Optional[str] = None
+    try:
+        with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as fh:
+            temp_path = fh.name
+            for target in targets:
+                fh.write(f"{target}\n")
+        fallback_env = dict(env)
+        fallback_env.pop("LPM_TARGETS", None)
+        fallback_env["LPM_TARGETS_FILE"] = temp_path
+        fallback_env["LPM_TARGET_COUNT"] = str(len(targets))
+        subprocess.run(base_argv, check=True, env=fallback_env)
+    finally:
+        if temp_path is not None:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                logger.warning(
+                    "Unable to clean up temporary targets file for hook %s", hook_name,
+                    exc_info=True,
+                )
 
 
 def _normalize_path(path: str) -> str:
