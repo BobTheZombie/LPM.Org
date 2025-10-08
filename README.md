@@ -287,10 +287,11 @@ combine coarse-grained `.hook` automation with fine-grained per-package logic.
 
 ### Kernel installation hook
 
-When a package flagged as a kernel is installed, LPM invokes the `kernel_install`
-hook. The default Python implementation regenerates the initramfs using
-`mkinitcpio` and, if available, updates bootloader entries via `bootctl` or
-`grub-mkconfig`.
+When a kernel package installs files under `/usr/lib/modules/<version>/`, LPM's
+transaction hook invokes `kernel_install`. The default implementation
+regenerates `/boot/initrd-<version>.img` via `mkinitcpio` (respecting any
+`LPM_PRESET` override) and, if available, updates bootloader entries via
+`bootctl` or `grub-mkconfig`.
 
 ## Solver heuristics
 

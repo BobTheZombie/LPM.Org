@@ -297,10 +297,54 @@ def test_kernel_install_hook(tmp_path, monkeypatch):
         p.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
 
-    lpm.run_hook("kernel_install", {"LPM_PRESET": "test"})
+    root = tmp_path / "root"
+    root.mkdir()
+    version = "1.2.3-lpm"
+
+    lpm.run_hook(
+        "kernel_install",
+        {
+            "LPM_VERSION": version,
+            "LPM_ROOT": str(root),
+        },
+    )
 
     calls = log.read_text().splitlines()
-    assert "mkinitcpio -p test" in calls
+    expected = f"mkinitcpio -r {root} -k {version} -g {root / 'boot' / f'initrd-{version}.img'}"
+    assert expected in calls
+    assert "bootctl update" in calls
+    assert "grub-mkconfig -o /boot/grub/grub.cfg" in calls
+
+
+def test_kernel_install_transaction_hook(tmp_path, monkeypatch, system_hook_dir):
+    root = tmp_path / "root"
+    root.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "kernel.log"
+    for name in ("mkinitcpio", "bootctl", "grub-mkconfig"):
+        p = bin_dir / name
+        p.write_text(f"#!/bin/sh\necho {name} \"$@\" >> {log}\n")
+        p.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    hooks = load_hooks([system_hook_dir])
+    txn = HookTransactionManager(hooks=hooks, root=root)
+    version = "6.7.8-lpm"
+    txn.add_package_event(
+        name="linux-lpm",
+        operation="Install",
+        version=version,
+        release="1",
+        paths=[f"/usr/lib/modules/{version}/vmlinuz"],
+    )
+    txn.ensure_pre_transaction()
+    txn.run_post_transaction()
+
+    calls = log.read_text().splitlines()
+    expected = f"mkinitcpio -r {root} -k {version} -g {root / 'boot' / f'initrd-{version}.img'}"
+    assert expected in calls
     assert "bootctl update" in calls
     assert "grub-mkconfig -o /boot/grub/grub.cfg" in calls
 

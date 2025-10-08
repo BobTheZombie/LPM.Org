@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Iterable, List
+
+
+def _dedupe(items: Iterable[str]) -> List[str]:
+    seen = set()
+    order: List[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            order.append(item)
+    return order
+
+
+def _collect_target_paths(argv: Iterable[str]) -> List[str]:
+    env_targets = os.environ.get("LPM_TARGETS", "")
+    values: List[str] = []
+    if env_targets:
+        for line in env_targets.splitlines():
+            line = line.strip()
+            if line:
+                values.append(line)
+    for arg in argv:
+        text = str(arg).strip()
+        if text:
+            values.append(text)
+    return _dedupe(values)
+
+
+def _extract_module_version(target: str) -> str | None:
+    path = Path(target)
+    if not path.is_absolute():
+        path = Path("/") / path
+    parts = path.parts
+    try:
+        idx = parts.index("modules")
+    except ValueError:
+        return None
+    if idx + 1 >= len(parts):
+        return None
+    version = parts[idx + 1]
+    return version or None
+
+
+def _collect_versions(argv: Iterable[str]) -> List[str]:
+    versions: List[str] = []
+    for target in _collect_target_paths(argv):
+        version = _extract_module_version(target)
+        if version:
+            versions.append(version)
+    env_version = os.environ.get("LPM_VERSION", "").strip()
+    if env_version:
+        versions.append(env_version)
+    return _dedupe(versions)
+
+
+def _run_mkinitcpio(root: Path, version: str) -> None:
+    output = root / "boot" / f"initrd-{version}.img"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    args = ["mkinitcpio"]
+    if root != Path("/"):
+        args.extend(["-r", str(root)])
+    args.extend(["-k", version, "-g", str(output)])
+    subprocess.run(args, check=True)
+
+
+def _run_preset(root: Path, preset: str) -> None:
+    args = ["mkinitcpio"]
+    if root != Path("/"):
+        args.extend(["-r", str(root)])
+    args.extend(["-p", preset])
+    subprocess.run(args, check=True)
+
+
+def main(argv: List[str] | None = None) -> None:
+    if argv is None:
+        argv = sys.argv[1:]
+
+    root = Path(os.environ.get("LPM_ROOT", "/"))
+    versions = _collect_versions(argv)
+    preset = os.environ.get("LPM_PRESET", "").strip()
+
+    ran_any = False
+    for version in versions:
+        _run_mkinitcpio(root, version)
+        ran_any = True
+
+    if preset:
+        _run_preset(root, preset)
+        ran_any = True
+
+    if not ran_any:
+        return
+
+    if shutil.which("bootctl"):
+        subprocess.run(["bootctl", "update"], check=False)
+
+    if shutil.which("grub-mkconfig"):
+        subprocess.run(["grub-mkconfig", "-o", "/boot/grub/grub.cfg"], check=False)
+
+
+if __name__ == "__main__":
+    main()
