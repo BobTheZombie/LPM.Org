@@ -102,6 +102,13 @@ contents and runs common maintenance commands based on what it finds:
   usr/lib/libfoo.so
   ```
   trigger `ldconfig` when installing into the real root (`/`).
+- Module catalogs such as
+  ```
+  usr/lib/gio/modules/libfoo.so
+  usr/lib/pkcs11/libfoo.so
+  ```
+  regenerate via transaction hooks that call `gio-querymodules` and `modutil`
+  to keep the runtime caches in sync.
 
 ### Snapshot management
 

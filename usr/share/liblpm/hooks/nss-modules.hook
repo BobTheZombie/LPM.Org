@@ -1,0 +1,18 @@
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Target = usr/lib/nss/*.so
+Target = usr/lib/pkcs11/*.so
+Target = usr/lib32/nss/*.so
+Target = usr/lib32/pkcs11/*.so
+Target = usr/lib64/nss/*.so
+Target = usr/lib64/pkcs11/*.so
+Target = usr/libx32/nss/*.so
+Target = usr/libx32/pkcs11/*.so
+
+[Action]
+When = PostTransaction
+Exec = /usr/libexec/lpm/hooks/nss-modules
+NeedsTargets = true

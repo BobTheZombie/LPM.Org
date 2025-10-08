@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Iterable, List
+
+from _targets import collect_targets
+
+_LIBDIR_PREFIX = ("lib", "lib32", "lib64", "libx32")
+_MODULE_DIRS = {"nss", "pkcs11"}
+_DB_DIRS = [Path("etc/pki/nssdb"), Path("etc/ssl/nssdb")]
+
+
+def _is_nss_module(path: Path) -> bool:
+    parts = path.parts
+    if len(parts) < 3:
+        return False
+    if parts[0] != "usr":
+        return False
+    libdir = parts[1]
+    if not libdir.startswith(_LIBDIR_PREFIX):
+        return False
+    if parts[2] not in _MODULE_DIRS:
+        return False
+    return path.suffix == ".so"
+
+
+def _needs_regeneration(targets: Iterable[str]) -> bool:
+    for target in targets:
+        if not target:
+            continue
+        rel_text = target.lstrip("/")
+        if not rel_text:
+            continue
+        rel_path = Path(rel_text)
+        if _is_nss_module(rel_path):
+            return True
+    return False
+
+
+def _iter_db_dirs(root: Path) -> List[Path]:
+    result: List[Path] = []
+    for rel in _DB_DIRS:
+        path = root / rel
+        if path.is_dir():
+            result.append(path)
+    return result
+
+
+def _db_uri(path: Path) -> str:
+    # Prefer the SQL-backed database when the modern files exist.
+    if any(path.glob(pattern) for pattern in ("cert9.db", "key4.db", "pkcs11.txt")):
+        return f"sql:{path}"
+    return str(path)
+
+
+def main(argv: List[str]) -> None:
+    targets = collect_targets(argv)
+    if not _needs_regeneration(targets):
+        return
+    tool = shutil.which("modutil")
+    if not tool:
+        return
+    root = Path(os.environ.get("LPM_ROOT", "/"))
+    db_dirs = _iter_db_dirs(root)
+    if not db_dirs:
+        return
+    for db_dir in db_dirs:
+        subprocess.run(
+            [tool, "--dbdir", _db_uri(db_dir), "--force", "--list"],
+            check=False,
+        )
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
