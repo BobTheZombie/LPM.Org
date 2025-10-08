@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import compileall
+import os
+import sys
+from pathlib import Path
+from typing import Iterable, List, Sequence, Set
+
+from _targets import collect_targets
+
+PY_EXTENSIONS = {".py", ".pyw", ".pyi"}
+
+
+def _normalize(path: str) -> str:
+    return str(path).strip()
+
+
+def _iter_directories(root: Path, targets: Iterable[str]) -> List[Path]:
+    seen: Set[Path] = set()
+    directories: List[Path] = []
+    for target in targets:
+        rel = _normalize(target).lstrip("/")
+        if not rel:
+            continue
+        candidate = root / rel
+        if candidate.is_dir():
+            directory = candidate
+        elif candidate.suffix.lower() in PY_EXTENSIONS and candidate.parent.is_dir():
+            directory = candidate.parent
+        else:
+            continue
+        if directory not in seen:
+            seen.add(directory)
+            directories.append(directory)
+    if directories:
+        return directories
+    base = root / "usr/lib"
+    if base.is_dir():
+        for site in sorted(base.glob("python*/site-packages")):
+            if site.is_dir() and site not in seen:
+                seen.add(site)
+                directories.append(site)
+    return directories
+
+
+def _compile_directories(paths: Sequence[Path]) -> bool:
+    success = True
+    for directory in paths:
+        for optimize in (0, 1):
+            if not compileall.compile_dir(
+                str(directory),
+                maxlevels=10,
+                force=True,
+                optimize=optimize,
+                quiet=1,
+                workers=0,
+            ):
+                success = False
+    return success
+
+
+def main(argv: Sequence[str]) -> int:
+    root = Path(os.environ.get("LPM_ROOT", "/"))
+    directories = _iter_directories(root, collect_targets(argv))
+    if not directories:
+        return 0
+    ok = _compile_directories(directories)
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,12 @@
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Target = usr/lib/python*/site-packages/*.py
+Target = usr/lib/python*/site-packages/*.pyw
+Target = usr/lib/python*/site-packages/*.pyi
+
+[Action]
+When = PostTransaction
+Exec = /usr/libexec/lpm/hooks/python-compileall
+NeedsTargets = true
