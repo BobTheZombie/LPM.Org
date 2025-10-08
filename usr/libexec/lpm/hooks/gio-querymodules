@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Iterable, List, Set, Tuple
 
+from _targets import collect_targets
+
 
 def _iter_module_dirs(root: Path, targets: Iterable[str]) -> List[Tuple[Path, Path]]:
     seen: Set[Path] = set()
@@ -37,7 +39,7 @@ def main(argv: List[str]) -> None:
     if not tool:
         return
     root = Path(os.environ.get("LPM_ROOT", "/"))
-    modules = _iter_module_dirs(root, argv)
+    modules = _iter_module_dirs(root, collect_targets(argv))
     for module_dir, rel_dir in modules:
         output = root / rel_dir / "giomodule.cache"
         subprocess.run(

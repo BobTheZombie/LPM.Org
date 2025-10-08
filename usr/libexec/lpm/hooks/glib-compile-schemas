@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Iterable, List, Set
 
+from _targets import collect_targets
+
 
 def _iter_schema_dirs(root: Path, targets: Iterable[str]) -> List[Path]:
     seen: Set[Path] = set()
@@ -30,7 +32,7 @@ def main(argv: List[str]) -> None:
     if not tool:
         return
     root = Path(os.environ.get("LPM_ROOT", "/"))
-    for directory in _iter_schema_dirs(root, argv):
+    for directory in _iter_schema_dirs(root, collect_targets(argv)):
         subprocess.run(
             [tool, f"--targetdir={directory}", str(directory)],
             check=False,

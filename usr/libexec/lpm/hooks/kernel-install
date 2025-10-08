@@ -8,30 +8,7 @@ import sys
 from pathlib import Path
 from typing import Iterable, List
 
-
-def _dedupe(items: Iterable[str]) -> List[str]:
-    seen = set()
-    order: List[str] = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            order.append(item)
-    return order
-
-
-def _collect_target_paths(argv: Iterable[str]) -> List[str]:
-    env_targets = os.environ.get("LPM_TARGETS", "")
-    values: List[str] = []
-    if env_targets:
-        for line in env_targets.splitlines():
-            line = line.strip()
-            if line:
-                values.append(line)
-    for arg in argv:
-        text = str(arg).strip()
-        if text:
-            values.append(text)
-    return _dedupe(values)
+from _targets import collect_targets
 
 
 def _extract_module_version(target: str) -> str | None:
@@ -51,14 +28,20 @@ def _extract_module_version(target: str) -> str | None:
 
 def _collect_versions(argv: Iterable[str]) -> List[str]:
     versions: List[str] = []
-    for target in _collect_target_paths(argv):
+    for target in collect_targets(argv):
         version = _extract_module_version(target)
         if version:
             versions.append(version)
     env_version = os.environ.get("LPM_VERSION", "").strip()
     if env_version:
         versions.append(env_version)
-    return _dedupe(versions)
+    seen = set()
+    ordered: List[str] = []
+    for value in versions:
+        if value not in seen:
+            seen.add(value)
+            ordered.append(value)
+    return ordered
 
 
 def _run_mkinitcpio(root: Path, version: str) -> None:

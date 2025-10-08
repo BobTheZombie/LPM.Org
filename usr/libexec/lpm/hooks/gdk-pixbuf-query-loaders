@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Iterable, List, Set, Tuple
 
+from _targets import collect_targets
+
 
 def _iter_loader_dirs(root: Path, targets: Iterable[str]) -> List[Tuple[Path, Path]]:
     seen: Set[Path] = set()
@@ -38,7 +40,7 @@ def main(argv: List[str]) -> None:
     if not tool:
         return
     root = Path(os.environ.get("LPM_ROOT", "/"))
-    for module_dir, module_file in _iter_loader_dirs(root, argv):
+    for module_dir, module_file in _iter_loader_dirs(root, collect_targets(argv)):
         env = os.environ.copy()
         env.update(
             {
