@@ -16,18 +16,24 @@ License: MIT
 """
 
 from __future__ import annotations
-import argparse, contextlib, dataclasses, errno, fnmatch, hashlib, io, json, os, re, shlex, shutil, sqlite3, stat, subprocess, sys, tarfile, tempfile, time, urllib.parse
+import argparse, contextlib, dataclasses, errno, fnmatch, io, json, os, re, shlex, shutil, stat, subprocess, sys, tarfile, tempfile, time, urllib.parse
 from email.parser import Parser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Iterable, Callable, BinaryIO
+from typing import Dict, Iterable, List, Optional, Set, Tuple, Callable, BinaryIO
 from collections import deque
 import zstandard as zstd
 from packaging.markers import default_environment
 from packaging.requirements import Requirement
 from packaging.specifiers import Specifier, SpecifierSet
 from packaging.utils import canonicalize_name
+
+try:  # sqlite3 may be unavailable on static libpython builds
+    import sqlite3  # type: ignore[import]
+except Exception:  # pragma: no cover - exercised when sqlite3 is missing
+    sqlite3 = None  # type: ignore[assignment]
+
 
 _TAR_EXTRACT_ERRORS = (tarfile.ExtractError,)
 if hasattr(tarfile, "FilterError"):
@@ -108,6 +114,7 @@ from src.installgen import generate_install_script
 from src.solver import CNF, CDCLSolver
 from src.first_run_ui import run_first_run_wizard
 from src.liblpmhooks import HookTransactionManager, load_hooks
+from src.hashutils import new_sha256, sha256_hexdigest
 
 # =========================== Protected packages ===============================
 PROTECTED_FILE = Path("/etc/lpm/protected.json")
@@ -506,6 +513,11 @@ def load_universe() -> Dict[str, List[PkgMeta]]:
     return out
 
 # =========================== SQLite state =====================================
+_FALLBACK_DB_ENABLED = sqlite3 is None
+_FALLBACK_DB_LOGGED = False
+_FALLBACK_DB_FAILURE: Optional[str] = None
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS installed(
   name TEXT PRIMARY KEY,
@@ -535,19 +547,44 @@ CREATE TABLE IF NOT EXISTS snapshots(
   archive TEXT NOT NULL
 );
 """
-def db() -> sqlite3.Connection:
-    c = sqlite3.connect(str(DB_PATH))
-    c.execute("PRAGMA journal_mode=WAL")
-    c.executescript(SCHEMA)
-    cols = [r[1] for r in c.execute("PRAGMA table_info(installed)")]
+
+
+def _initialize_connection(conn):
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.executescript(SCHEMA)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(installed)")]
     if "symbols" not in cols:
-        c.execute("ALTER TABLE installed ADD COLUMN symbols TEXT NOT NULL DEFAULT '[]'")
+        conn.execute("ALTER TABLE installed ADD COLUMN symbols TEXT NOT NULL DEFAULT '[]'")
     if "requires" not in cols:
-        c.execute("ALTER TABLE installed ADD COLUMN requires TEXT NOT NULL DEFAULT '[]'")
+        conn.execute("ALTER TABLE installed ADD COLUMN requires TEXT NOT NULL DEFAULT '[]'")
     if "explicit" not in cols:
-        c.execute("ALTER TABLE installed ADD COLUMN explicit INTEGER NOT NULL DEFAULT 0")
-    c.commit()
-    return c
+        conn.execute("ALTER TABLE installed ADD COLUMN explicit INTEGER NOT NULL DEFAULT 0")
+    conn.commit()
+    return conn
+
+
+def db():
+    global _FALLBACK_DB_ENABLED, _FALLBACK_DB_LOGGED, _FALLBACK_DB_FAILURE
+
+    if not _FALLBACK_DB_ENABLED and sqlite3 is not None:
+        try:
+            return _initialize_connection(sqlite3.connect(str(DB_PATH)))
+        except Exception as exc:  # pragma: no cover - depends on runtime build
+            _FALLBACK_DB_ENABLED = True
+            _FALLBACK_DB_FAILURE = str(exc)
+
+    if _FALLBACK_DB_ENABLED:
+        from src.fallback_db import connect as fallback_connect
+
+        if not _FALLBACK_DB_LOGGED:
+            reason = _FALLBACK_DB_FAILURE or "sqlite3 module unavailable"
+            warn(
+                f"sqlite3 unavailable ({reason}); using JSON-backed DB at {DB_PATH}"
+            )
+            _FALLBACK_DB_LOGGED = True
+        return _initialize_connection(fallback_connect(DB_PATH))
+
+    raise RuntimeError("sqlite3 module unexpectedly unavailable")
 
 def db_installed(conn) -> Dict[str,dict]:
     res = {}
@@ -1134,9 +1171,10 @@ def remove_service_files(pkg_name: str, root: Path, manifest_entries: Optional[L
 
 # =========================== Packaging helpers (.zst) ==========================
 def sha256sum(p: Path) -> str:
-    h=hashlib.sha256()
+    h = new_sha256()
     with p.open("rb") as f:
-        for c in iter(lambda: f.read(1<<20), b""): h.update(c)
+        for c in iter(lambda: f.read(1<<20), b""):
+            h.update(c)
     return h.hexdigest()
 
 def _extract_symbols(p: Path) -> List[str]:
@@ -1200,7 +1238,7 @@ def collect_manifest(stagedir: Path) -> List[Dict[str, object]]:
                 except OSError:
                     continue
                 entry["link"] = target
-                entry["sha256"] = hashlib.sha256(target.encode()).hexdigest()
+                entry["sha256"] = sha256_hexdigest(target)
                 entry["size"] = st.st_size
                 mani.append(entry)
                 continue
@@ -2211,7 +2249,7 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
     return scalars, arrays
 
 def _url_digest(url: str) -> str:
-    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    return sha256_hexdigest(url)[:16]
 
 
 def _source_cache_path(url: str, filename: str, *, digest: Optional[str] = None) -> Path:
@@ -4007,7 +4045,7 @@ def installpkg(
                     if expected_target is not None and target != expected_target:
                         die(f"Link mismatch for {e['path']}: expected {expected_target}, got {target}")
 
-                    link_hash = hashlib.sha256(target.encode()).hexdigest()
+                    link_hash = sha256_hexdigest(target)
                     payload_hash = None
 
                     payload_candidate: Optional[Path]
