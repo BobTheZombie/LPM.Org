@@ -23,7 +23,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Iterable, Callable, BinaryIO
 from collections import deque
-import zstandard as zstd
+try:
+    import zstandard as zstd
+except ModuleNotFoundError:  # pragma: no cover - exercised in tests
+    from src import zstandard_stub as zstd
 from packaging.markers import default_environment
 from packaging.requirements import Requirement
 from packaging.specifiers import Specifier, SpecifierSet
