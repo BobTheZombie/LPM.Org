@@ -4,6 +4,8 @@ Operation = Install
 Operation = Upgrade
 Target = usr/lib/modules/*/vmlinuz
 Target = usr/lib/modules/*/pkgbase
+Target = usr/lib/modules/*/modules.*
+Target = usr/lib/modules/*/kernel/*
 
 [Action]
 When = PostTransaction

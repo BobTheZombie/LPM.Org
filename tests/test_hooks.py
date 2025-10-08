@@ -349,6 +349,39 @@ def test_kernel_install_transaction_hook(tmp_path, monkeypatch, system_hook_dir)
     assert "grub-mkconfig -o /boot/grub/grub.cfg" in calls
 
 
+def test_kernel_modules_install_transaction_hook(tmp_path, monkeypatch, system_hook_dir):
+    root = tmp_path / "root"
+    root.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "kernel.log"
+    for name in ("mkinitcpio", "bootctl", "grub-mkconfig"):
+        p = bin_dir / name
+        p.write_text(f"#!/bin/sh\necho {name} \"$@\" >> {log}\n")
+        p.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    hooks = load_hooks([system_hook_dir])
+    txn = HookTransactionManager(hooks=hooks, root=root)
+    version = "7.8.9-lpm"
+    txn.add_package_event(
+        name="linux-modules-lpm",
+        operation="Install",
+        version=version,
+        release="1",
+        paths=[f"/usr/lib/modules/{version}/modules.dep"],
+    )
+    txn.ensure_pre_transaction()
+    txn.run_post_transaction()
+
+    calls = log.read_text().splitlines()
+    expected = f"mkinitcpio -r {root} -k {version} -g {root / 'boot' / f'initrd-{version}.img'}"
+    assert expected in calls
+    assert "bootctl update" in calls
+    assert "grub-mkconfig -o /boot/grub/grub.cfg" in calls
+
+
 def _create_hook_recorder(tmp_path: Path, script_name: str) -> Path:
     script_path = tmp_path / script_name
     script_path.write_text(
