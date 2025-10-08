@@ -19,6 +19,11 @@ STATIC_LIBPYTHON ?= auto
 
 PYTHON_STATIC_LIB := $(strip $(shell $(PYTHON) -c "import sysconfig as s, pathlib as p; libname=s.get_config_var('LIBRARY'); bases=(s.get_config_var('LIBPL'), s.get_config_var('LIBDIR')); candidates=[str(p.Path(base)/libname) for base in bases if base and libname and (p.Path(base)/libname).exists()]; print(candidates[0] if candidates else '', end='')"))
 
+EXTENSION_MODULES := $(strip $(shell $(PYTHON) tools/find_extension_modules.py))
+ifneq ($(EXTENSION_MODULES),)
+    NUITKA_FLAGS += $(addprefix --include-module=,$(EXTENSION_MODULES))
+endif
+
 ifeq ($(STATIC_LIBPYTHON),yes)
     ifeq ($(PYTHON_STATIC_LIB),)
         $(error Requested static libpython but none was found for $(PYTHON))
