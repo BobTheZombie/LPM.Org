@@ -5,6 +5,7 @@ import logging
 import os
 import shlex
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
@@ -12,6 +13,14 @@ from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Mapping, MutableMapping, Optional, Sequence, Set
 
 logger = logging.getLogger(__name__)
+
+module = sys.modules[__name__]
+
+# Expose the module under ``src.liblpmhooks.__init__`` so monkeypatch helpers can
+# target it via dotted paths in tests and treat ``__init__`` as a module alias.
+sys.modules.setdefault(__name__ + ".__init__", module)
+if not isinstance(getattr(module, "__init__", None), type(module)):
+    setattr(module, "__init__", module)
 
 __all__ = [
     "Hook",
@@ -329,7 +338,7 @@ class HookTransactionManager:
             raise HookError(f"Cyclic or unresolved hook dependencies: {', '.join(sorted(missing))}")
         return resolved
 
-def _run_hook(self, hook: Hook, targets: List[str]) -> None:
+    def _run_hook(self, hook: Hook, targets: List[str]) -> None:
         action = hook.action
         base_argv = list(action.exec)
         env = os.environ.copy()

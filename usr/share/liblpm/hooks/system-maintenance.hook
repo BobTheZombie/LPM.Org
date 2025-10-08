@@ -1,0 +1,10 @@
+[Trigger]
+Type = Package
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Target = *
+
+[Action]
+When = PostTransaction
+Exec = /usr/libexec/lpm/hooks/system-maintenance

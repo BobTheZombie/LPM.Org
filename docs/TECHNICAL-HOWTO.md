@@ -203,6 +203,11 @@ Computes and removes orphaned dependencies that are no longer required by any
 explicitly installed package. Supports `--root` and `--dry-run` just like
 `remove`.【F:lpm.py†L2162-L2166】
 
+All package transactions automatically trigger the system-maintenance hook,
+which runs `lpm autoremove --root "$LPM_ROOT"` plus snapshot pruning and cache
+cleaning for the real root, keeping orphaned packages and stale data from
+accumulating between manual maintenance sessions.【F:usr/libexec/lpm/hooks/system-maintenance†L1-L49】【F:usr/share/liblpm/hooks/system-maintenance.hook†L1-L10】
+
 ```bash
 $ sudo lpm autoremove
 ```

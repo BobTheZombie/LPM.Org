@@ -13,6 +13,8 @@ The Linux Package Manager
   pruning (`MAX_SNAPSHOTS` in `lpm.conf`) and rollback support.
 - **Bootstrap mode** to build a minimal chroot and populate it with verified
   packages.
+- **Automated maintenance hooks** that run `lpm autoremove`, prune snapshots,
+  and clean the cache after each transaction to keep systems tidy.【F:usr/libexec/lpm/hooks/system-maintenance†L1-L49】【F:usr/share/liblpm/hooks/system-maintenance.hook†L1-L10】
 - **Incremental SAT solver API** available for other tools and benchmarks in
   `benchmarks/solver_bench.py`.
 - **.lpmbuild scripts** for reproducible package builds and a `build` command to
