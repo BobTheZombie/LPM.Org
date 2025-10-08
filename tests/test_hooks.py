@@ -33,7 +33,7 @@ if "tqdm" not in sys.modules:
 
 import lpm
 import pytest
-from src.liblpmhooks import HookTransactionManager, load_hooks
+from src.liblpmhooks import Hook, HookAction, HookTransactionManager, load_hooks
 
 
 def test_python_hook(tmp_path, monkeypatch):
@@ -386,6 +386,47 @@ def test_kernel_modules_install_transaction_hook(tmp_path, monkeypatch, system_h
     assert mkinitcpio_call in calls
     assert "bootctl update" in calls
     assert "grub-mkconfig -o /boot/grub/grub.cfg" in calls
+
+
+def test_transaction_manager_uses_temp_targets_before_e2big(monkeypatch, tmp_path):
+    hook = Hook(
+        name="big-targets",
+        path=tmp_path / "big-targets.hook",
+        triggers=[],
+        action=HookAction(
+            when="PostTransaction",
+            exec=["/usr/bin/fake-hook"],
+            needs_targets=True,
+        ),
+    )
+    manager = HookTransactionManager(hooks={hook.name: hook}, root=tmp_path)
+
+    # Force the safety check to choose the temporary-file fallback.
+    monkeypatch.setattr(
+        "src.liblpmhooks.__init__._should_use_temp_targets", lambda argv, env: True
+    )
+
+    calls = []
+
+    def fake_run(argv, check, env):
+        calls.append((list(argv), dict(env)))
+
+        class _Result:
+            returncode = 0
+
+        return _Result()
+
+    monkeypatch.setattr("src.liblpmhooks.__init__.subprocess.run", fake_run)
+
+    targets = [f"/very/long/path/{i:04d}" for i in range(128)]
+    manager._run_hook(hook, targets)
+
+    assert len(calls) == 1
+    argv, env = calls[0]
+    assert argv == hook.action.exec
+    assert "LPM_TARGETS_FILE" in env
+    assert "LPM_TARGETS" not in env
+    assert env.get("LPM_TARGET_COUNT") == str(len(targets))
 
 
 def _create_hook_recorder(tmp_path: Path, script_name: str) -> Path:
