@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""Run post-transaction maintenance tasks for LPM."""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+from typing import Iterable, List
+
+
+def _find_lpm() -> str | None:
+    return shutil.which("lpm")
+
+
+def _build_tasks(lpm_path: str, root: str) -> List[List[str]]:
+    tasks: List[List[str]] = [[lpm_path, "autoremove", "--root", root]]
+    if root in {"", "/"}:
+        tasks.append([lpm_path, "snapshots", "--prune"])
+        tasks.append([lpm_path, "clean"])
+    return tasks
+
+
+def _run_tasks(commands: Iterable[List[str]], env: dict[str, str]) -> None:
+    for argv in commands:
+        try:
+            subprocess.run(argv, check=False, env=env)
+        except FileNotFoundError:
+            # If a command disappears mid-transaction, abort further runs.
+            return
+        except Exception as exc:  # pragma: no cover - best effort logging only
+            print(
+                f"[lpm-maintenance] failed to run {' '.join(argv)}: {exc}",
+                file=sys.stderr,
+            )
+
+
+def main() -> None:
+    if os.environ.get("LPM_SKIP_MAINTENANCE") == "1":
+        return
+
+    lpm_path = _find_lpm()
+    if not lpm_path:
+        return
+
+    root = os.environ.get("LPM_ROOT", "/") or "/"
+    env = dict(os.environ)
+    env["LPM_SKIP_MAINTENANCE"] = "1"
+
+    tasks = _build_tasks(lpm_path, root)
+    _run_tasks(tasks, env)
+
+
+if __name__ == "__main__":
+    main()
