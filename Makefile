@@ -8,12 +8,33 @@ SRC_FILES := $(shell find src -type f -name '*.py')
 VERSION ?= $(shell $(PYTHON) tools/get_version.py)
 
 NUITKA_FLAGS ?= \
-	--onefile \
-	--include-package=src \
-	--follow-imports \
-	--lto=yes \
-	--jobs=$(shell nproc) \
-	--python-flag=-O
+        --onefile \
+        --include-package=src \
+        --follow-imports \
+        --lto=yes \
+        --jobs=$(shell nproc) \
+        --python-flag=-O
+
+STATIC_LIBPYTHON ?= auto
+
+PYTHON_STATIC_LIB := $(strip $(shell $(PYTHON) -c "import sysconfig as s, pathlib as p; libname=s.get_config_var('LIBRARY'); bases=(s.get_config_var('LIBPL'), s.get_config_var('LIBDIR')); candidates=[str(p.Path(base)/libname) for base in bases if base and libname and (p.Path(base)/libname).exists()]; print(candidates[0] if candidates else '', end='')"))
+
+ifeq ($(STATIC_LIBPYTHON),yes)
+    ifeq ($(PYTHON_STATIC_LIB),)
+        $(error Requested static libpython but none was found for $(PYTHON))
+    endif
+    $(info Using static libpython: $(PYTHON_STATIC_LIB))
+    NUITKA_FLAGS += --static-libpython=yes
+else ifeq ($(STATIC_LIBPYTHON),no)
+    # Intentionally left blank - rely on the shared libpython.
+else ifeq ($(STATIC_LIBPYTHON),auto)
+    ifneq ($(PYTHON_STATIC_LIB),)
+        $(info Using static libpython: $(PYTHON_STATIC_LIB))
+        NUITKA_FLAGS += --static-libpython=yes
+    endif
+else
+    $(error Invalid STATIC_LIBPYTHON value: $(STATIC_LIBPYTHON). Use yes, no, or auto.)
+endif
 
 export PYTHONPATH := $(PWD)$(if $(PYTHONPATH),:$(PYTHONPATH),)
 
