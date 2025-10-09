@@ -148,11 +148,11 @@ $(STATIC_PYTHON_SRC): $(STATIC_PYTHON_TARBALL)
 
 $(STATIC_PYTHON_BUILD_STAMP): $(STATIC_PYTHON_SRC)
 	@printf 'Configuring static Python toolchain...\n'
-	@$(MAKE) -C $(STATIC_PYTHON_SRC) distclean >/dev/null 2>&1 || true
+	@$(MAKE) -C $(abspath $(STATIC_PYTHON_SRC)) distclean >/dev/null 2>&1 || true
 	@cd $(STATIC_PYTHON_SRC) && $(STATIC_PYTHON_ENV) ./configure $(STATIC_PYTHON_CONFIGURE_FLAGS)
 	@$(HOST_PYTHON) $(abspath tools/force_static_stdlib.py) $(STATIC_PYTHON_SETUP_STDLIB) $(STATIC_PYTHON_SETUP_LOCAL)
-	@$(MAKE) -C $(STATIC_PYTHON_SRC) -j$$(nproc)
-	@$(MAKE) -C $(STATIC_PYTHON_SRC) install
+	@$(MAKE) -C $(abspath $(STATIC_PYTHON_SRC)) -j$$(nproc)
+	@$(MAKE) -C $(abspath $(STATIC_PYTHON_SRC)) install
 	@touch "$@"
 
 $(STATIC_PYTHON_MODULES_STAMP): $(STATIC_PYTHON_BUILD_STAMP)
