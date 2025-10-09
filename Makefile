@@ -81,7 +81,7 @@ $(NUITKA_STAMP_FILE): | $(NUITKA_SOURCE_DIR)
 		printf 'Nuitka already installed at %s; skipping reinstall.\n' "$$REV"; \
 	fi
 
-$(BIN_TARGET): nuitka-install lpm.py $(SRC_FILES)
+$(BIN_TARGET): lpm.py $(SRC_FILES) | nuitka-install
 	@mkdir -p $(BUILD_DIR)
 	$(NUITKA) $(NUITKA_FLAGS) --output-dir=$(BUILD_DIR) --output-filename=$(APP).bin $(ENTRY)
 
