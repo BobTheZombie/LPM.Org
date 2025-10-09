@@ -51,7 +51,13 @@ STATIC_PYTHON_CONFIGURE_FLAGS ?= \
         --with-lto \
         --with-ensurepip=install
 
-STATIC_PYTHON_ENV ?= LDFLAGS="-static" CPPFLAGS="" CFLAGS=""
+# Building the auxiliary CPython toolchain with ``LDFLAGS=-static`` causes the
+# PGO instrumentation step (--enable-optimizations) to fail because the build
+# system needs to create a handful of shared test modules.  Keep the default
+# environment minimal so the configure script can decide how to link the
+# interpreter while still allowing callers to inject custom flags when
+# necessary.
+STATIC_PYTHON_ENV ?= CPPFLAGS="" CFLAGS=""
 
 STATIC_PYTHON_READY :=
 

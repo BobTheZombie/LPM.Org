@@ -62,6 +62,19 @@ When `STATIC_LIBPYTHON=yes` the build system rewrites CPython's
 static `libpython` archive. This guarantees Nuitka can resolve the modules at
 runtime without shipping the accompanying `.so` files alongside the binary.
 
+The helper toolchain no longer forces `LDFLAGS=-static` during CPython's
+configure step.  If you require a fully static interpreter you can provide
+custom flags, for example:
+
+```sh
+make STATIC_LIBPYTHON=yes \
+     STATIC_PYTHON_ENV='LDFLAGS="-static" CPPFLAGS="" CFLAGS=""'
+```
+
+Leaving `STATIC_PYTHON_ENV` unset lets the upstream build decide how to link
+Python, which avoids linker errors while the profile-guided optimization stage
+builds temporary shared modules.
+
 Set `PYTHON=/path/to/python` if you need to build with a specific interpreter.
 When a static archive is detected the make output includes the file that will
 be linked so you can confirm which Python installation is being used.
