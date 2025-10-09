@@ -40,6 +40,8 @@ endif
 
 export PYTHONPATH := $(PWD)$(if $(PYTHONPATH),:$(PYTHONPATH),)
 
+PREFIX ?= /usr/local
+
 BIN_TARGET = $(BUILD_DIR)/$(APP).bin
 STAGING_DIR = $(DIST_DIR)/$(APP)-$(VERSION)
 TARBALL = $(DIST_DIR)/$(APP)-$(VERSION).tar.gz
@@ -48,7 +50,7 @@ LIBLPM_HOOK_SRC = usr/libexec/lpm/hooks
 NUITKA_SOURCE_DIR ?= build/nuitka-src
 NUITKA_STAMP_FILE := $(abspath $(NUITKA_SOURCE_DIR)/.installed-commit)
 
-.PHONY: all stage tarball clean distclean nuitka-install
+.PHONY: all stage tarball clean distclean nuitka-install install
 .ONESHELL:
 
 all: $(BIN_TARGET)
@@ -64,11 +66,20 @@ $(NUITKA_SOURCE_DIR):
 	@git -C $(NUITKA_SOURCE_DIR) checkout $(NUITKA_REF)
 	@git -C $(NUITKA_SOURCE_DIR) reset --hard origin/$(NUITKA_REF)
 
-nuitka-install: | $(NUITKA_SOURCE_DIR)
+nuitka-install: $(NUITKA_STAMP_FILE)
+        @:
+
+$(NUITKA_STAMP_FILE): | $(NUITKA_SOURCE_DIR)
+	@mkdir -p $(dir $@)
 	@REV=$$(git -C $(NUITKA_SOURCE_DIR) rev-parse HEAD); \
-	$(PYTHON) -m pip install --upgrade pip wheel; \
-	cd $(NUITKA_SOURCE_DIR) && $(PYTHON) -m pip install --upgrade .; \
-	echo "$$REV" > "$(NUITKA_STAMP_FILE)"
+	INSTALLED=$$(cat $@ 2>/dev/null || true); \
+	if [ "$$REV" != "$$INSTALLED" ]; then \
+		$(PYTHON) -m pip install --upgrade pip wheel; \
+		cd $(NUITKA_SOURCE_DIR) && $(PYTHON) -m pip install --upgrade .; \
+		echo "$$REV" > "$@"; \
+	else \
+		printf 'Nuitka already installed at %s; skipping reinstall.\n' "$$REV"; \
+	fi
 
 $(BIN_TARGET): nuitka-install lpm.py $(SRC_FILES)
 	@mkdir -p $(BUILD_DIR)
@@ -146,6 +157,9 @@ $(TARBALL): $(STAGING_DIR)
 stage: $(STAGING_DIR)
 
 tarball: $(TARBALL)
+
+install: $(STAGING_DIR)
+	PREFIX="$(PREFIX)" DESTDIR="$(DESTDIR)" $</install.sh
 
 clean:
 	rm -rf $(BUILD_DIR)
