@@ -57,6 +57,11 @@ make STATIC_LIBPYTHON=yes
   located.
 - `no` always uses the shared `libpython`.
 
+When `STATIC_LIBPYTHON=yes` the build system rewrites CPython's
+`Modules/Setup.local` so that every bundled extension is compiled into the
+static `libpython` archive. This guarantees Nuitka can resolve the modules at
+runtime without shipping the accompanying `.so` files alongside the binary.
+
 Set `PYTHON=/path/to/python` if you need to build with a specific interpreter.
 When a static archive is detected the make output includes the file that will
 be linked so you can confirm which Python installation is being used.
