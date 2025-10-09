@@ -33,7 +33,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "output",
         type=Path,
-        help="Destination path for the generated Modules/Setup.local file.",
+        nargs="?",
+        help="Destination path for the generated Modules/Setup.local file. Defaults to the Setup.local file alongside the source.",
     )
     return parser.parse_args()
 
@@ -66,7 +67,7 @@ def make_static(content: str) -> str:
 def main() -> None:
     args = parse_args()
     source = args.source
-    output = args.output
+    output = args.output or source.with_name("Setup.local")
 
     if not source.is_file():
         raise SystemExit(f"Setup template '{source}' does not exist")
