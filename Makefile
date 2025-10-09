@@ -17,26 +17,16 @@ NUITKA_FLAGS ?= \
         --jobs=$(shell nproc) \
         --python-flag=-O
 
-STATIC_LIBPYTHON ?= auto
+STATIC_LIBPYTHON ?= no
+
+STATIC_LIBPYTHON_FLAG = $(firstword $(filter --static-libpython=%,$(MAKEFLAGS)))
+STATIC_LIBPYTHON_EFFECTIVE = $(if $(STATIC_LIBPYTHON_FLAG),$(patsubst --static-libpython=%,%,$(STATIC_LIBPYTHON_FLAG)),$(STATIC_LIBPYTHON))
 
 PYTHON_STATIC_LIB := $(strip $(shell $(PYTHON) -c "import sysconfig as s, pathlib as p; libname=s.get_config_var('LIBRARY'); bases=(s.get_config_var('LIBPL'), s.get_config_var('LIBDIR')); candidates=[str(p.Path(base)/libname) for base in bases if base and libname and (p.Path(base)/libname).exists()]; print(candidates[0] if candidates else '', end='')"))
 
-ifeq ($(STATIC_LIBPYTHON),yes)
-    ifeq ($(PYTHON_STATIC_LIB),)
-        $(error Requested static libpython but none was found for $(PYTHON))
-    endif
-    $(info Using static libpython: $(PYTHON_STATIC_LIB))
-    NUITKA_FLAGS += --static-libpython=yes
-else ifeq ($(STATIC_LIBPYTHON),no)
-    # Intentionally left blank - rely on the shared libpython.
-else ifeq ($(STATIC_LIBPYTHON),auto)
-    ifneq ($(PYTHON_STATIC_LIB),)
-        $(info Using static libpython: $(PYTHON_STATIC_LIB))
-        NUITKA_FLAGS += --static-libpython=yes
-    endif
-else
-    $(error Invalid STATIC_LIBPYTHON value: $(STATIC_LIBPYTHON). Use yes, no, or auto.)
-endif
+maybe_static = $(if $(filter yes,$(STATIC_LIBPYTHON_EFFECTIVE)),$(if $(PYTHON_STATIC_LIB),$(info Using static libpython: $(PYTHON_STATIC_LIB))--static-libpython=yes,$(error Requested static libpython but none was found for $(PYTHON))),$(if $(filter no,$(STATIC_LIBPYTHON_EFFECTIVE)),,$(error Invalid STATIC_LIBPYTHON value: $(STATIC_LIBPYTHON_EFFECTIVE). Use yes or no.)))
+
+NUITKA_FLAGS += $(maybe_static)
 
 export PYTHONPATH := $(PWD)$(if $(PYTHONPATH),:$(PYTHONPATH),)
 
