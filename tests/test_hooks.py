@@ -33,7 +33,7 @@ if "tqdm" not in sys.modules:
 
 import lpm
 import pytest
-from src.liblpmhooks import Hook, HookAction, HookTransactionManager, load_hooks
+from src.lpm.hooks import Hook, HookAction, HookTransactionManager, load_hooks
 
 
 def test_python_hook(tmp_path, monkeypatch):
@@ -410,7 +410,7 @@ def test_transaction_manager_uses_temp_targets_before_e2big(monkeypatch, tmp_pat
 
     # Force the safety check to choose the temporary-file fallback.
     monkeypatch.setattr(
-        "src.liblpmhooks.__init__._should_use_temp_targets", lambda argv, env: True
+        "src.lpm.hooks.__init__._should_use_temp_targets", lambda argv, env: True
     )
 
     calls = []
@@ -423,7 +423,7 @@ def test_transaction_manager_uses_temp_targets_before_e2big(monkeypatch, tmp_pat
 
         return _Result()
 
-    monkeypatch.setattr("src.liblpmhooks.__init__.subprocess.run", fake_run)
+    monkeypatch.setattr("src.lpm.hooks.__init__.subprocess.run", fake_run)
 
     targets = [f"/very/long/path/{i:04d}" for i in range(128)]
     manager._run_hook(hook, targets)
