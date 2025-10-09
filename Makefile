@@ -28,6 +28,61 @@ maybe_static = $(if $(filter yes,$(STATIC_LIBPYTHON_EFFECTIVE)),$(if $(PYTHON_ST
 
 NUITKA_FLAGS += $(maybe_static)
 
+# Additional modules required when doing a fully static build.  Nuitka can
+# sometimes miss dynamic imports when Python's stdlib or third party packages
+# are frozen, so enumerate the modules that are used throughout the project to
+# make sure they are bundled correctly.
+STATIC_MODULES := \
+        _hashlib \
+        _ssl \
+        _decimal \
+        _datetime \
+        _sha3 \
+        _blake2 \
+        _struct \
+        _socket \
+        _random \
+        _pickle \
+        math \
+        sqlite3 \
+        zlib \
+        argparse \
+        collections \
+        concurrent \
+        contextlib \
+        dataclasses \
+        email \
+        errno \
+        fnmatch \
+        hashlib \
+        heapq \
+        importlib \
+        io \
+        itertools \
+        json \
+        logging \
+        os \
+        packaging \
+        pathlib \
+        re \
+        shlex \
+        shutil \
+        src \
+        stat \
+        subprocess \
+        sys \
+        tarfile \
+        tempfile \
+        time \
+        tqdm \
+        typing \
+        urllib \
+        zstandard
+
+STATIC_MODULE_FLAGS := $(addprefix --include-module=,$(STATIC_MODULES))
+
+NUITKA_FLAGS += $(if $(filter yes,$(STATIC_LIBPYTHON_EFFECTIVE)),$(STATIC_MODULE_FLAGS))
+
 export PYTHONPATH := $(PWD)$(if $(PYTHONPATH),:$(PYTHONPATH),)
 
 PREFIX ?= /usr/local
