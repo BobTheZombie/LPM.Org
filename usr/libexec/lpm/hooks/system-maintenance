@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import shutil
 import subprocess
 import sys
+import time
+from pathlib import Path
 from typing import Iterable, List
 
 
@@ -14,8 +17,53 @@ def _find_lpm() -> str | None:
     return shutil.which("lpm")
 
 
-def _build_tasks(lpm_path: str, root: str) -> List[List[str]]:
-    tasks: List[List[str]] = [[lpm_path, "autoremove", "--root", root]]
+_STATE_DIR_FALLBACK = Path("/var/lib/lpm")
+_STATE_DB_NAME = "state.db"
+_RECENT_WINDOW_SECONDS = 30
+
+
+def _resolve_state_dir(root: str) -> Path:
+    env_dir = os.environ.get("LPM_STATE_DIR")
+    if env_dir:
+        return Path(env_dir)
+    root_path = Path(root)
+    if root_path not in {Path(""), Path("/")}:
+        return root_path / "var" / "lib" / "lpm"
+    return _STATE_DIR_FALLBACK
+
+
+def _recent_history_actions(state_dir: Path, window: int = _RECENT_WINDOW_SECONDS) -> set[str]:
+    if window <= 0:
+        return set()
+    db_path = state_dir / _STATE_DB_NAME
+    try:
+        conn = sqlite3.connect(str(db_path))
+    except sqlite3.Error:
+        return set()
+    try:
+        cutoff = int(time.time()) - window
+        rows = conn.execute("SELECT action FROM history WHERE ts >= ?", (cutoff,))
+        actions = {str(row[0]).strip().lower() for row in rows if row and row[0]}
+        return actions
+    except sqlite3.Error:
+        return set()
+    finally:
+        conn.close()
+
+
+def _should_skip_autoremove(actions: set[str]) -> bool:
+    if not actions:
+        return False
+    has_install = "install" in actions
+    has_upgrade = "upgrade" in actions
+    has_remove = "remove" in actions
+    return has_install and not has_remove and not has_upgrade
+
+
+def _build_tasks(lpm_path: str, root: str, *, skip_autoremove: bool = False) -> List[List[str]]:
+    tasks: List[List[str]] = []
+    if not skip_autoremove:
+        tasks.append([lpm_path, "autoremove", "--root", root])
     if root in {"", "/"}:
         tasks.append([lpm_path, "snapshots", "--prune"])
         tasks.append([lpm_path, "clean"])
@@ -48,7 +96,11 @@ def main() -> None:
     env = dict(os.environ)
     env["LPM_SKIP_MAINTENANCE"] = "1"
 
-    tasks = _build_tasks(lpm_path, root)
+    state_dir = _resolve_state_dir(root)
+    recent_actions = _recent_history_actions(state_dir)
+    skip_autoremove = _should_skip_autoremove(recent_actions)
+
+    tasks = _build_tasks(lpm_path, root, skip_autoremove=skip_autoremove)
     _run_tasks(tasks, env)
 
 
