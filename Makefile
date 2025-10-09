@@ -148,6 +148,9 @@ $(STATIC_PYTHON_BUILD_STAMP): $(STATIC_PYTHON_SRC)
 	@printf 'Configuring static Python toolchain...\n'
 	@$(MAKE) -C $(STATIC_PYTHON_SRC) distclean >/dev/null 2>&1 || true
 	@cd $(STATIC_PYTHON_SRC) && $(STATIC_PYTHON_ENV) ./configure $(STATIC_PYTHON_CONFIGURE_FLAGS)
+	@$(HOST_PYTHON) tools/force_static_stdlib.py \\
+		$(STATIC_PYTHON_SRC)/Modules/Setup.stdlib \\
+		$(STATIC_PYTHON_SRC)/Modules/Setup.local
 	@$(MAKE) -C $(STATIC_PYTHON_SRC) -j$$(nproc)
 	@$(MAKE) -C $(STATIC_PYTHON_SRC) install
 	@touch "$@"
