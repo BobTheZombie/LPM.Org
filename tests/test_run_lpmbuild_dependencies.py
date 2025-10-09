@@ -1,4 +1,5 @@
 import os
+import shlex
 import shutil
 import sys
 import textwrap
@@ -48,6 +49,7 @@ def _write_dummy_lpmbuild(script: Path, deps, python_deps=None):
     python_block = ""
     if python_deps:
         python_block = f"REQUIRES_PYTHON_DEPENDENCIES=({' '.join(python_deps)})\n"
+    deps_str = " ".join(shlex.quote(dep) for dep in deps)
     script.write_text(
         textwrap.dedent(
             """
@@ -60,7 +62,7 @@ def _write_dummy_lpmbuild(script: Path, deps, python_deps=None):
             build() {{ :; }}
             staging() {{ :; }}
             """
-        ).format(deps=" ".join(deps), python_block=python_block)
+        ).format(deps=deps_str, python_block=python_block)
     )
 
 
@@ -268,6 +270,44 @@ def test_run_lpmbuild_skips_dependencies_satisfied_by_provides(tmp_path, monkeyp
 
     monkeypatch.setattr(lpm, "db", fake_db)
     monkeypatch.setattr(lpm, "db_installed", fake_db_installed)
+
+    def fake_fetch_lpmbuild(pkgname: str, dest: Path) -> Path:
+        raise AssertionError(f"unexpected dependency fetch: {pkgname}")
+
+    monkeypatch.setattr(lpm, "fetch_lpmbuild", fake_fetch_lpmbuild)
+
+    out_path, _, _, _ = lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=True,
+    )
+
+    assert out_path.exists()
+
+    out_path.unlink()
+    shutil.rmtree(Path("/tmp/pkg-foo"), ignore_errors=True)
+    shutil.rmtree(Path("/tmp/build-foo"), ignore_errors=True)
+    shutil.rmtree(Path("/tmp/src-foo"), ignore_errors=True)
+
+
+def test_run_lpmbuild_respects_pkgconfig_capabilities(tmp_path, monkeypatch):
+    script = tmp_path / "foo.lpmbuild"
+    _write_dummy_lpmbuild(script, ["pkgconfig(bar)"])
+
+    monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "state"))
+    _stub_build_pipeline(monkeypatch)
+
+    class DummyConn:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(lpm, "db", lambda: DummyConn())
+    monkeypatch.setattr(
+        lpm,
+        "db_installed",
+        lambda conn: {"bar": {"provides": ["pkgconfig(bar)"]}},
+    )
 
     def fake_fetch_lpmbuild(pkgname: str, dest: Path) -> Path:
         raise AssertionError(f"unexpected dependency fetch: {pkgname}")

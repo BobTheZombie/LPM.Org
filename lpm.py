@@ -388,16 +388,31 @@ def parse_dep_expr(s: str) -> DepExpr:
         return tok
     def parse_atom() -> DepExpr:
         name = eat()
-        if name in ("|","||",",","(",")", None): raise ValueError("bad dep atom")
+        if name in ("|", "||", ",", "(", ")", None):
+            raise ValueError("bad dep atom")
         op = ""
-        if peek() in ("==","=","<=",">=","<",">","~","~="): op = eat()
+        if peek() in ("==", "=", "<=", ">=", "<", ">", "~", "~="):
+            op = eat()
         ver = ""
-        if peek() in ("(",):
+        if peek() == "(":
             eat("(")
-            if peek() in ("==","=","<=",">=","<",">","~","~="): op = eat()
+            if peek() in ("==", "=", "<=", ">=", "<", ">", "~", "~="):
+                op = eat()
+                ver = eat()
+                eat(")")
+            else:
+                value = eat()
+                if value is None:
+                    raise ValueError("empty dependency group")
+                eat(")")
+                if op:
+                    ver = value
+                else:
+                    name = f"{name}({value})"
+        if not ver and peek() in ("==", "=", "<=", ">=", "<", ">", "~", "~="):
+            op = eat()
             ver = eat()
-            eat(")")
-        elif op:
+        elif op and not ver:
             ver = eat()
         return DepExpr.atom_(Atom(name=name, op=op, ver=ver))
     def parse_or() -> DepExpr:
