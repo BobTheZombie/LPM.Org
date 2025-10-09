@@ -35,6 +35,8 @@ STATIC_PYTHON_PREFIX := $(STATIC_PYTHON_BASE)/install
 STATIC_PYTHON_BIN := $(STATIC_PYTHON_PREFIX)/bin/python3
 STATIC_PYTHON_BUILD_STAMP := $(STATIC_PYTHON_PREFIX)/.built
 STATIC_PYTHON_MODULES_STAMP := $(STATIC_PYTHON_PREFIX)/.modules
+STATIC_PYTHON_SETUP_STDLIB := $(abspath $(STATIC_PYTHON_SRC))/Modules/Setup.stdlib
+STATIC_PYTHON_SETUP_LOCAL := $(abspath $(STATIC_PYTHON_SRC))/Modules/Setup.local
 
 STATIC_PYTHON_VERSION_PARTS := $(subst ., ,$(STATIC_PYTHON_VERSION))
 STATIC_PYTHON_MAJOR := $(word 1,$(STATIC_PYTHON_VERSION_PARTS))
@@ -148,9 +150,7 @@ $(STATIC_PYTHON_BUILD_STAMP): $(STATIC_PYTHON_SRC)
 	@printf 'Configuring static Python toolchain...\n'
 	@$(MAKE) -C $(STATIC_PYTHON_SRC) distclean >/dev/null 2>&1 || true
 	@cd $(STATIC_PYTHON_SRC) && $(STATIC_PYTHON_ENV) ./configure $(STATIC_PYTHON_CONFIGURE_FLAGS)
-	@$(HOST_PYTHON) $(abspath tools/force_static_stdlib.py) \\
-		$(STATIC_PYTHON_SRC)/Modules/Setup.stdlib \\
-		$(STATIC_PYTHON_SRC)/Modules/Setup.local
+	@$(HOST_PYTHON) $(abspath tools/force_static_stdlib.py) $(STATIC_PYTHON_SETUP_STDLIB) $(STATIC_PYTHON_SETUP_LOCAL)
 	@$(MAKE) -C $(STATIC_PYTHON_SRC) -j$$(nproc)
 	@$(MAKE) -C $(STATIC_PYTHON_SRC) install
 	@touch "$@"
