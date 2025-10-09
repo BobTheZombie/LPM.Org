@@ -1,26 +1,19 @@
-"""Convenience exports for LPM library components."""
+"""Core LPM package exposing the primary APIs used by the CLI and tests."""
 
 from importlib import import_module
 from typing import Any
 
-from .lpm.resolver import CDCLSolver, CNF, Implication, SATResult
-from .lpm.hooks import (
-    Hook,
-    HookAction,
-    HookError,
-    HookTransactionManager,
-    HookTrigger,
-    load_hooks,
-)
+from .resolver import CDCLSolver, CNF, Implication, SATResult
+from .hooks import Hook, HookAction, HookError, HookTransactionManager, HookTrigger, load_hooks
 
 __all__ = [
+    "main",
+    "ResolutionError",
+    "get_runtime_metadata",
     "CNF",
     "SATResult",
     "Implication",
     "CDCLSolver",
-    "main",
-    "ResolutionError",
-    "get_runtime_metadata",
     "Hook",
     "HookAction",
     "HookTransactionManager",
@@ -35,14 +28,10 @@ def _load_app():
 
 
 def main(argv=None):
-    """Proxy to :func:`src.lpm.app.main` without importing heavy dependencies."""
-
     return _load_app().main(argv)
 
 
 def get_runtime_metadata():
-    """Proxy to :func:`src.lpm.app.get_runtime_metadata`."""
-
     return _load_app().get_runtime_metadata()
 
 

@@ -16,9 +16,12 @@ logger = logging.getLogger(__name__)
 
 module = sys.modules[__name__]
 
-# Expose the module under ``src.liblpmhooks.__init__`` so monkeypatch helpers can
-# target it via dotted paths in tests and treat ``__init__`` as a module alias.
+# Expose the module under legacy import paths so monkeypatch helpers and code
+# depending on ``src.liblpmhooks`` continue to function after the move into the
+# :mod:`src.lpm` package.
 sys.modules.setdefault(__name__ + ".__init__", module)
+sys.modules.setdefault("src.liblpmhooks", module)
+sys.modules.setdefault("src.liblpmhooks.__init__", module)
 if not isinstance(getattr(module, "__init__", None), type(module)):
     setattr(module, "__init__", module)
 
