@@ -64,6 +64,7 @@ def test_get_runtime_metadata_defaults(monkeypatch, import_lpm):
     monkeypatch.delenv("LPM_BUILD_DATE", raising=False)
     monkeypatch.delenv("LPM_DEVELOPER", raising=False)
     monkeypatch.delenv("LPM_URL", raising=False)
+    monkeypatch.delenv("SOURCE_DATE_EPOCH", raising=False)
 
     mod = import_lpm()
     metadata = mod.get_runtime_metadata()
@@ -102,3 +103,12 @@ def test_get_runtime_metadata_env_override(monkeypatch, import_lpm):
     assert mod.__build_date__ == "2024-01-02T03:04:05Z"
     assert mod.__developer__ == "Jane Doe"
     assert mod.__url__ == "https://example.com/lpm"
+
+
+def test_default_build_date_uses_source_date_epoch(monkeypatch, import_lpm):
+    monkeypatch.delenv("LPM_BUILD_DATE", raising=False)
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+
+    mod = import_lpm()
+
+    assert mod.__build_date__ == "2023-11-14T22:13:20Z"

@@ -17,6 +17,7 @@ License: MIT
 
 from __future__ import annotations
 import argparse, contextlib, dataclasses, errno, fnmatch, hashlib, io, json, os, re, shlex, shutil, sqlite3, stat, subprocess, sys, tarfile, tempfile, time, urllib.parse
+from datetime import datetime, timezone
 from email.parser import Parser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -47,7 +48,34 @@ _ENV_URL = "LPM_URL"
 _DEFAULT_NAME = "LPM"
 _DEFAULT_VERSION = "0.9.19.25"
 _DEFAULT_BUILD = "development"
-_DEFAULT_BUILD_DATE = ""
+def _format_timestamp(value: float) -> str:
+    return (
+        datetime.fromtimestamp(value, tz=timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def _default_build_date() -> str:
+    override = os.environ.get("SOURCE_DATE_EPOCH")
+    if override:
+        try:
+            return _format_timestamp(int(override))
+        except Exception:
+            pass
+
+    try:
+        mtime = Path(__file__).resolve().stat().st_mtime
+    except Exception:
+        return ""
+
+    try:
+        return _format_timestamp(mtime)
+    except Exception:
+        return ""
+
+
+_DEFAULT_BUILD_DATE = _default_build_date()
 _DEFAULT_DEVELOPER = "Derek Midkiff aka BobTheZombie"
 _DEFAULT_URL = "https://github.com/BobTheZombie/LPM"
 
