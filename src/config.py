@@ -51,6 +51,8 @@ MARCH = "generic"
 MTUNE = "generic"
 CPU_VENDOR = ""
 CPU_FAMILY = ""
+FETCH_MAX_WORKERS = 8
+IO_BUFFER_SIZE = 1 << 20
 
 
 def initialize_state() -> None:
@@ -168,7 +170,7 @@ def _init_cpu_settings() -> Tuple[str, str, str, str]:
 def _apply_conf(conf: Mapping[str, str]) -> None:
     global CONF, ARCH, OPT_LEVEL, MAX_SNAPSHOTS, MAX_LEARNT_CLAUSES
     global INSTALL_PROMPT_DEFAULT, ALLOW_LPMBUILD_FALLBACK, MARCH, MTUNE
-    global CPU_VENDOR, CPU_FAMILY
+    global CPU_VENDOR, CPU_FAMILY, FETCH_MAX_WORKERS, IO_BUFFER_SIZE
     global DISTRO_MAINTAINER_MODE, DISTRO_NAME, DISTRO_REPO_ROOT
     global DISTRO_REPO_BASE_URL, DISTRO_SOURCE_ROOT, DISTRO_LPMBUILD_ROOT
     global DISTRO_GIT_ENABLED, DISTRO_GIT_REMOTE, DISTRO_GIT_BRANCH, DISTRO_GIT_ROOT
@@ -197,6 +199,18 @@ def _apply_conf(conf: Mapping[str, str]) -> None:
     ALLOW_LPMBUILD_FALLBACK = _get_bool("ALLOW_LPMBUILD_FALLBACK", False)
 
     MARCH, MTUNE, CPU_VENDOR, CPU_FAMILY = _init_cpu_settings()
+
+    default_fetch_workers = max(4, min(32, (os.cpu_count() or 4) * 2))
+    try:
+        FETCH_MAX_WORKERS = max(1, int(CONF.get("FETCH_MAX_WORKERS", str(default_fetch_workers))))
+    except ValueError:
+        FETCH_MAX_WORKERS = default_fetch_workers
+
+    default_io_buffer = 1 << 20
+    try:
+        IO_BUFFER_SIZE = max(65536, int(CONF.get("IO_BUFFER_SIZE", str(default_io_buffer))))
+    except ValueError:
+        IO_BUFFER_SIZE = default_io_buffer
 
     DISTRO_MAINTAINER_MODE = _get_bool("DISTRO_MAINTAINER_MODE", False)
     DISTRO_NAME = CONF.get("DISTRO_NAME", "")

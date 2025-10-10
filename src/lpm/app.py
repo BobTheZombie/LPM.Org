@@ -117,7 +117,9 @@ from ..config import (
     CPU_VENDOR,
     DB_PATH,
     DEFAULT_ROOT,
+    FETCH_MAX_WORKERS,
     HOOK_DIR,
+    IO_BUFFER_SIZE,
     LIBLPM_HOOK_DIRS,
     MAX_LEARNT_CLAUSES,
     INSTALL_PROMPT_DEFAULT,
@@ -1725,7 +1727,7 @@ def open_package_tar(blob: Path, stream: bool = True) -> tarfile.TarFile:
         buf = io.BytesIO()
         try:
             while True:
-                chunk = reader.read(16384)
+                chunk = reader.read(IO_BUFFER_SIZE)
                 if not chunk:
                     break
                 buf.write(chunk)
@@ -1939,7 +1941,7 @@ def fetch_all(pkgs: List[PkgMeta]) -> Dict[str, object]:
     results: Dict[str, object] = {}
     if not pkgs:
         return results
-    max_workers = min(8, len(pkgs))
+    max_workers = min(max(1, FETCH_MAX_WORKERS), len(pkgs))
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         future_map = {ex.submit(fetch_blob, p): p.name for p in pkgs}
         for fut in progress_bar(

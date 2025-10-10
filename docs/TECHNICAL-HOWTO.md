@@ -42,6 +42,12 @@ Key configuration files and directories include:
 * `/var/lib/lpm/{state.db,cache,snapshots}` – directories initialised on startup
   and consumed by package transactions.【F:src/config.py†L5-L33】【F:lpm.py†L447-L546】
 
+High-throughput environments can raise the downloader pool and decompression
+buffer directly from `lpm.conf`. `FETCH_MAX_WORKERS` controls how many blob
+downloads run in parallel (defaulting to twice the CPU core count, clamped
+between 4 and 32), while `IO_BUFFER_SIZE` sets the non-streaming extraction
+buffer in bytes (default 1 MiB, minimum 64 KiB).【F:src/config.py†L43-L55】【F:src/config.py†L203-L213】【F:src/lpm/app.py†L1724-L1733】【F:src/lpm/app.py†L1939-L1958】
+
 Always ensure these locations are writable inside the root you target; otherwise
 commands that modify system state will fail.
 
