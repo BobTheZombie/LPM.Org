@@ -96,6 +96,11 @@ commit hash.
 `lpm` uses sub‑commands. Each command listed below shows its required
 arguments and optional flags.
 
+- `python -m src.ui.app` – launch the optional Tkinter-based graphical
+  interface. The UI provides search, package detail inspection, and helpers
+  around the existing install/upgrade/remove CLI commands. It is a thin
+  wrapper around the command line, so actions still require the same
+  privileges as their terminal counterparts.
 - `lpm setup` – launch the interactive first-run configuration wizard. The
   wizard also runs automatically the first time `lpm` starts if
   `/etc/lpm/lpm.conf` is missing.
