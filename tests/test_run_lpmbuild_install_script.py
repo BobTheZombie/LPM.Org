@@ -358,11 +358,23 @@ def test_run_lpmbuild_runs_phases_under_bwrap(tmp_path, monkeypatch):
         if isinstance(cmd, list) and cmd and cmd[0] == "bwrap":
             command_str = cmd[-1]
             env = kwargs.get("env") or {}
-            srcroot = Path(env["SRCROOT"])
-            last_srcroot["path"] = srcroot
+            host_srcroot = Path(kwargs.get("cwd"))
+            last_srcroot["host"] = host_srcroot
+            last_srcroot["env"] = env
+            assert env["DESTDIR"] == "/pkgdir"
+            assert env["pkgdir"] == "/pkgdir"
+            assert env["BUILDROOT"] == "/build"
+            assert env["SRCROOT"] == "/src"
+            env_copy = dict(env)
+            env_copy["DESTDIR"] = env.get("LPM_HOST_DESTDIR", env_copy["DESTDIR"])
+            env_copy["pkgdir"] = env.get("LPM_HOST_PKGDIR", env_copy["pkgdir"])
+            env_copy["BUILDROOT"] = env.get("LPM_HOST_BUILDROOT", env_copy["BUILDROOT"])
+            env_copy["SRCROOT"] = str(host_srcroot)
             assert str(script.resolve()) in command_str
-            adjusted = command_str.replace("cd /src", f"cd {shlex.quote(str(srcroot))}")
-            return real_run(["bash", "-c", adjusted], *args, **kwargs)
+            adjusted = command_str.replace("cd /src", f"cd {shlex.quote(str(host_srcroot))}")
+            real_kwargs = dict(kwargs)
+            real_kwargs.pop("env", None)
+            return real_run(["bash", "-c", adjusted], *args, env=env_copy, **real_kwargs)
         return real_run(cmd, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -376,9 +388,82 @@ def test_run_lpmbuild_runs_phases_under_bwrap(tmp_path, monkeypatch):
 
     assert out_path.exists()
 
-    srcroot = last_srcroot.get("path")
+    srcroot = last_srcroot.get("host")
     assert srcroot is not None
     phases_log = srcroot / "phases.log"
     assert phases_log.read_text().splitlines() == ["prepare", "build", "staging"]
 
-    shutil.rmtree(recorded["stagedir"], ignore_errors=True)
+    if "stagedir" in recorded:
+        shutil.rmtree(recorded["stagedir"], ignore_errors=True)
+
+
+def test_run_lpmbuild_runs_phases_under_fakeroot(tmp_path, monkeypatch):
+    script_dir = tmp_path / "pkg"
+    script_dir.mkdir()
+    script = script_dir / "foo.lpmbuild"
+    script.write_text(
+        textwrap.dedent(
+            """
+            NAME=foo
+            VERSION=1
+
+            prepare() {
+                echo prepare >> "$SRCROOT/phases.log"
+            }
+
+            build() {
+                echo build >> "$SRCROOT/phases.log"
+            }
+
+            staging() {
+                echo staging >> "$SRCROOT/phases.log"
+            }
+            """
+        ).strip()
+    )
+
+    monkeypatch.setitem(lpm.CONF, "SANDBOX_MODE", "fakeroot")
+    monkeypatch.setattr(lpm, "generate_install_script", lambda stagedir: "echo hi")
+
+    recorded = {}
+
+    def fake_build_package(stagedir, meta, out, sign=True):
+        recorded["stagedir"] = stagedir
+        out.write_text("pkg")
+
+    monkeypatch.setattr(lpm, "build_package", fake_build_package)
+
+    real_run = subprocess.run
+    seen = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and cmd and cmd[0] == "fakeroot":
+            command_str = cmd[-1]
+            env = kwargs.get("env") or {}
+            host_srcroot = Path(kwargs.get("cwd"))
+            seen["env"] = env
+            seen["host_srcroot"] = host_srcroot
+            assert env["SRCROOT"] == str(host_srcroot)
+            assert env["DESTDIR"].startswith("/tmp/pkg-")
+            assert str(script.resolve()) in command_str
+            return real_run(["bash", "-c", command_str], *args, **kwargs)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    out_path, _, _, _ = lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    assert out_path.exists()
+
+    host_srcroot = seen.get("host_srcroot")
+    assert host_srcroot is not None
+    phases_log = host_srcroot / "phases.log"
+    assert phases_log.read_text().splitlines() == ["prepare", "build", "staging"]
+
+    if "stagedir" in recorded:
+        shutil.rmtree(recorded["stagedir"], ignore_errors=True)
