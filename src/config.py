@@ -26,6 +26,19 @@ TRUST_DIR = Path("/etc/lpm/trust")                     # dir of *.pem public key
 DEFAULT_ROOT = "/"
 UMASK = 0o22
 
+_MAINTAINER_BASE = STATE_DIR / "maintainer"
+
+DISTRO_MAINTAINER_MODE = False
+DISTRO_NAME = ""
+DISTRO_REPO_ROOT = _MAINTAINER_BASE / "repo"
+DISTRO_REPO_BASE_URL = ""
+DISTRO_SOURCE_ROOT = _MAINTAINER_BASE / "sources"
+DISTRO_LPMBUILD_ROOT = _MAINTAINER_BASE / "lpmbuilds"
+DISTRO_GIT_ENABLED = False
+DISTRO_GIT_REMOTE = ""
+DISTRO_GIT_BRANCH = "main"
+DISTRO_GIT_ROOT = _MAINTAINER_BASE
+
 # Module-level configuration cache; populated via _apply_conf()
 CONF: Dict[str, str] = {}
 ARCH = ""
@@ -156,6 +169,9 @@ def _apply_conf(conf: Mapping[str, str]) -> None:
     global CONF, ARCH, OPT_LEVEL, MAX_SNAPSHOTS, MAX_LEARNT_CLAUSES
     global INSTALL_PROMPT_DEFAULT, ALLOW_LPMBUILD_FALLBACK, MARCH, MTUNE
     global CPU_VENDOR, CPU_FAMILY
+    global DISTRO_MAINTAINER_MODE, DISTRO_NAME, DISTRO_REPO_ROOT
+    global DISTRO_REPO_BASE_URL, DISTRO_SOURCE_ROOT, DISTRO_LPMBUILD_ROOT
+    global DISTRO_GIT_ENABLED, DISTRO_GIT_REMOTE, DISTRO_GIT_BRANCH, DISTRO_GIT_ROOT
 
     CONF = dict(conf)
     ARCH = CONF.get("ARCH", os.uname().machine if hasattr(os, "uname") else "x86_64")
@@ -181,6 +197,38 @@ def _apply_conf(conf: Mapping[str, str]) -> None:
     ALLOW_LPMBUILD_FALLBACK = _get_bool("ALLOW_LPMBUILD_FALLBACK", False)
 
     MARCH, MTUNE, CPU_VENDOR, CPU_FAMILY = _init_cpu_settings()
+
+    DISTRO_MAINTAINER_MODE = _get_bool("DISTRO_MAINTAINER_MODE", False)
+    DISTRO_NAME = CONF.get("DISTRO_NAME", "")
+
+    def _expand_path(value: object, default: Path) -> Path:
+        if isinstance(value, Path):
+            return value
+        text = str(value).strip() if isinstance(value, str) else ""
+        if not text:
+            return default
+        expanded = os.path.expanduser(text)
+        try:
+            return Path(expanded).resolve()
+        except Exception:
+            return Path(expanded)
+
+    default_repo = _MAINTAINER_BASE / "repo"
+    DISTRO_REPO_ROOT = _expand_path(CONF.get("DISTRO_REPO_ROOT", str(default_repo)), default_repo)
+    DISTRO_REPO_BASE_URL = str(CONF.get("DISTRO_REPO_BASE_URL", "") or "").strip()
+
+    default_sources = _MAINTAINER_BASE / "sources"
+    DISTRO_SOURCE_ROOT = _expand_path(CONF.get("DISTRO_SOURCE_ROOT", str(default_sources)), default_sources)
+
+    default_lpmbuilds = _MAINTAINER_BASE / "lpmbuilds"
+    DISTRO_LPMBUILD_ROOT = _expand_path(CONF.get("DISTRO_LPMBUILD_ROOT", str(default_lpmbuilds)), default_lpmbuilds)
+
+    DISTRO_GIT_ENABLED = _get_bool("DISTRO_GIT_ENABLED", False)
+    DISTRO_GIT_REMOTE = str(CONF.get("DISTRO_GIT_REMOTE", "") or "").strip()
+    DISTRO_GIT_BRANCH = str(CONF.get("DISTRO_GIT_BRANCH", "main") or "main").strip() or "main"
+
+    default_git_root = _MAINTAINER_BASE
+    DISTRO_GIT_ROOT = _expand_path(CONF.get("DISTRO_GIT_ROOT", str(default_git_root)), default_git_root)
 
 
 def _normalize_key(key: str) -> str | None:
@@ -312,4 +360,14 @@ __all__ = [
     "CPU_VENDOR",
     "CPU_FAMILY",
     "detect_init_system",
+    "DISTRO_MAINTAINER_MODE",
+    "DISTRO_NAME",
+    "DISTRO_REPO_ROOT",
+    "DISTRO_REPO_BASE_URL",
+    "DISTRO_SOURCE_ROOT",
+    "DISTRO_LPMBUILD_ROOT",
+    "DISTRO_GIT_ENABLED",
+    "DISTRO_GIT_REMOTE",
+    "DISTRO_GIT_BRANCH",
+    "DISTRO_GIT_ROOT",
 ]

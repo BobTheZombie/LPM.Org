@@ -109,6 +109,7 @@ initialize_state()
 from ..fs import read_json, write_json, urlread
 from ..installgen import generate_install_script
 from ..first_run_ui import run_first_run_wizard
+from .. import maintainer_mode
 from .resolver import CNF, CDCLSolver
 from .hooks import HookTransactionManager, load_hooks
 
@@ -138,17 +139,36 @@ GREEN  = "\033[1;32m"
 RED    = "\033[1;31m"
 RESET  = "\033[0m"
 
+def _resolve_lpm_attr(name: str, default):
+    module = sys.modules.get("lpm")
+    if module is None:
+        return default
+    return getattr(module, name, default)
+
+
 def log(msg: str):
+    override = _resolve_lpm_attr("log", None)
+    if override is not None and override is not log:
+        return override(msg)
     print(f"{PURPLE}{msg}{RESET}", file=sys.stderr)
 
 def die(msg: str, code: int = 2):
+    override = _resolve_lpm_attr("die", None)
+    if override is not None and override is not die:
+        return override(msg, code)
     print(f"{RED}[ERROR]{RESET} {msg}", file=sys.stderr)
     sys.exit(code)
 
 def ok(msg: str):
+    override = _resolve_lpm_attr("ok", None)
+    if override is not None and override is not ok:
+        return override(msg)
     print(f"{GREEN}[OK]{RESET} {msg}", file=sys.stderr)
 
 def warn(msg: str):
+    override = _resolve_lpm_attr("warn", None)
+    if override is not None and override is not warn:
+        return override(msg)
     print(f"{CYAN}[WARN]{RESET} {msg}", file=sys.stderr)
 
 def print_build_summary(meta: PkgMeta, out: Path, duration: float, deps: int, phases: int):
@@ -535,7 +555,7 @@ def del_repo(name):
 
 def fetch_repo_index(repo: Repo) -> List[PkgMeta]:
     idx_url = repo.url.rstrip("/") + "/index.json"
-    raw, _ = urlread(idx_url)
+    raw, _ = _resolve_lpm_attr("urlread", urlread)(idx_url)
     j = json.loads(raw.decode("utf-8"))
     return [PkgMeta.from_dict(p, repo.name, repo.priority, repo.bias, repo.decay) for p in j.get("packages",[])]
 
@@ -584,6 +604,9 @@ CREATE TABLE IF NOT EXISTS snapshots(
 );
 """
 def db() -> sqlite3.Connection:
+    override = _resolve_lpm_attr("db", None)
+    if override is not None and override is not db:
+        return override()
     c = sqlite3.connect(str(DB_PATH))
     c.execute("PRAGMA journal_mode=WAL")
     c.executescript(SCHEMA)
@@ -598,6 +621,9 @@ def db() -> sqlite3.Connection:
     return c
 
 def db_installed(conn) -> Dict[str,dict]:
+    override = _resolve_lpm_attr("db_installed", None)
+    if override is not None and override is not db_installed:
+        return override(conn)
     res = {}
     rows = conn.execute(
         "SELECT name,version,release,arch,provides,symbols,requires,manifest,explicit FROM installed"
@@ -1568,7 +1594,21 @@ def build_python_package_from_pip(
             )
 
             out = outdir / f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}"
-            build_package(stagedir, meta, out, sign=True)
+            _resolve_lpm_attr("build_package", build_package)(stagedir, meta, out, sign=True)
+
+            if maintainer_mode.is_enabled():
+                try:
+                    maint_result = maintainer_mode.handle_lpmbuild(
+                        primary=(meta, out),
+                        split_records=(),
+                        script_path=None,
+                        source_tree=download_dir if download_dir.exists() else None,
+                    )
+                except Exception as exc:
+                    warn(f"Maintainer mode error: {exc}")
+                else:
+                    maintainer_mode.generate_indexes(maint_result, gen_index)
+                    maintainer_mode.finalize_git(maint_result)
 
             duration = time.time() - start
             return out, meta, duration
@@ -1855,11 +1895,11 @@ def fetch_blob(p: PkgMeta) -> Tuple[Path, Optional[Path]]:
         if sig_src.exists(): shutil.copy2(sig_src, sig_dst)
     else:
         for _ in progress_bar(range(1), desc=f"Downloading {p.name}"):
-            data, _ = urlread(url)
+            data, _ = _resolve_lpm_attr("urlread", urlread)(url)
             dst.write_bytes(data)
         try:
             sig_url = url + ".sig"
-            sig_data, _ = urlread(sig_url)
+            sig_data, _ = _resolve_lpm_attr("urlread", urlread)(sig_url)
             sig_dst.write_bytes(sig_data)
         except Exception:
             pass
@@ -2332,7 +2372,7 @@ def _maybe_fetch_source(url: str, dst_dir: Path, *, filename: Optional[str] = No
             warn(f"Failed to use cached source for {url}: {e}")
 
     ok(f"Fetching source: {url}")
-    data, meta = urlread(url)
+    data, meta = _resolve_lpm_attr("urlread", urlread)(url)
 
     resolved_name = filename
     if not resolved_name:
@@ -2442,7 +2482,7 @@ def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
     ok(f"Fetching lpmbuild for {pkgname} from {url}")
     dst.parent.mkdir(parents=True, exist_ok=True)
     try:
-        data, _ = urlread(url)
+        data, _ = _resolve_lpm_attr("urlread", urlread)(url)
     except Exception as e:
         die(f"Failed to fetch lpmbuild for {pkgname}: {e}")
     dst.write_bytes(data)
@@ -2552,7 +2592,7 @@ def run_lpmbuild(
     building_stack_set = set(building_stack)
 
     # --- Auto-build dependencies before continuing ---
-    fetch_fn = fetcher or fetch_lpmbuild
+    fetch_fn = fetcher or _resolve_lpm_attr("fetch_lpmbuild", fetch_lpmbuild)
 
     if build_deps:
         seen: Set[Tuple[str, str]] = set()
@@ -2712,7 +2752,9 @@ def run_lpmbuild(
                 log(f"[deps] ({idx}/{total}) building required Python package: {spec}")
             else:
                 log(f"[deps] building required Python package: {spec}")
-            out, meta, _ = build_python_package_from_pip(
+            out, meta, _ = _resolve_lpm_attr(
+                "build_python_package_from_pip", build_python_package_from_pip
+            )(
                 spec,
                 outdir or script_dir,
                 include_deps=True,
@@ -3024,7 +3066,7 @@ def run_lpmbuild(
         phase_aliases: Tuple[str, ...] = ()
         if func == "staging":
             phase_aliases = ("install",)
-        sandboxed_run(
+        _resolve_lpm_attr("sandboxed_run", sandboxed_run)(
             func,
             cwd,
             env,
@@ -3117,7 +3159,9 @@ def run_lpmbuild(
                     f.write("\ninstall_script \"$@\"\n")
                 install_sh.chmod(0o755)
             else:
-                script_text = generate_install_script(stagedir)
+                script_text = _resolve_lpm_attr(
+                    "generate_install_script", generate_install_script
+                )(stagedir)
                 with install_sh.open("w", encoding="utf-8") as f:
                     f.write("#!/bin/sh\nset -e\n")
                     f.write(script_text)
@@ -3143,7 +3187,7 @@ def run_lpmbuild(
 
     outdir = script_dir if outdir is None else outdir
     out = outdir / f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}"
-    build_package(stagedir, meta, out, sign=True)
+    _resolve_lpm_attr("build_package", build_package)(stagedir, meta, out, sign=True)
     split_records: List[Tuple[Path, PkgMeta]] = []
     try:
         if split_record_path.exists():
@@ -3170,10 +3214,28 @@ def run_lpmbuild(
         with contextlib.suppress(Exception):
             helper_path.unlink()
 
+    if maintainer_mode.is_enabled():
+        try:
+            maint_result = maintainer_mode.handle_lpmbuild(
+                primary=(meta, out),
+                split_records=split_records,
+                script_path=script_path,
+                source_tree=srcroot if srcroot.exists() else None,
+            )
+        except Exception as exc:
+            warn(f"Maintainer mode error: {exc}")
+        else:
+            maintainer_mode.generate_indexes(maint_result, gen_index)
+            maintainer_mode.finalize_git(maint_result)
+
     if prompt_install:
-        prompt_install_pkg(out, kind="dependency" if is_dep else "package", default=prompt_default)
+        _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(
+            out, kind="dependency" if is_dep else "package", default=prompt_default
+        )
         for split_path, _split_meta in split_records:
-            prompt_install_pkg(split_path, kind="split package", default=prompt_default)
+            _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(
+                split_path, kind="split package", default=prompt_default
+            )
     return out, duration, phase_count, split_records
 
 # =========================== CLI commands =====================================
@@ -3640,8 +3702,8 @@ def cmd_build(a):
         obsoletes=a.obsoletes, recommends=a.recommends, suggests=a.suggests
     )
     out = Path(a.output or f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}")
-    build_package(stagedir, meta, out, sign=(not a.no_sign))
-    prompt_install_pkg(out, default=a.install_default)
+    _resolve_lpm_attr("build_package", build_package)(stagedir, meta, out, sign=(not a.no_sign))
+    _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(out, default=a.install_default)
 
 def cmd_splitpkg(a):
     stagedir = Path(a.stagedir)
@@ -3787,7 +3849,9 @@ def cmd_splitpkg(a):
 
         if not install_sh.exists():
             try:
-                script_text = generate_install_script(stagedir)
+                script_text = _resolve_lpm_attr(
+                    "generate_install_script", generate_install_script
+                )(stagedir)
                 with install_sh.open("w", encoding="utf-8") as f:
                     f.write("#!/bin/sh\nset -e\n")
                     f.write(script_text)
@@ -3797,7 +3861,7 @@ def cmd_splitpkg(a):
             except Exception as exc:
                 warn(f"Could not embed install script for {name}: {exc}")
 
-    build_package(stagedir, meta, out, sign=(not a.no_sign))
+    _resolve_lpm_attr("build_package", build_package)(stagedir, meta, out, sign=(not a.no_sign))
 
     record_path = os.environ.get("LPM_SPLIT_RECORD")
     if record_path:
@@ -3820,7 +3884,7 @@ def cmd_buildpkg(a):
             a.outdir,
             include_deps=not a.no_deps,
         )
-        prompt_install_pkg(out, default=a.install_default)
+        _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(out, default=a.install_default)
         print_build_summary(meta, out, duration, len(meta.requires), 1)
         ok(f"Built {out}")
         return

@@ -135,10 +135,57 @@ for environments where Qt is unavailable but does not receive new features.
 
 `lpm` uses sub‑commands. Each command listed below shows its required
 arguments and optional flags.
+- **Distribution maintainer mode** – see the dedicated section below for
+  automating repository publication after builds.
 - `lpm setup` – launch the interactive first-run configuration wizard. The
   wizard also runs automatically the first time `lpm` starts if
   `/etc/lpm/lpm.conf` is missing.
 - `lpm clean` – purge cached package blobs from `${XDG_CACHE_HOME:-~/.cache}/lpm`.
+
+### Distribution maintainer mode
+
+Maintainer mode turns LPM into a turnkey release pipeline that copies finished
+packages, their detached signatures, sources, and `.lpmbuild` scripts into a
+publishable tree every time you invoke `lpm buildpkg`, the Python package
+builder, or any other entry point that produces `.zst` artifacts.【F:src/maintainer_mode.py†L100-L210】【F:src/lpm/app.py†L1589-L1626】【F:src/lpm/app.py†L3210-L3236】
+
+1. Run `sudo lpm setup` and answer **yes** when prompted "Enable distribution
+   maintainer mode?". The wizard will then ask for the distribution name,
+   repository/source roots, and (optionally) Git information. Press Enter to
+   accept the suggested defaults under `/var/lib/lpm/maintainer/...` or point
+   them at existing storage.【F:src/first_run_ui.py†L123-L194】【F:src/config.py†L24-L87】【F:src/config.py†L210-L233】
+2. To enable the pipeline without the wizard, populate `/etc/lpm/lpm.conf` with
+   the `DISTRO_*` keys. For example:
+
+   ```ini
+   DISTRO_MAINTAINER_MODE=yes
+   DISTRO_NAME=MyLPM
+   DISTRO_REPO_ROOT=/srv/lpm/repo
+   DISTRO_SOURCE_ROOT=/srv/lpm/sources
+   DISTRO_LPMBUILD_ROOT=/srv/lpm/lpmbuilds
+   DISTRO_REPO_BASE_URL=https://repo.example.com/lpm
+   DISTRO_GIT_ENABLED=yes
+   DISTRO_GIT_ROOT=/srv/lpm/repo
+   DISTRO_GIT_REMOTE=origin
+   DISTRO_GIT_BRANCH=main
+   ```
+
+   Re-run `lpm setup` at any time to revise these settings. LPM reloads the
+   configuration for every command, so the changes take effect immediately.【F:src/config.py†L200-L260】
+
+3. Build packages as usual. When maintainer mode is active, LPM copies each
+   artifact (and any split sub-packages) into `<repo-root>/<arch>/`, writes an
+   `index.json` using the same generator that powers standard repositories, and
+   archives sources plus metadata under the configured roots. Detached
+   signatures (`.sig`) ride along automatically.【F:src/maintainer_mode.py†L132-L210】
+4. If Git publishing is enabled, LPM stages every new file under the configured
+   repository root, commits them with a message such as `MyLPM: publish
+   pkg-version-arch`, and pushes to the chosen remote/branch when configured.
+   Skip the remote to keep changes local for manual review.【F:src/maintainer_mode.py†L214-L274】
+
+Repositories produced this way are ready to serve over HTTP/HTTPS or export via
+`file://` URLs. Pair them with your existing mirror tooling or point other LPM
+installations at the generated `index.json` files.
 
 ### Repository management
 
