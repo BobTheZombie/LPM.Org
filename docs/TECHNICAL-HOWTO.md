@@ -379,6 +379,26 @@ specific `--arch`. Useful for publishing custom repositories.【F:lpm.py†L2652
 $ lpm genindex repo/ --base-url https://repo.example.com/custom
 ```
 
+### 10.4 Distribution maintainer mode workflow
+
+Turn on maintainer mode when you want LPM to publish packages automatically.
+Run `lpm setup`, answer **yes** to the maintainer prompt, and provide the
+repository/source locations and optional Git details when prompted. The wizard
+persists the answers to `/etc/lpm/lpm.conf` as `DISTRO_*` keys, which you can
+also edit manually if you prefer.【F:src/first_run_ui.py†L123-L194】【F:src/config.py†L24-L87】【F:src/config.py†L210-L233】
+
+When maintainer mode is active, every call to `lpm buildpkg` (and the internal
+builders used by `lpm pip build`) copies the main package, split packages, and
+their detached signatures into `<DISTRO_REPO_ROOT>/<arch>/`, archives sources
+under `DISTRO_SOURCE_ROOT`, and records metadata plus the `.lpmbuild` script
+under `DISTRO_LPMBUILD_ROOT`. LPM then regenerates `index.json` files so the
+repository stays installable without extra steps.【F:src/maintainer_mode.py†L100-L210】【F:src/lpm/app.py†L1589-L1626】【F:src/lpm/app.py†L3210-L3236】
+
+Enable Git automation to have LPM stage the new and updated files, commit them
+with a summary derived from the published artifacts, and push to a configured
+remote/branch. Leaving the remote blank keeps the changes local for manual
+review or alternative deployment tools.【F:src/maintainer_mode.py†L214-L274】
+
 ## 11. Troubleshooting Tips
 
 * Use `--dry-run` with install/remove/upgrade to inspect resolver output before
