@@ -25,6 +25,13 @@ class ConfigField:
 _TRUE_SET = {"y", "yes", "true", "1", "on"}
 _FALSE_SET = {"n", "no", "false", "0", "off"}
 _CPU_CHOICES = {"x86_64v1", "x86_64v2", "x86_64v3", "x86_64v4"}
+_SANDBOX_CHOICES = ("none", "fakeroot", "bwrap")
+_OPT_LEVELS = ("-Os", "-O2", "-O3", "-Ofast")
+_DEFAULT_LPMBUILD_REPO = "https://gitlab.com/lpm-org/packages/-/raw/main/"
+_DEFAULT_BINARY_REPO = (
+    "https://gitlab.com/lpm-org/lpm-org-official-binaries/{name}/"
+    "{name}-{version}-{release}.{arch}.lpm"
+)
 
 
 def _identity(value: str) -> str:
@@ -85,6 +92,68 @@ def _parse_optional_string(value: str) -> str:
     return value.strip()
 
 
+def _parse_optional_path(value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        return ""
+    return str(Path(cleaned).expanduser())
+
+
+def _parse_non_negative_int(value: str) -> int:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("value cannot be empty")
+    try:
+        parsed = int(cleaned, 10)
+    except ValueError as exc:  # pragma: no cover - defensive
+        raise ValueError("enter a non-negative integer") from exc
+    if parsed < 0:
+        raise ValueError("enter a non-negative integer")
+    return parsed
+
+
+def _parse_positive_int(value: str) -> int:
+    parsed = _parse_non_negative_int(value)
+    if parsed <= 0:
+        raise ValueError("enter a positive integer")
+    return parsed
+
+
+def _parse_opt_level(value: str) -> str:
+    cleaned = value.strip()
+    if cleaned not in _OPT_LEVELS:
+        raise ValueError("choose one of: -Os, -O2, -O3, -Ofast")
+    return cleaned
+
+
+def _parse_yes_no_str(value: str) -> str:
+    return "yes" if _parse_yes_no(value) else "no"
+
+
+def _format_yes_no_str(value: object) -> str:
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in _TRUE_SET:
+            return "yes"
+        if lowered in _FALSE_SET:
+            return "no"
+    return str(value)
+
+
+def _default_yes_no(key: str, fallback_true: bool) -> str:
+    raw = config.CONF.get(key)
+    if raw is None:
+        return "yes" if fallback_true else "no"
+    lowered = str(raw).strip().lower()
+    if lowered in _TRUE_SET:
+        return "yes"
+    if lowered in _FALSE_SET:
+        return "no"
+    return "yes" if fallback_true else "no"
+
+
 def _build_fields() -> tuple[tuple[ConfigField, ...], tuple[ConfigField, ...]]:
     base_fields = (
         ConfigField(
@@ -100,6 +169,52 @@ def _build_fields() -> tuple[tuple[ConfigField, ...], tuple[ConfigField, ...]]:
             parser=_parse_choice(["auto", "manual", "none"]),
             default=config.CONF.get("INIT_POLICY", "auto"),
             help_text="Use 'auto' to enable detected services after installs.",
+        ),
+        ConfigField(
+            key="SANDBOX_MODE",
+            prompt="Preferred build sandbox (none/fakeroot/bwrap)",
+            parser=_parse_choice(_SANDBOX_CHOICES),
+            default=(
+                config.CONF.get("SANDBOX_MODE", "none") or "none"
+            ).strip().lower()
+            or "none",
+            help_text="Choose 'none' to run builds without a sandbox.",
+        ),
+        ConfigField(
+            key="OPT_LEVEL",
+            prompt="Default compiler optimisation level (-Os/-O2/-O3/-Ofast)",
+            parser=_parse_opt_level,
+            default=config.OPT_LEVEL,
+        ),
+        ConfigField(
+            key="FETCH_MAX_WORKERS",
+            prompt="Maximum concurrent download workers",
+            parser=_parse_positive_int,
+            default=config.FETCH_MAX_WORKERS,
+        ),
+        ConfigField(
+            key="IO_BUFFER_SIZE",
+            prompt="IO buffer size in bytes (minimum 65536)",
+            parser=_parse_positive_int,
+            default=config.IO_BUFFER_SIZE,
+        ),
+        ConfigField(
+            key="STATE_DIR",
+            prompt="State directory for cached data",
+            parser=_parse_path,
+            default=str(config.STATE_DIR),
+        ),
+        ConfigField(
+            key="MAX_SNAPSHOTS",
+            prompt="Maximum filesystem snapshots to retain",
+            parser=_parse_non_negative_int,
+            default=config.MAX_SNAPSHOTS,
+        ),
+        ConfigField(
+            key="MAX_LEARNT_CLAUSES",
+            prompt="Maximum learnt clauses for dependency solver",
+            parser=_parse_positive_int,
+            default=config.MAX_LEARNT_CLAUSES,
         ),
         ConfigField(
             key="INSTALL_PROMPT_DEFAULT",
@@ -121,6 +236,32 @@ def _build_fields() -> tuple[tuple[ConfigField, ...], tuple[ConfigField, ...]]:
             default=config.CONF.get("CPU_TYPE", ""),
             help_text="Leave empty to keep auto-detected CPU tuning.",
             optional=True,
+        ),
+        ConfigField(
+            key="LPMBUILD_REPO",
+            prompt="lpmbuild source repository URL template",
+            parser=_identity,
+            default=config.CONF.get("LPMBUILD_REPO", _DEFAULT_LPMBUILD_REPO),
+        ),
+        ConfigField(
+            key="BINARY_REPO",
+            prompt="Binary package repository URL template",
+            parser=_identity,
+            default=config.CONF.get("BINARY_REPO", _DEFAULT_BINARY_REPO),
+        ),
+        ConfigField(
+            key="COPY_OUT_DIR",
+            prompt="Directory to copy built artifacts (blank to disable)",
+            parser=_parse_optional_path,
+            default=config.CONF.get("COPY_OUT_DIR", ""),
+            optional=True,
+        ),
+        ConfigField(
+            key="ALWAYS_SIGN",
+            prompt="Always sign builds when key is available? (yes/no)",
+            parser=_parse_yes_no_str,
+            default=_default_yes_no("ALWAYS_SIGN", True),
+            formatter=_format_yes_no_str,
         ),
         ConfigField(
             key="DISTRO_MAINTAINER_MODE",
