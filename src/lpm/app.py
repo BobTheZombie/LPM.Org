@@ -296,32 +296,62 @@ def sandboxed_run(
     )
     wrapper = f"set -e\nsource {script_quoted}\n{wrapper_body}"
 
+    run_env = dict(env)
+
     if mode == "fakeroot":
         cmd = ["fakeroot", "bash", "-c", wrapper]
-        subprocess.run(cmd, check=True, env=env, cwd=str(cwd))
+        subprocess.run(cmd, check=True, env=run_env, cwd=str(cwd))
         return
 
     if mode == "bwrap":
         # bwrap isolates FS: read-only root, only bind staging/build/src dirs
+        host_destdir = run_env.get("DESTDIR") or str(stagedir)
+        host_pkgdir = run_env.get("pkgdir") or host_destdir
+        host_buildroot = run_env.get("BUILDROOT") or str(buildroot)
+        host_srcroot = run_env.get("SRCROOT") or str(srcroot)
+        run_env.update(
+            {
+                "DESTDIR": "/pkgdir",
+                "pkgdir": "/pkgdir",
+                "BUILDROOT": "/build",
+                "SRCROOT": "/src",
+                "LPM_HOST_DESTDIR": host_destdir,
+                "LPM_HOST_PKGDIR": host_pkgdir,
+                "LPM_HOST_BUILDROOT": host_buildroot,
+                "LPM_HOST_SRCROOT": host_srcroot,
+            }
+        )
         cmd = [
             "bwrap",
-            "--ro-bind", "/", "/",
-            "--bind", str(stagedir), "/pkgdir",
-            "--bind", str(buildroot), "/build",
-            "--bind", str(srcroot), "/src",
-            "--dev", "/dev",
-            "--proc", "/proc",
+            "--ro-bind",
+            "/",
+            "/",
+            "--bind",
+            str(stagedir),
+            "/pkgdir",
+            "--bind",
+            str(buildroot),
+            "/build",
+            "--bind",
+            str(srcroot),
+            "/src",
+            "--dev",
+            "/dev",
+            "--proc",
+            "/proc",
             "--unshare-all",
-            "--share-net",             # allow networking (remove for full isolation)
+            "--share-net",  # allow networking (remove for full isolation)
             "--die-with-parent",
-            "bash", "-c", f"set -e\ncd /src\nsource {script_quoted}\n{wrapper_body}"
+            "bash",
+            "-c",
+            f"set -e\ncd /src\nsource {script_quoted}\n{wrapper_body}",
         ]
-        subprocess.run(cmd, check=True, env=env, cwd=str(cwd))
+        subprocess.run(cmd, check=True, env=run_env, cwd=str(cwd))
         return
 
     # Default: no sandbox
     cmd = ["bash", "-c", wrapper]
-    subprocess.run(cmd, check=True, env=env, cwd=str(cwd))
+    subprocess.run(cmd, check=True, env=run_env, cwd=str(cwd))
 
 # ================ PACKAGING  ================
 # Hard-locked to .zst
