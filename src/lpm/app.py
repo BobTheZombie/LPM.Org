@@ -2555,6 +2555,7 @@ def run_lpmbuild(
     build_deps: bool = True,
     fetcher: Optional[Callable[[str, Path], Path]] = None,
     _building_stack: Optional[Tuple[str, ...]] = None,
+    executor: Optional[ThreadPoolExecutor] = None,
 ) -> Tuple[Path, float, int, List[Tuple[Path, PkgMeta]]]:
     script_path = script.resolve()
     script_dir = script_path.parent
@@ -2683,6 +2684,7 @@ def run_lpmbuild(
                 build_deps=True,
                 fetcher=fetch_fn,
                 _building_stack=building_stack,
+                executor=executor,
             )[0]
 
         if deps_to_build:
@@ -2699,17 +2701,32 @@ def run_lpmbuild(
                         blob = _build_dep(dep, idx, total)
                         _register_built_dependency_blob(blob)
             else:
-                max_workers = min(4, len(deps_to_build))
-                with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                    for blob in progress_bar(
-                        ex.map(_build_dep, deps_to_build),
-                        total=len(deps_to_build),
+                total = len(deps_to_build)
+                manage_executor = executor is None
+                local_workers = min(4, total)
+                local_executor = (
+                    ThreadPoolExecutor(max_workers=local_workers)
+                    if manage_executor
+                    else executor
+                )
+                try:
+                    futures = [
+                        local_executor.submit(_build_dep, dep, idx, total)
+                        for idx, dep in enumerate(deps_to_build, start=1)
+                    ]
+                    for fut in progress_bar(
+                        as_completed(futures),
+                        total=len(futures),
                         desc="[deps] building",
                         unit="pkg",
                         mode="ninja",
                         leave=True,
                     ):
+                        blob = fut.result()
                         _register_built_dependency_blob(blob)
+                finally:
+                    if manage_executor and local_executor is not None:
+                        local_executor.shutdown(wait=True)
 
         for raw_spec in arr.get("REQUIRES_PYTHON_DEPENDENCIES", []):
             spec = (raw_spec or "").strip()
@@ -2777,15 +2794,45 @@ def run_lpmbuild(
 
         if python_to_build:
             total = len(python_to_build)
-            with progress_bar(
-                python_to_build,
-                unit="pkg",
-                mode="ninja",
-                leave=True,
-            ) as pbar:
-                for idx, (spec, canonical_name) in enumerate(pbar, start=1):
-                    pbar.set_description(f"[deps] pip {canonical_name}")
-                    _build_python_dep(spec, canonical_name, idx, total)
+            if prompt_install:
+                with progress_bar(
+                    python_to_build,
+                    unit="pkg",
+                    mode="ninja",
+                    leave=True,
+                ) as pbar:
+                    for idx, (spec, canonical_name) in enumerate(pbar, start=1):
+                        pbar.set_description(f"[deps] pip {canonical_name}")
+                        _build_python_dep(spec, canonical_name, idx, total)
+            else:
+                manage_executor = executor is None
+                local_workers = min(4, total)
+                local_executor = (
+                    ThreadPoolExecutor(max_workers=local_workers)
+                    if manage_executor
+                    else executor
+                )
+                try:
+                    futures = [
+                        local_executor.submit(
+                            _build_python_dep, spec, canonical_name, idx, total
+                        )
+                        for idx, (spec, canonical_name) in enumerate(
+                            python_to_build, start=1
+                        )
+                    ]
+                    for fut in progress_bar(
+                        as_completed(futures),
+                        total=len(futures),
+                        desc="[deps] pip",
+                        unit="pkg",
+                        mode="ninja",
+                        leave=True,
+                    ):
+                        fut.result()
+                finally:
+                    if manage_executor and local_executor is not None:
+                        local_executor.shutdown(wait=True)
 
     stagedir = Path(f"/tmp/pkg-{name}")
     buildroot = Path(f"/tmp/build-{name}")
@@ -3876,14 +3923,32 @@ def cmd_splitpkg(a):
     ok(f"Built split package {out}")
 
 def cmd_buildpkg(a):
+    def _get_buildpkg_worker_count() -> int:
+        value = CONF.get("BUILDPKG_WORKERS")
+        if value is not None:
+            try:
+                workers = int(value)
+            except (TypeError, ValueError):
+                workers = 0
+            else:
+                if workers > 0:
+                    return workers
+        cpu_workers = os.cpu_count() or 1
+        return max(2, min(8, cpu_workers))
+
+    worker_count = _get_buildpkg_worker_count()
+
     if a.python_pip:
         if a.script:
             die("Cannot specify both a .lpmbuild script and --python-pip")
-        out, meta, duration = build_python_package_from_pip(
-            a.python_pip,
-            a.outdir,
-            include_deps=not a.no_deps,
-        )
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future = executor.submit(
+                _resolve_lpm_attr("build_python_package_from_pip", build_python_package_from_pip),
+                a.python_pip,
+                a.outdir,
+                include_deps=not a.no_deps,
+            )
+            out, meta, duration = future.result()
         _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(out, default=a.install_default)
         print_build_summary(meta, out, duration, len(meta.requires), 1)
         ok(f"Built {out}")
@@ -3896,12 +3961,16 @@ def cmd_buildpkg(a):
     if not script_path.exists():
         die(f".lpmbuild script not found: {script_path}")
 
-    out, duration, phases, splits = run_lpmbuild(
-        script_path,
-        a.outdir,
-        build_deps=not a.no_deps,
-        prompt_default=a.install_default,
-    )
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future = executor.submit(
+            run_lpmbuild,
+            script_path,
+            a.outdir,
+            build_deps=not a.no_deps,
+            prompt_default=a.install_default,
+            executor=executor if worker_count > 1 else None,
+        )
+        out, duration, phases, splits = future.result()
 
     if out and out.exists():
         meta, _ = read_package_meta(out)
