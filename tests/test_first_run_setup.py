@@ -39,7 +39,27 @@ def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "CONF_FILE", conf_path, raising=False)
     monkeypatch.setattr(lpm, "CONF_FILE", conf_path, raising=False)
 
-    user_input = io.StringIO("native\nmanual\ny\nno\nx86_64v3\nno\n")
+    state_dir = tmp_path / "state"
+    responses = [
+        "native",
+        "manual",
+        "bwrap",
+        "-O3",
+        "16",
+        "131072",
+        str(state_dir),
+        "7",
+        "400",
+        "y",
+        "no",
+        "x86_64v3",
+        "https://example.com/packages/",
+        "https://example.com/bin/{name}.lpm",
+        "",
+        "no",
+        "no",
+    ]
+    user_input = io.StringIO("\n".join(responses) + "\n")
     output = io.StringIO()
     monkeypatch.setattr(sys, "stdin", user_input)
     monkeypatch.setattr(sys, "stdout", output)
@@ -52,7 +72,17 @@ def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):
     text = conf_path.read_text(encoding="utf-8")
     assert "ARCH=native" in text
     assert "INIT_POLICY=manual" in text
+    assert "SANDBOX_MODE=bwrap" in text
+    assert "OPT_LEVEL=-O3" in text
+    assert "FETCH_MAX_WORKERS=16" in text
+    assert "IO_BUFFER_SIZE=131072" in text
+    assert f"STATE_DIR={state_dir}" in text
+    assert "MAX_SNAPSHOTS=7" in text
+    assert "MAX_LEARNT_CLAUSES=400" in text
     assert "INSTALL_PROMPT_DEFAULT=y" in text
     assert "ALLOW_LPMBUILD_FALLBACK=false" in text
     assert "CPU_TYPE=x86_64v3" in text
+    assert "LPMBUILD_REPO=https://example.com/packages/" in text
+    assert "BINARY_REPO=https://example.com/bin/{name}.lpm" in text
+    assert "ALWAYS_SIGN=no" in text
     assert "DISTRO_MAINTAINER_MODE=false" in text
