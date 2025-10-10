@@ -1,0 +1,2 @@
+# Dependencies needed to run the PySide6-based Luminosity interface during development.
+PySide6>=6.6

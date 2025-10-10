@@ -102,16 +102,39 @@ toolchain is recreated even when the upstream commit hash has not changed.
 Future updates should re-run the build to refresh this section with the new
 commit hash.
 
+## Graphical interface
+
+### Running the PySide6 UI from source
+
+The modern Qt experience lives in `src/ui/qt_app.py`. To launch it directly
+from a source checkout:
+
+1. Install the UI dependency once (a virtual environment is recommended):
+
+   ```sh
+   python -m pip install -r requirements-ui.txt
+   ```
+
+2. Start the interface from the repository root so the package imports
+   resolve:
+
+   ```sh
+   python -m src.ui.qt_app
+   ```
+
+The PySide6 front-end is a thin wrapper over the CLI, so installing or
+removing packages still requires the same privileges you would normally grant
+`lpm` on the command line.
+
+### Legacy Tk interface
+
+`python -m src.ui.app` launches the original Tkinter UI. It remains available
+for environments where Qt is unavailable but does not receive new features.
+
 ## Command line interface
 
 `lpm` uses sub‑commands. Each command listed below shows its required
 arguments and optional flags.
-
-- `python -m src.ui.app` – launch the optional Tkinter-based graphical
-  interface. The UI provides search, package detail inspection, and helpers
-  around the existing install/upgrade/remove CLI commands. It is a thin
-  wrapper around the command line, so actions still require the same
-  privileges as their terminal counterparts.
 - `lpm setup` – launch the interactive first-run configuration wizard. The
   wizard also runs automatically the first time `lpm` starts if
   `/etc/lpm/lpm.conf` is missing.
