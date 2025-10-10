@@ -74,8 +74,19 @@ def _parse_cpu_type(value: str) -> str:
     return key.replace("X86", "x86").replace("V", "v")
 
 
-def _build_fields() -> tuple[ConfigField, ...]:
-    return (
+def _parse_path(value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("value cannot be empty")
+    return str(Path(cleaned).expanduser())
+
+
+def _parse_optional_string(value: str) -> str:
+    return value.strip()
+
+
+def _build_fields() -> tuple[tuple[ConfigField, ...], tuple[ConfigField, ...]]:
+    base_fields = (
         ConfigField(
             key="ARCH",
             prompt="System architecture",
@@ -111,7 +122,77 @@ def _build_fields() -> tuple[ConfigField, ...]:
             help_text="Leave empty to keep auto-detected CPU tuning.",
             optional=True,
         ),
+        ConfigField(
+            key="DISTRO_MAINTAINER_MODE",
+            prompt="Enable distribution maintainer mode? (yes/no)",
+            parser=_parse_yes_no,
+            default=config.DISTRO_MAINTAINER_MODE,
+            formatter=lambda value: "yes" if value else "no",
+        ),
     )
+
+    maintainer_fields = (
+        ConfigField(
+            key="DISTRO_NAME",
+            prompt="Distribution name",
+            parser=_identity,
+            default=config.DISTRO_NAME or "",
+            optional=True,
+        ),
+        ConfigField(
+            key="DISTRO_REPO_ROOT",
+            prompt="Local package repository directory",
+            parser=_parse_path,
+            default=str(config.DISTRO_REPO_ROOT),
+        ),
+        ConfigField(
+            key="DISTRO_REPO_BASE_URL",
+            prompt="Base URL for published repository (blank for local)",
+            parser=_parse_optional_string,
+            default=config.DISTRO_REPO_BASE_URL or "",
+            optional=True,
+        ),
+        ConfigField(
+            key="DISTRO_SOURCE_ROOT",
+            prompt="Directory to archive build sources",
+            parser=_parse_path,
+            default=str(config.DISTRO_SOURCE_ROOT),
+        ),
+        ConfigField(
+            key="DISTRO_LPMBUILD_ROOT",
+            prompt="Directory to store lpmbuild scripts",
+            parser=_parse_path,
+            default=str(config.DISTRO_LPMBUILD_ROOT),
+        ),
+        ConfigField(
+            key="DISTRO_GIT_ENABLED",
+            prompt="Enable git publishing for maintainer artifacts? (yes/no)",
+            parser=_parse_yes_no,
+            default=config.DISTRO_GIT_ENABLED,
+            formatter=lambda value: "yes" if value else "no",
+        ),
+        ConfigField(
+            key="DISTRO_GIT_ROOT",
+            prompt="Git repository root (if different from package repo)",
+            parser=_parse_path,
+            default=str(config.DISTRO_GIT_ROOT),
+        ),
+        ConfigField(
+            key="DISTRO_GIT_REMOTE",
+            prompt="Git remote name or URL for pushes (blank to skip)",
+            parser=_parse_optional_string,
+            default=config.DISTRO_GIT_REMOTE or "",
+            optional=True,
+        ),
+        ConfigField(
+            key="DISTRO_GIT_BRANCH",
+            prompt="Git branch to push updates",
+            parser=_identity,
+            default=config.DISTRO_GIT_BRANCH or "main",
+        ),
+    )
+
+    return base_fields, maintainer_fields
 
 
 def _gather_metadata() -> Mapping[str, str]:
@@ -207,13 +288,24 @@ def run_first_run_wizard(
 
     _print_header(output_stream, metadata, init_system, cpu_info)
 
+    base_fields, maintainer_fields = _build_fields()
     selections: Dict[str, object] = {}
+    maintainer_enabled = config.DISTRO_MAINTAINER_MODE
 
-    for field in _build_fields():
+    for field in base_fields:
         value = _prompt_field(field, input_stream, output_stream)
         if value is None and field.optional:
             continue
         selections[field.key] = value
+        if field.key == "DISTRO_MAINTAINER_MODE":
+            maintainer_enabled = bool(value)
+
+    if maintainer_enabled:
+        for field in maintainer_fields:
+            value = _prompt_field(field, input_stream, output_stream)
+            if value is None and field.optional:
+                continue
+            selections[field.key] = value
 
     output_stream.write("\nSaving configuration...\n")
     config.save_conf(selections, path=conf_path)

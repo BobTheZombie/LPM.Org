@@ -39,7 +39,7 @@ def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "CONF_FILE", conf_path, raising=False)
     monkeypatch.setattr(lpm, "CONF_FILE", conf_path, raising=False)
 
-    user_input = io.StringIO("native\nmanual\ny\nno\nx86_64v3\n")
+    user_input = io.StringIO("native\nmanual\ny\nno\nx86_64v3\nno\n")
     output = io.StringIO()
     monkeypatch.setattr(sys, "stdin", user_input)
     monkeypatch.setattr(sys, "stdout", output)
@@ -55,3 +55,4 @@ def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):
     assert "INSTALL_PROMPT_DEFAULT=y" in text
     assert "ALLOW_LPMBUILD_FALLBACK=false" in text
     assert "CPU_TYPE=x86_64v3" in text
+    assert "DISTRO_MAINTAINER_MODE=false" in text
