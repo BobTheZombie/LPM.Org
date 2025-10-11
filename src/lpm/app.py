@@ -1426,7 +1426,12 @@ def _detect_python_package_arch(stagedir: Path) -> str:
     return "noarch"
 
 
-def _collect_python_package_metadata(stagedir: Path, *, include_requires_dist: bool) -> Dict[str, object]:
+def _collect_python_package_metadata(
+    stagedir: Path,
+    *,
+    include_requires_dist: bool,
+    arch_hint: Optional[str] = None,
+) -> Dict[str, object]:
     metadata_paths = sorted(stagedir.rglob("*.dist-info/METADATA"))
     parser = Parser()
     chosen: Optional[Tuple[Path, object]] = None
@@ -1459,7 +1464,7 @@ def _collect_python_package_metadata(stagedir: Path, *, include_requires_dist: b
         requires.extend(_requirements_from_requires_dist(message.get_all("Requires-Dist") or []))
 
     requires = list(dict.fromkeys(req for req in requires if req))
-    arch = _detect_python_package_arch(stagedir)
+    arch = arch_hint or _detect_python_package_arch(stagedir)
     provides: List[str] = []
     canonical = canonicalize_name(dist_name)
     if canonical:
@@ -1497,6 +1502,7 @@ def build_python_package_from_pip(
     outdir: Path,
     *,
     include_deps: bool,
+    cpu_overrides: Optional[CpuOverrides] = None,
 ) -> Tuple[Path, PkgMeta, float]:
     start = time.time()
     outdir = Path(outdir)
@@ -1554,8 +1560,31 @@ def build_python_package_from_pip(
         if not interpreter:
             raise RuntimeError("pip build: unable to locate Python interpreter for pip execution")
 
+        overrides = cpu_overrides.normalized() if cpu_overrides else None
+        default_march = MARCH or "generic"
+        default_mtune = MTUNE or "generic"
+        march_base = overrides.march if overrides and overrides.march else default_march
+        mtune_base = overrides.mtune if overrides and overrides.mtune else default_mtune
+        march_value = (march_base or "").strip() or default_march
+        mtune_value = (mtune_base or "").strip() or default_mtune
+
         env = os.environ.copy()
         env.setdefault("PYTHONNOUSERSITE", "1")
+        base_flags = f"{OPT_LEVEL} -march={march_value} -mtune={mtune_value} -pipe -fPIC"
+        extra_cflags = env.get("CFLAGS", "").strip()
+        combined_flags = " ".join(filter(None, [base_flags, extra_cflags])).strip()
+        env["CFLAGS"] = combined_flags
+        env["CXXFLAGS"] = combined_flags
+        env["LDFLAGS"] = OPT_LEVEL
+        arch_hint = overrides.arch if overrides and overrides.arch else None
+        if arch_hint:
+            env["ARCH"] = arch_hint
+            env["LPM_ARCH"] = arch_hint
+        else:
+            env.setdefault("ARCH", ARCH)
+            env.setdefault("LPM_ARCH", ARCH)
+        env["LPM_CPU_MARCH"] = march_value
+        env["LPM_CPU_MTUNE"] = mtune_value
 
         last_error: Optional[Exception] = None
 
@@ -1610,7 +1639,11 @@ def build_python_package_from_pip(
                 last_error = exc
                 continue
 
-            info = _collect_python_package_metadata(stagedir, include_requires_dist=include_deps)
+            info = _collect_python_package_metadata(
+                stagedir,
+                include_requires_dist=include_deps,
+                arch_hint=arch_hint,
+            )
             meta = PkgMeta(
                 name=info["name"],
                 version=info["version"],
@@ -2575,6 +2608,65 @@ def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str]
         installpkg(blob, explicit=(kind != "dependency"))
 
 
+@dataclass
+class CpuOverrides:
+    arch: Optional[str] = None
+    march: Optional[str] = None
+    mtune: Optional[str] = None
+
+    def normalized(self) -> "CpuOverrides":
+        return CpuOverrides(
+            arch=(self.arch or "").strip() or None,
+            march=(self.march or "").strip() or None,
+            mtune=(self.mtune or "").strip() or None,
+        )
+
+    def is_empty(self) -> bool:
+        return not any([self.arch, self.march, self.mtune])
+
+
+def _parse_cpu_overrides(values: Iterable[str]) -> Optional[CpuOverrides]:
+    overrides = CpuOverrides()
+    seen = False
+    for raw in values:
+        if not raw:
+            continue
+        if not raw.startswith("@"):
+            die(f"Unknown positional argument '{raw}' for buildpkg; expected @Override=")
+        key, sep, remainder = raw.partition("=")
+        if key.lower() != "@override":
+            die(f"Unsupported override directive '{key}'")
+        if not sep:
+            continue
+        try:
+            tokens = shlex.split(remainder)
+        except ValueError as exc:
+            die(f"Invalid override specification '{raw}': {exc}")
+        for token in tokens:
+            if not token or "=" not in token:
+                die(f"Invalid override token '{token}' in {raw}")
+            opt, val = token.split("=", 1)
+            opt_norm = opt.lstrip("-").strip().lower()
+            val = val.strip()
+            if not val:
+                continue
+            if opt_norm == "arch":
+                overrides.arch = val
+                seen = True
+            elif opt_norm == "march":
+                overrides.march = val
+                seen = True
+            elif opt_norm == "mtune":
+                overrides.mtune = val
+                seen = True
+            else:
+                die(f"Unsupported override key '{opt}' in {raw}")
+    if not seen:
+        return None
+    normalized = overrides.normalized()
+    return None if normalized.is_empty() else normalized
+
+
 def run_lpmbuild(
     script: Path,
     outdir: Optional[Path] = None,
@@ -2586,6 +2678,7 @@ def run_lpmbuild(
     fetcher: Optional[Callable[[str, Path], Path]] = None,
     _building_stack: Optional[Tuple[str, ...]] = None,
     executor: Optional[ThreadPoolExecutor] = None,
+    cpu_overrides: Optional[CpuOverrides] = None,
 ) -> Tuple[Path, float, int, List[Tuple[Path, PkgMeta]]]:
     script_path = script.resolve()
     script_dir = script_path.parent
@@ -2604,7 +2697,10 @@ def run_lpmbuild(
     name = scal.get("NAME", "")
     version = scal.get("VERSION", "")
     release = scal.get("RELEASE", "1")
-    arch = (scal.get("ARCH") or ARCH or "").strip()
+    overrides = cpu_overrides.normalized() if cpu_overrides else None
+    script_arch = (scal.get("ARCH") or "").strip()
+    override_arch = (overrides.arch or "").strip() if overrides and overrides.arch else ""
+    arch = override_arch or script_arch or (ARCH or "")
     if not arch:
         arch = PkgMeta.__dataclass_fields__["arch"].default
     summary = scal.get("SUMMARY", "")
@@ -2715,6 +2811,7 @@ def run_lpmbuild(
                 fetcher=fetch_fn,
                 _building_stack=building_stack,
                 executor=executor,
+                cpu_overrides=overrides,
             )[0]
 
         if deps_to_build:
@@ -2968,14 +3065,24 @@ def run_lpmbuild(
         "LPM_SPLIT_RECORD": str(split_record_path),
         "LPM_SPLIT_OUTDIR": str(outdir or script_dir),
     })
-
-    base_flags = f"{OPT_LEVEL} -march={MARCH} -mtune={MTUNE} -pipe -fPIC"
+    default_march = MARCH or "generic"
+    default_mtune = MTUNE or "generic"
+    march_base = overrides.march if overrides and overrides.march else default_march
+    mtune_base = overrides.mtune if overrides and overrides.mtune else default_mtune
+    march_value = (march_base or "").strip() or default_march
+    mtune_value = (mtune_base or "").strip() or default_mtune
+    base_flags = f"{OPT_LEVEL} -march={march_value} -mtune={mtune_value} -pipe -fPIC"
     extra_cflags = " ".join(filter(None, [env.get("CFLAGS", "").strip(), scal.get("CFLAGS", "").strip()]))
     flags = f"{base_flags} {extra_cflags}".strip()
     env["CFLAGS"] = flags
     env["CXXFLAGS"] = flags
     env["LDFLAGS"] = OPT_LEVEL
-    log(f"[opt] vendor={CPU_VENDOR} family={CPU_FAMILY} -> {flags}")
+    env["ARCH"] = arch
+    env["LPM_CPU_MARCH"] = march_value
+    env["LPM_CPU_MTUNE"] = mtune_value
+    env["LPM_ARCH"] = arch
+    log_suffix = " (override)" if overrides and (overrides.march or overrides.mtune or overrides.arch) else ""
+    log(f"[opt] vendor={CPU_VENDOR} family={CPU_FAMILY} -> {flags}{log_suffix}")
 
     sources = []
     for raw_entry in arr.get("SOURCE", []):
@@ -3967,6 +4074,7 @@ def cmd_buildpkg(a):
         return max(2, min(8, cpu_workers))
 
     worker_count = _get_buildpkg_worker_count()
+    cpu_override = _parse_cpu_overrides(getattr(a, "overrides", []))
 
     if a.python_pip:
         if a.script:
@@ -3977,6 +4085,7 @@ def cmd_buildpkg(a):
                 a.python_pip,
                 a.outdir,
                 include_deps=not a.no_deps,
+                cpu_overrides=cpu_override,
             )
             out, meta, duration = future.result()
         _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(out, default=a.install_default)
@@ -3999,6 +4108,7 @@ def cmd_buildpkg(a):
             build_deps=not a.no_deps,
             prompt_default=a.install_default,
             executor=executor if worker_count > 1 else None,
+            cpu_overrides=cpu_override,
         )
         out, duration, phases, splits = future.result()
 
@@ -4626,6 +4736,12 @@ def build_parser()->argparse.ArgumentParser:
 
     sp=sub.add_parser("buildpkg", help=f"Build a {EXT} package from a .lpmbuild script")
     sp.add_argument("script", nargs="?", type=Path)
+    sp.add_argument(
+        "overrides",
+        nargs="*",
+        metavar="@Override=...",
+        help="override CPU tuning, e.g. @Override=\"arch=x86_64v3 -march=x86_64v3 -mtune=generic\"",
+    )
     sp.add_argument("--outdir", default=Path.cwd(), type=Path)
     sp.add_argument("--no-deps", action="store_true", help="do not fetch or build dependencies")
     sp.add_argument("--install-default", choices=["y", "n"], help="default answer for install prompt")

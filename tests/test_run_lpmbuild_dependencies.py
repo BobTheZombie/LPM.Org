@@ -92,8 +92,8 @@ def test_run_lpmbuild_builds_python_dependencies_when_missing(tmp_path, monkeypa
 
     calls = []
 
-    def fake_build_python_package_from_pip(spec, outdir, include_deps):
-        calls.append((spec, Path(outdir), include_deps))
+    def fake_build_python_package_from_pip(spec, outdir, include_deps, cpu_overrides=None):
+        calls.append((spec, Path(outdir), include_deps, cpu_overrides))
         out_path = Path(outdir) / "python-requests-2.0-1.noarch.zst"
         out_path.write_text("pkg")
         meta = lpm.PkgMeta(
@@ -114,7 +114,7 @@ def test_run_lpmbuild_builds_python_dependencies_when_missing(tmp_path, monkeypa
         build_deps=True,
     )
 
-    assert calls == [("requests==2.0", tmp_path, True)]
+    assert calls == [("requests==2.0", tmp_path, True, None)]
     assert out_path.exists()
 
     out_path.unlink()
@@ -139,8 +139,8 @@ def test_run_lpmbuild_builds_python_alias_dependencies(tmp_path, monkeypatch):
 
     calls = []
 
-    def fake_build_python_package_from_pip(spec, outdir, include_deps):
-        calls.append((spec, Path(outdir), include_deps))
+    def fake_build_python_package_from_pip(spec, outdir, include_deps, cpu_overrides=None):
+        calls.append((spec, Path(outdir), include_deps, cpu_overrides))
         assert spec == "python-docutils"
         out_path = Path(outdir) / "python-docutils-1-1.noarch.zst"
         out_path.write_text("pkg")
@@ -162,7 +162,7 @@ def test_run_lpmbuild_builds_python_alias_dependencies(tmp_path, monkeypatch):
         build_deps=True,
     )
 
-    assert calls == [("python-docutils", tmp_path, True)]
+    assert calls == [("python-docutils", tmp_path, True, None)]
     assert out_path.exists()
 
     out_path.unlink()
