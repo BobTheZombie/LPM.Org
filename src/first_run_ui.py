@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import sys
 from dataclasses import dataclass
 from importlib import import_module
@@ -336,9 +338,60 @@ def _build_fields() -> tuple[tuple[ConfigField, ...], tuple[ConfigField, ...]]:
     return base_fields, maintainer_fields
 
 
+_BUILD_INFO_PATHS = (Path("/usr/share/lpm/build-info.json"),)
+
+
+def _load_build_info() -> Dict[str, str]:
+    candidates = []
+
+    env_path = os.environ.get("LPM_BUILD_INFO")
+    if env_path:
+        candidates.append(Path(env_path))
+
+    candidates.extend(_BUILD_INFO_PATHS)
+
+    for candidate in candidates:
+        try:
+            raw = candidate.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return {
+                str(key): str(value)
+                for key, value in data.items()
+                if isinstance(key, str) and isinstance(value, (str, int, float))
+            }
+    return {}
+
+
 def _gather_metadata() -> Mapping[str, str]:
-    module = import_module("lpm")
-    return module.get_runtime_metadata()
+    metadata: Dict[str, str] = {}
+
+    try:
+        module = import_module("lpm")
+    except Exception:
+        module = None
+
+    if module is not None and hasattr(module, "get_runtime_metadata"):
+        try:
+            module_metadata = module.get_runtime_metadata()
+        except Exception:
+            module_metadata = {}
+        if isinstance(module_metadata, Mapping):
+            metadata.update(module_metadata)  # type: ignore[arg-type]
+
+    build_info = _load_build_info()
+    if build_info:
+        for key in ("version", "build", "build_date"):
+            value = build_info.get(key)
+            if value:
+                metadata[key] = value
+
+    return metadata
 
 
 def _print_header(out: TextIO, metadata: Mapping[str, str], init_system: str, cpu_info: Mapping[str, str]) -> None:
