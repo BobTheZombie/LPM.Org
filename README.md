@@ -27,23 +27,22 @@ end-user command in depth, including configuration, repository management,
 package workflows, snapshotting, verification, and package creation. Refer to
 it whenever you need detailed examples or flag reference material.
 
-## Building LPM and Luminosity
+## Building LPM and the graphical UI
 
 The project ships with a `Makefile` that invokes Nuitka to produce stand-alone
-executables. The default target builds the command-line interface, while an
-optional flag enables the graphical **Luminosity** frontend.
+executables for both the command-line client and the Tk-based graphical
+frontend.
 
 1. Install build dependencies for Nuitka, including `patchelf` on Linux (see
    the notes below for details on static builds).
-2. From the repository root run one of the following commands:
-   - `make` or `make all` – build the `lpm` CLI binary at
-     `build/nuitka/lpm.bin`.
-   - `make UI_APP=yes` – build both the CLI binary and the Luminosity UI at
-     `build/nuitka/Luminosity.bin`.
+2. From the repository root run `make` (or `make all`) to build:
+   - `build/nuitka/lpm.bin` – the command-line interface.
+   - `build/nuitka/lpm-ui.bin` – the graphical launcher that can be run
+     separately, similar to using `apt` alongside `synaptic`.
 
-When `UI_APP=yes` is provided, the CLI binary is still produced so both
-artifacts are refreshed in a single invocation. The makefile automatically
-installs/updates Nuitka from the pinned Git revision during the build.
+Both binaries are rebuilt on every invocation so you can keep the CLI and GUI in
+lockstep. The makefile automatically installs/updates Nuitka from the pinned Git
+revision during the build.
 
 ### Build prerequisites
 
