@@ -348,11 +348,38 @@ def _load_build_info() -> Dict[str, str]:
     if env_path:
         candidates.append(Path(env_path))
 
+    module_path = Path(__file__).resolve()
+    candidates.append(module_path.with_name("_build_info.json"))
+
+    parents = module_path.parents
+    if len(parents) >= 2:
+        project_root = parents[1]
+        candidates.append(project_root / "build" / "build-info.json")
+        candidates.append(project_root / "usr" / "share" / "lpm" / "build-info.json")
+
+    try:
+        exe_path = Path(sys.argv[0]).resolve()
+    except Exception:
+        exe_path = None
+    else:
+        candidates.append(exe_path.parent / "_build_info.json")
+        candidates.append(exe_path.parent / ".." / "share" / "lpm" / "build-info.json")
+
     candidates.extend(_BUILD_INFO_PATHS)
 
+    seen: set[Path] = set()
     for candidate in candidates:
         try:
-            raw = candidate.read_text(encoding="utf-8")
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if not resolved.is_file():
+            continue
+        try:
+            raw = resolved.read_text(encoding="utf-8")
         except OSError:
             continue
         try:
