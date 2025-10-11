@@ -12,6 +12,11 @@ DIST_DIR = dist
 SRC_FILES := $(shell find src -type f -name '*.py')
 BUILD_DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 VERSION ?= $(BUILD_DATE)
+# ``VERSION`` may contain characters like ':' that are meaningful to ``make``
+# when used in target names (``foo: bar``).  Sanitise the value before using it
+# in file or directory paths so that commands such as ``make stage`` work even
+# when ``VERSION`` falls back to the ISO timestamp above.
+SAFE_VERSION := $(subst :,.,$(VERSION))
 
 BUILD_INFO_JSON := build/build-info.json
 
@@ -142,8 +147,8 @@ PREFIX ?= /usr/local
 BIN_TARGET = $(BUILD_DIR)/$(APP).bin
 UI_BIN_TARGET = $(BUILD_DIR)/$(UI_APP_NAME).bin
 ALL_BIN_TARGETS = $(BIN_TARGET) $(UI_BIN_TARGET)
-STAGING_DIR = $(DIST_DIR)/$(APP)-$(VERSION)
-TARBALL = $(DIST_DIR)/$(APP)-$(VERSION).tar.gz
+STAGING_DIR = $(DIST_DIR)/$(APP)-$(SAFE_VERSION)
+TARBALL = $(DIST_DIR)/$(APP)-$(SAFE_VERSION).tar.gz
 HOOK_SRC = usr/share/lpm/hooks
 LIBLPM_HOOK_SRC = usr/libexec/lpm/hooks
 NUITKA_SOURCE_DIR ?= build/nuitka-src
@@ -294,7 +299,7 @@ $(STAGING_DIR): $(ALL_BIN_TARGETS) README.md LICENSE etc/lpm/lpm.conf $(BUILD_IN
 
 $(TARBALL): $(STAGING_DIR)
 	mkdir -p $(DIST_DIR)
-	tar -C $(DIST_DIR) -czf $@ $(APP)-$(VERSION)
+	tar -C $(DIST_DIR) -czf $@ $(APP)-$(SAFE_VERSION)
 
 stage: $(STAGING_DIR)
 
@@ -304,9 +309,9 @@ install: $(STAGING_DIR)
 	PREFIX="$(PREFIX)" DESTDIR="$(DESTDIR)" $</install.sh
 
 clean:
-        rm -rf $(BUILD_DIR)
-        rm -f $(BUILD_INFO_JSON)
-        rm -f $(STATIC_PYTHON_BUILD_STAMP) $(STATIC_PYTHON_MODULES_STAMP)
+	rm -rf $(BUILD_DIR)
+	rm -f $(BUILD_INFO_JSON)
+	rm -f $(STATIC_PYTHON_BUILD_STAMP) $(STATIC_PYTHON_MODULES_STAMP)
 
 distclean: clean
 	rm -rf $(DIST_DIR)
