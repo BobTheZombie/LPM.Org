@@ -1,4 +1,5 @@
 import importlib
+import json
 import sys
 from pathlib import Path
 
@@ -112,3 +113,32 @@ def test_default_build_date_uses_source_date_epoch(monkeypatch, import_lpm):
     mod = import_lpm()
 
     assert mod.__build_date__ == "2023-11-14T22:13:20Z"
+
+
+def test_build_info_file_overrides_defaults(tmp_path, monkeypatch, import_lpm):
+    monkeypatch.delenv("LPM_NAME", raising=False)
+    monkeypatch.delenv("LPM_VERSION", raising=False)
+    monkeypatch.delenv("LPM_BUILD", raising=False)
+    monkeypatch.delenv("LPM_BUILD_DATE", raising=False)
+    monkeypatch.delenv("LPM_DEVELOPER", raising=False)
+    monkeypatch.delenv("LPM_URL", raising=False)
+    monkeypatch.delenv("SOURCE_DATE_EPOCH", raising=False)
+
+    build_info = {
+        "version": "2024-05-06T07:08:09Z",
+        "build": "nightly",
+        "build_date": "2024-05-06T07:08:09Z",
+    }
+    info_path = tmp_path / "build-info.json"
+    info_path.write_text(json.dumps(build_info), encoding="utf-8")
+    monkeypatch.setenv("LPM_BUILD_INFO", str(info_path))
+
+    mod = import_lpm()
+    metadata = mod.get_runtime_metadata()
+
+    assert mod.__version__ == "2024-05-06T07:08:09Z"
+    assert mod.__build__ == "nightly"
+    assert mod.__build_date__ == "2024-05-06T07:08:09Z"
+    assert metadata["version"] == "2024-05-06T07:08:09Z"
+    assert metadata["build"] == "nightly"
+    assert metadata["build_date"] == "2024-05-06T07:08:09Z"

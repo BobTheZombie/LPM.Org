@@ -11,7 +11,15 @@ UI_APP_NAME = Luminosity
 BUILD_DIR = build/nuitka
 DIST_DIR = dist
 SRC_FILES := $(shell find src -type f -name '*.py')
-VERSION ?= $(shell $(HOST_PYTHON) tools/get_version.py)
+BUILD_DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+VERSION ?= $(BUILD_DATE)
+
+BUILD_INFO_JSON := build/build-info.json
+
+$(BUILD_INFO_JSON):
+	@mkdir -p $(dir $@)
+	@printf '{\n  "version": "%s",\n  "build": "%s",\n  "build_date": "%s"\n}\n' "$(VERSION)" "$(VERSION)" "$(BUILD_DATE)" > "$@.tmp"
+	@mv "$@.tmp" "$@"
 
 UI_APP_FLAG = $(firstword $(filter --UI_APP=%,$(MAKEFLAGS)))
 UI_APP_EFFECTIVE = $(if $(UI_APP_FLAG),$(patsubst --UI_APP=%,%,$(UI_APP_FLAG)),$(UI_APP))
@@ -231,12 +239,13 @@ $(UI_BIN_TARGET): luminosity.py $(SRC_FILES) | nuitka-install
 	$(NUITKA) $(NUITKA_FLAGS) --output-dir=$(BUILD_DIR) --output-filename=$(UI_APP_NAME).bin $(UI_ENTRY)
 endif
 
-$(STAGING_DIR): $(BIN_TARGET) README.md LICENSE etc/lpm/lpm.conf
+$(STAGING_DIR): $(BIN_TARGET) README.md LICENSE etc/lpm/lpm.conf $(BUILD_INFO_JSON)
 	@mkdir -p $(DIST_DIR)
 	@rm -rf $@
 	mkdir -p $@/bin
 	cp $(BIN_TARGET) $@/bin/$(APP)
 	mkdir -p $@/usr/share/lpm
+	cp $(BUILD_INFO_JSON) $@/usr/share/lpm/build-info.json
 	cp -R $(HOOK_SRC) $@/usr/share/lpm/
 	mkdir -p $@/usr/share/liblpm
 	cp -R usr/share/liblpm/hooks $@/usr/share/liblpm/
@@ -259,6 +268,10 @@ $(STAGING_DIR): $(BIN_TARGET) README.md LICENSE etc/lpm/lpm.conf
 	rm -rf "$${HOOK_DEST}/hooks"
 	mkdir -p "$${HOOK_DEST}"
 	cp -R "$${ROOT}/usr/share/lpm/hooks" "$${HOOK_DEST}/"
+	BUILD_INFO_SRC="$${ROOT}/usr/share/lpm/build-info.json"
+	if [ -f "$${BUILD_INFO_SRC}" ]; then
+	    install -m 0644 "$${BUILD_INFO_SRC}" "$${HOOK_DEST}/build-info.json"
+	fi
 
 	LIBLPM_HOOK_DEST="$${DESTDIR}/usr/share/liblpm"
 	rm -rf "$${LIBLPM_HOOK_DEST}/hooks"
@@ -308,8 +321,9 @@ install: $(STAGING_DIR)
 	PREFIX="$(PREFIX)" DESTDIR="$(DESTDIR)" $</install.sh
 
 clean:
-	rm -rf $(BUILD_DIR)
-	rm -f $(STATIC_PYTHON_BUILD_STAMP) $(STATIC_PYTHON_MODULES_STAMP)
+        rm -rf $(BUILD_DIR)
+        rm -f $(BUILD_INFO_JSON)
+        rm -f $(STATIC_PYTHON_BUILD_STAMP) $(STATIC_PYTHON_MODULES_STAMP)
 
 distclean: clean
 	rm -rf $(DIST_DIR)

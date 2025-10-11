@@ -46,8 +46,8 @@ _ENV_DEVELOPER = "LPM_DEVELOPER"
 _ENV_URL = "LPM_URL"
 
 _DEFAULT_NAME = "LPM"
-_DEFAULT_VERSION = "0.9.19.25"
-_DEFAULT_BUILD = "development"
+_FALLBACK_VERSION = "0.9.19.25"
+_FALLBACK_BUILD = "development"
 def _format_timestamp(value: float) -> str:
     return (
         datetime.fromtimestamp(value, tz=timezone.utc)
@@ -75,7 +75,57 @@ def _default_build_date() -> str:
         return ""
 
 
-_DEFAULT_BUILD_DATE = _default_build_date()
+def _load_build_metadata() -> Dict[str, str]:
+    candidates: List[Path] = []
+
+    env_path = os.environ.get("LPM_BUILD_INFO")
+    if env_path:
+        candidates.append(Path(env_path))
+
+    module_path = Path(__file__).resolve()
+    candidates.append(module_path.with_name("_build_info.json"))
+
+    parents = module_path.parents
+    if len(parents) >= 3:
+        candidates.append(parents[2] / "build" / "build-info.json")
+
+    try:
+        exe_path = Path(sys.argv[0]).resolve()
+    except Exception:
+        exe_path = None
+    else:
+        candidates.append(exe_path.parent / ".." / "share" / "lpm" / "build-info.json")
+
+    candidates.append(Path("/usr/share/lpm/build-info.json"))
+
+    seen: Set[Path] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if not resolved.is_file():
+            continue
+        try:
+            data = json.loads(resolved.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(data, dict):
+            return {
+                str(key): str(value)
+                for key, value in data.items()
+                if isinstance(key, str) and isinstance(value, str)
+            }
+    return {}
+
+
+_BUILD_METADATA = _load_build_metadata()
+_DEFAULT_BUILD_DATE = _BUILD_METADATA.get("build_date") or _default_build_date()
+_DEFAULT_VERSION = _BUILD_METADATA.get("version") or _DEFAULT_BUILD_DATE or _FALLBACK_VERSION
+_DEFAULT_BUILD = _BUILD_METADATA.get("build") or _FALLBACK_BUILD
 _DEFAULT_DEVELOPER = "Derek Midkiff aka BobTheZombie"
 _DEFAULT_URL = "https://github.com/BobTheZombie/LPM"
 
