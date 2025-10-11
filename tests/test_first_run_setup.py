@@ -1,4 +1,5 @@
 import io
+import json
 import sys
 from pathlib import Path
 
@@ -6,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import lpm
 import src.config as config
+import src.first_run_ui as first_run_ui
 
 
 def test_main_triggers_setup_when_conf_missing(monkeypatch, tmp_path):
@@ -86,3 +88,36 @@ def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):
     assert "BINARY_REPO=https://example.com/bin/{name}.lpm" in text
     assert "ALWAYS_SIGN=no" in text
     assert "DISTRO_MAINTAINER_MODE=false" in text
+
+
+def test_gather_metadata_prefers_build_info(monkeypatch, tmp_path):
+    info_path = tmp_path / "build-info.json"
+    info_path.write_text(
+        json.dumps(
+            {
+                "version": "9.9.9",
+                "build_date": "2024-06-01T00:00:00Z",
+                "build": "release",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LPM_BUILD_INFO", str(info_path))
+
+    class DummyModule:
+        @staticmethod
+        def get_runtime_metadata():
+            return {
+                "name": "LPM",
+                "version": "fallback",
+                "build": "development",
+                "build_date": "",
+            }
+
+    monkeypatch.setattr(first_run_ui, "import_module", lambda _: DummyModule)
+
+    metadata = first_run_ui._gather_metadata()
+
+    assert metadata["version"] == "9.9.9"
+    assert metadata["build_date"] == "2024-06-01T00:00:00Z"
+    assert metadata["build"] == "release"

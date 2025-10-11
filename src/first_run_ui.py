@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import sys
 from dataclasses import dataclass
 from importlib import import_module
@@ -336,9 +338,87 @@ def _build_fields() -> tuple[tuple[ConfigField, ...], tuple[ConfigField, ...]]:
     return base_fields, maintainer_fields
 
 
+_BUILD_INFO_PATHS = (Path("/usr/share/lpm/build-info.json"),)
+
+
+def _load_build_info() -> Dict[str, str]:
+    candidates = []
+
+    env_path = os.environ.get("LPM_BUILD_INFO")
+    if env_path:
+        candidates.append(Path(env_path))
+
+    module_path = Path(__file__).resolve()
+    candidates.append(module_path.with_name("_build_info.json"))
+
+    parents = module_path.parents
+    if len(parents) >= 2:
+        project_root = parents[1]
+        candidates.append(project_root / "build" / "build-info.json")
+        candidates.append(project_root / "usr" / "share" / "lpm" / "build-info.json")
+
+    try:
+        exe_path = Path(sys.argv[0]).resolve()
+    except Exception:
+        exe_path = None
+    else:
+        candidates.append(exe_path.parent / "_build_info.json")
+        candidates.append(exe_path.parent / ".." / "share" / "lpm" / "build-info.json")
+
+    candidates.extend(_BUILD_INFO_PATHS)
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if not resolved.is_file():
+            continue
+        try:
+            raw = resolved.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return {
+                str(key): str(value)
+                for key, value in data.items()
+                if isinstance(key, str) and isinstance(value, (str, int, float))
+            }
+    return {}
+
+
 def _gather_metadata() -> Mapping[str, str]:
-    module = import_module("lpm")
-    return module.get_runtime_metadata()
+    metadata: Dict[str, str] = {}
+
+    try:
+        module = import_module("lpm")
+    except Exception:
+        module = None
+
+    if module is not None and hasattr(module, "get_runtime_metadata"):
+        try:
+            module_metadata = module.get_runtime_metadata()
+        except Exception:
+            module_metadata = {}
+        if isinstance(module_metadata, Mapping):
+            metadata.update(module_metadata)  # type: ignore[arg-type]
+
+    build_info = _load_build_info()
+    if build_info:
+        for key in ("version", "build", "build_date"):
+            value = build_info.get(key)
+            if value:
+                metadata[key] = value
+
+    return metadata
 
 
 def _print_header(out: TextIO, metadata: Mapping[str, str], init_system: str, cpu_info: Mapping[str, str]) -> None:
