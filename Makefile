@@ -5,9 +5,8 @@ NUITKA_REPO ?= https://github.com/BobTheZombie/Nuitka.git
 NUITKA_REF ?= develop
 APP = lpm
 ENTRY = $(PWD)/lpm.py
-UI_APP ?= no
-UI_ENTRY = $(PWD)/luminosity.py
-UI_APP_NAME = Luminosity
+UI_ENTRY = $(PWD)/lpm_ui.py
+UI_APP_NAME = lpm-ui
 BUILD_DIR = build/nuitka
 DIST_DIR = dist
 SRC_FILES := $(shell find src -type f -name '*.py')
@@ -21,18 +20,6 @@ $(BUILD_INFO_JSON):
 	@printf '{\n  "version": "%s",\n  "build": "%s",\n  "build_date": "%s"\n}\n' "$(VERSION)" "$(VERSION)" "$(BUILD_DATE)" > "$@.tmp"
 	@mv "$@.tmp" "$@"
 
-UI_APP_FLAG = $(firstword $(filter --UI_APP=%,$(MAKEFLAGS)))
-UI_APP_EFFECTIVE = $(if $(UI_APP_FLAG),$(patsubst --UI_APP=%,%,$(UI_APP_FLAG)),$(UI_APP))
-
-ifneq ($(UI_APP_EFFECTIVE),)
-ifneq ($(UI_APP_EFFECTIVE),yes)
-ifneq ($(UI_APP_EFFECTIVE),no)
-$(error Invalid UI_APP value: $(UI_APP_EFFECTIVE). Use yes or no.)
-endif
-endif
-endif
-
-UI_APP_ENABLED = $(filter yes,$(UI_APP_EFFECTIVE))
 
 NUITKA_FLAGS ?= \
         --onefile \
@@ -153,12 +140,8 @@ export PYTHONPATH := $(PWD)$(if $(PYTHONPATH),:$(PYTHONPATH),)
 PREFIX ?= /usr/local
 
 BIN_TARGET = $(BUILD_DIR)/$(APP).bin
-ALL_BIN_TARGETS = $(BIN_TARGET)
-
-ifneq ($(UI_APP_ENABLED),)
 UI_BIN_TARGET = $(BUILD_DIR)/$(UI_APP_NAME).bin
-ALL_BIN_TARGETS += $(UI_BIN_TARGET)
-endif
+ALL_BIN_TARGETS = $(BIN_TARGET) $(UI_BIN_TARGET)
 STAGING_DIR = $(DIST_DIR)/$(APP)-$(VERSION)
 TARBALL = $(DIST_DIR)/$(APP)-$(VERSION).tar.gz
 HOOK_SRC = usr/share/lpm/hooks
@@ -233,17 +216,16 @@ $(BIN_TARGET): lpm.py $(SRC_FILES) | nuitka-install
 	@mkdir -p $(BUILD_DIR)
 	$(NUITKA) $(NUITKA_FLAGS) --output-dir=$(BUILD_DIR) --output-filename=$(APP).bin $(ENTRY)
 
-ifneq ($(UI_APP_ENABLED),)
-$(UI_BIN_TARGET): luminosity.py $(SRC_FILES) | nuitka-install
+$(UI_BIN_TARGET): lpm_ui.py $(SRC_FILES) | nuitka-install
 	@mkdir -p $(BUILD_DIR)
 	$(NUITKA) $(NUITKA_FLAGS) --output-dir=$(BUILD_DIR) --output-filename=$(UI_APP_NAME).bin $(UI_ENTRY)
-endif
 
-$(STAGING_DIR): $(BIN_TARGET) README.md LICENSE etc/lpm/lpm.conf $(BUILD_INFO_JSON)
+$(STAGING_DIR): $(ALL_BIN_TARGETS) README.md LICENSE etc/lpm/lpm.conf $(BUILD_INFO_JSON)
 	@mkdir -p $(DIST_DIR)
 	@rm -rf $@
 	mkdir -p $@/bin
 	cp $(BIN_TARGET) $@/bin/$(APP)
+	cp $(UI_BIN_TARGET) $@/bin/$(UI_APP_NAME)
 	mkdir -p $@/usr/share/lpm
 	cp $(BUILD_INFO_JSON) $@/usr/share/lpm/build-info.json
 	cp -R $(HOOK_SRC) $@/usr/share/lpm/
@@ -263,6 +245,7 @@ $(STAGING_DIR): $(BIN_TARGET) README.md LICENSE etc/lpm/lpm.conf $(BUILD_INFO_JS
 	
 	mkdir -p "$${DESTDIR}$${PREFIX}/bin"
 	install -m 0755 "$${ROOT}/bin/lpm" "$${DESTDIR}$${PREFIX}/bin/lpm"
+	install -m 0755 "$${ROOT}/bin/$(UI_APP_NAME)" "$${DESTDIR}$${PREFIX}/bin/$(UI_APP_NAME)"
 	
 	HOOK_DEST="$${DESTDIR}/usr/share/lpm"
 	rm -rf "$${HOOK_DEST}/hooks"
