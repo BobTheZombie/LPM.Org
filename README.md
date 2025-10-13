@@ -134,6 +134,13 @@ for environments where Qt is unavailable but does not receive new features.
 
 `lpm` uses sub‑commands. Each command listed below shows its required
 arguments and optional flags.
+
+### System configuration helper
+
+Run `sudo lpm --sysconfig` to have LPM create a baseline set of shell startup files and console defaults for the current root (`/` by default). The helper installs sensible `/etc/profile` and `/etc/bash.bashrc` templates, initialises per-user startup files (`~/.bash_profile`, `~/.bashrc`, `~/.bash_logout`), installs `/etc/DIR_COLORS` and `/etc/vconsole.conf`, prepares `/etc/locale.gen` and `/etc/locale.conf`, and writes `/etc/default/useradd` alongside wrapper scripts that delegate to `useradd` and `adduser` with LPM's defaults. After templating the locale files it runs `locale-gen` (when available) so the locale archive under `/usr/lib/locale/locale-archive` stays in sync. Existing files are preserved – the helper only creates missing paths or appends an annotated block when safe to do so – so you can rerun the command whenever you need to refresh the system configuration after installing LPM.
+
+Pass `--sysconfig-root /some/chroot` to target an alternate filesystem tree, which is useful while provisioning chroots or offline images. No other subcommands may be supplied when `--sysconfig` is present; the helper performs its work and exits after printing a summary of the files it touched.
+
 - **Distribution maintainer mode** – see the dedicated section below for
   automating repository publication after builds.
 - `lpm setup` – launch the interactive first-run configuration wizard. The

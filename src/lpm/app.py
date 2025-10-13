@@ -4666,9 +4666,55 @@ def cmd_setup(_):
 
 
 # =========================== Argparse / main ==================================
+def _run_sysconfig(root: Path) -> None:
+    from .sysconfig import apply_system_configuration
+
+    results = apply_system_configuration(root)
+    created = updated = unchanged = skipped = 0
+    errors = []
+    for result in results:
+        path = result.path
+        action = result.action
+        if action in {"created", "updated"}:
+            if action == "created":
+                created += 1
+            else:
+                updated += 1
+            ok(f"[sysconfig] {action}: {path}")
+        elif action == "unchanged":
+            unchanged += 1
+            log(f"[sysconfig] unchanged: {path}")
+        elif action == "skipped":
+            skipped += 1
+            warn(f"[sysconfig] skipped {path}: {result.message}")
+        elif action == "error":
+            errors.append(result)
+            warn(f"[sysconfig] error {path}: {result.message}")
+
+    if errors:
+        details = "; ".join(f"{res.path}: {res.message}" for res in errors)
+        die(f"failed to apply system configuration: {details}")
+
+    ok(
+        "system configuration prepared"
+        f" (created={created}, updated={updated}, unchanged={unchanged}, skipped={skipped})"
+    )
+
+
 def build_parser()->argparse.ArgumentParser:
     p=argparse.ArgumentParser(prog="lpm", description="Linux Package Manager with SAT solver, signatures, and .lpmbuild")
-    sub=p.add_subparsers(dest="cmd", required=True)
+    p.add_argument(
+        "--sysconfig",
+        action="store_true",
+        help="provision baseline system configuration files and exit",
+    )
+    p.add_argument(
+        "--sysconfig-root",
+        type=Path,
+        default=Path("/"),
+        help="filesystem root used when generating system configuration files",
+    )
+    sub=p.add_subparsers(dest="cmd")
 
     sp=sub.add_parser("setup", help="Run the interactive configuration wizard"); sp.set_defaults(func=cmd_setup)
     sp=sub.add_parser("repolist", help="Show configured repositories"); sp.set_defaults(func=cmd_repolist)
@@ -4835,7 +4881,15 @@ def build_parser()->argparse.ArgumentParser:
     return p
 
 def main(argv=None):
-    args=build_parser().parse_args(argv)
+    parser=build_parser()
+    args=parser.parse_args(argv)
+    if args.sysconfig:
+        if getattr(args, "cmd", None):
+            parser.error("--sysconfig cannot be combined with subcommands")
+        _run_sysconfig(args.sysconfig_root)
+        return 0
+    if getattr(args, "cmd", None) is None:
+        parser.error("a subcommand is required")
     if getattr(args, "cmd", None) != "setup" and not CONF_FILE.exists():
         run_first_run_wizard()
     try:
