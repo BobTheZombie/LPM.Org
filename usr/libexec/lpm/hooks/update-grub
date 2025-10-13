@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""Regenerate GRUB configuration after installing or upgrading grub."""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+
+ROOT = Path(os.environ.get("LPM_ROOT", "/"))
+
+
+def _is_real_root() -> bool:
+    return ROOT == Path("/")
+
+
+def _find_command() -> tuple[str, list[str]] | None:
+    update_grub = shutil.which("update-grub")
+    if update_grub:
+        return update_grub, [update_grub]
+    grub_mkconfig = shutil.which("grub-mkconfig")
+    if grub_mkconfig:
+        grub_cfg = ROOT / "boot/grub/grub.cfg"
+        if not grub_cfg.parent.exists():
+            return None
+        return grub_mkconfig, [grub_mkconfig, "-o", str(grub_cfg)]
+    return None
+
+
+def main() -> None:
+    if not _is_real_root():
+        return
+    command = _find_command()
+    if not command:
+        return
+    _, argv = command
+    subprocess.run(argv, check=False)
+
+
+if __name__ == "__main__":
+    main()
