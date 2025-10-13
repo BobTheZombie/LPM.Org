@@ -252,6 +252,50 @@ def test_ldconfig_runs_only_for_real_root(tmp_path, monkeypatch, system_hook_dir
     assert log.read_text().strip() == ""
 
 
+def test_update_grub_hook_runs_for_grub(tmp_path, monkeypatch, system_hook_dir):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "grub.log"
+    mkconfig = bin_dir / "grub-mkconfig"
+    mkconfig.write_text(
+        f"#!/bin/sh\necho grub-mkconfig \"$@\" >> {log}\n",
+        encoding="utf-8",
+    )
+    mkconfig.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    hooks = load_hooks([system_hook_dir])
+    txn = HookTransactionManager(hooks=hooks, root=Path("/"))
+    boot_dir = Path("/boot/grub")
+    created_boot = False
+    if not boot_dir.exists():
+        boot_dir.mkdir(parents=True)
+        created_boot = True
+    try:
+        txn.add_package_event(
+            name="grub2",
+            operation="Upgrade",
+            version="2.06",
+            release="1",
+            paths=["/usr/share/grub"],
+        )
+        txn.ensure_pre_transaction()
+        txn.run_post_transaction()
+    finally:
+        if created_boot:
+            shutil.rmtree(boot_dir)
+            try:
+                Path("/boot").rmdir()
+            except OSError:
+                pass
+
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert any(
+        "grub-mkconfig -o /boot/grub/grub.cfg" in call
+        for call in calls
+    )
+
+
 def test_systemd_daemon_reload_runs_only_for_real_root(
     tmp_path, monkeypatch, system_hook_dir
 ):

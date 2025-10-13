@@ -452,6 +452,11 @@ transaction hook invokes `kernel_install`. The default implementation runs
 override) and, if available, updates bootloader entries via `bootctl` or
 `grub-mkconfig`.
 
+Similarly, when packages matching `grub`, `grub2*`, or `grub-efi*` are
+installed or upgraded, the `update-grub` transaction hook regenerates
+`/boot/grub/grub.cfg` using `update-grub` or `grub-mkconfig` when those tools
+are present on the system.
+
 ## Solver heuristics
 
 The resolver uses a CDCL SAT solver with VSIDS‑style variable scoring and phase
