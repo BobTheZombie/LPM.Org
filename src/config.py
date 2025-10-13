@@ -38,6 +38,7 @@ DISTRO_GIT_ENABLED = False
 DISTRO_GIT_REMOTE = ""
 DISTRO_GIT_BRANCH = "main"
 DISTRO_GIT_ROOT = _MAINTAINER_BASE
+DISTRO_LPMSPEC_PATH = _MAINTAINER_BASE / "lpmspec.json"
 
 # Module-level configuration cache; populated via _apply_conf()
 CONF: Dict[str, str] = {}
@@ -174,6 +175,7 @@ def _apply_conf(conf: Mapping[str, str]) -> None:
     global DISTRO_MAINTAINER_MODE, DISTRO_NAME, DISTRO_REPO_ROOT
     global DISTRO_REPO_BASE_URL, DISTRO_SOURCE_ROOT, DISTRO_LPMBUILD_ROOT
     global DISTRO_GIT_ENABLED, DISTRO_GIT_REMOTE, DISTRO_GIT_BRANCH, DISTRO_GIT_ROOT
+    global DISTRO_LPMSPEC_PATH
 
     CONF = dict(conf)
     ARCH = CONF.get("ARCH", os.uname().machine if hasattr(os, "uname") else "x86_64")
@@ -243,6 +245,9 @@ def _apply_conf(conf: Mapping[str, str]) -> None:
 
     default_git_root = _MAINTAINER_BASE
     DISTRO_GIT_ROOT = _expand_path(CONF.get("DISTRO_GIT_ROOT", str(default_git_root)), default_git_root)
+
+    default_spec_path = _MAINTAINER_BASE / "lpmspec.json"
+    DISTRO_LPMSPEC_PATH = _expand_path(CONF.get("DISTRO_LPMSPEC_PATH", str(default_spec_path)), default_spec_path)
 
 
 def _normalize_key(key: str) -> str | None:
@@ -384,4 +389,5 @@ __all__ = [
     "DISTRO_GIT_REMOTE",
     "DISTRO_GIT_BRANCH",
     "DISTRO_GIT_ROOT",
+    "DISTRO_LPMSPEC_PATH",
 ]
