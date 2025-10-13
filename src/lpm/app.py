@@ -22,7 +22,7 @@ from email.parser import Parser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Iterable, Callable, BinaryIO
+from typing import Any, Dict, List, Optional, Set, Tuple, Iterable, Callable, BinaryIO
 from collections import deque
 try:
     import zstandard as zstd
@@ -136,6 +136,8 @@ __build_date__ = os.environ.get(_ENV_BUILD_DATE, _DEFAULT_BUILD_DATE)
 __developer__ = os.environ.get(_ENV_DEVELOPER, _DEFAULT_DEVELOPER)
 __url__ = os.environ.get(_ENV_URL, _DEFAULT_URL)
 
+LPMSPEC_API_VERSION = "1.0"
+
 
 def get_runtime_metadata() -> Dict[str, str]:
     """Return runtime metadata describing the current LPM build.
@@ -189,7 +191,7 @@ initialize_state()
 from ..fs import read_json, write_json, urlread
 from ..installgen import generate_install_script
 from ..first_run_ui import run_first_run_wizard
-from .. import maintainer_mode
+from .. import maintainer_mode, config as _config
 from .resolver import CNF, CDCLSolver
 from .hooks import HookTransactionManager, load_hooks
 
@@ -4665,6 +4667,128 @@ def cmd_setup(_):
     run_first_run_wizard()
 
 
+# =========================== Maintainer spec generation =======================
+def _serialize_cli_value(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (list, tuple, set)):
+        return [_serialize_cli_value(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _serialize_cli_value(v) for k, v in value.items()}
+    return str(value)
+
+
+def _action_type_name(action: argparse.Action) -> Optional[str]:
+    action_type = getattr(action, "type", None)
+    if action_type is None:
+        return None
+    if isinstance(action_type, type):
+        return action_type.__name__
+    return getattr(action_type, "__name__", repr(action_type))
+
+
+def _action_to_spec(action: argparse.Action) -> Optional[dict[str, Any]]:
+    if isinstance(action, argparse._HelpAction):
+        return None
+    if isinstance(action, argparse._SubParsersAction):
+        return None
+
+    flags = list(action.option_strings)
+    spec: dict[str, Any] = {
+        "name": action.dest,
+        "flags": flags if flags else [action.dest],
+        "help": action.help or "",
+        "positional": not bool(flags),
+    }
+
+    if getattr(action, "required", False):
+        spec["required"] = True
+    if action.metavar is not None:
+        spec["metavar"] = action.metavar
+    if action.nargs is not None and action.nargs != 1:
+        spec["nargs"] = action.nargs
+    if action.choices is not None:
+        spec["choices"] = [_serialize_cli_value(choice) for choice in action.choices]
+    if action.default is not argparse.SUPPRESS:
+        spec["default"] = _serialize_cli_value(action.default)
+
+    type_name = _action_type_name(action)
+    if type_name:
+        spec["type"] = type_name
+
+    return spec
+
+
+def _build_cli_spec(parser: argparse.ArgumentParser) -> dict[str, Any]:
+    cli_spec: dict[str, Any] = {
+        "usage": parser.format_usage().strip(),
+        "description": parser.description or "",
+        "arguments": [],
+        "commands": [],
+    }
+
+    subparsers_action: Optional[argparse._SubParsersAction] = None
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            subparsers_action = action
+            continue
+        spec = _action_to_spec(action)
+        if spec:
+            cli_spec["arguments"].append(spec)
+
+    if subparsers_action is None:
+        return cli_spec
+
+    help_lookup = {
+        choice.dest: choice.help or ""
+        for choice in getattr(subparsers_action, "_choices_actions", [])
+    }
+
+    commands: list[dict[str, Any]] = []
+    for name, subparser in sorted(subparsers_action.choices.items()):
+        cmd_spec = {
+            "name": name,
+            "help": help_lookup.get(name, ""),
+            "usage": subparser.format_usage().strip(),
+            "description": subparser.description or "",
+            "arguments": [],
+        }
+        for action in subparser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                continue
+            spec = _action_to_spec(action)
+            if spec:
+                cmd_spec["arguments"].append(spec)
+        commands.append(cmd_spec)
+
+    cli_spec["commands"] = commands
+    return cli_spec
+
+
+def _build_lpmspec(parser: argparse.ArgumentParser) -> dict[str, Any]:
+    return {
+        "api_version": LPMSPEC_API_VERSION,
+        "generated_at": int(time.time()),
+        "lpm": get_runtime_metadata(),
+        "cli": _build_cli_spec(parser),
+    }
+
+
+def cmd_generate_lpmspec(args) -> None:
+    if not maintainer_mode.is_enabled():
+        die("lpmspec generation requires distro maintainer mode")
+
+    parser = build_parser()
+    spec = _build_lpmspec(parser)
+
+    output_path = Path(args.output) if args.output else _config.DISTRO_LPMSPEC_PATH
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(spec, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    ok(f"Generated lpmspec at {output_path}")
+
+
 # =========================== Argparse / main ==================================
 def _run_sysconfig(root: Path) -> None:
     from .sysconfig import apply_system_configuration
@@ -4849,7 +4973,16 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--base-url", dest="base_url", help="base URL for blobs in index (e.g., https://repo.example.com)", default=None)
     sp.add_argument("--arch", help="only include this arch (noarch always included)", default=None)
     sp.set_defaults(func=cmd_genindex)
-    
+
+    if maintainer_mode.is_enabled():
+        sp=sub.add_parser("lpmspec", help="Generate an lpmspec description for Nebula installers")
+        sp.add_argument(
+            "--output",
+            type=Path,
+            help="destination path for the generated lpmspec JSON (defaults to distro maintainer path)",
+        )
+        sp.set_defaults(func=cmd_generate_lpmspec)
+
     sp=sub.add_parser("installpkg", help=f"Install from local {EXT} file(s)")
     sp.add_argument("files", nargs="+", help=f"{EXT} package file(s) to install")
     sp.add_argument("--root")

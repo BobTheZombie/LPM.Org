@@ -27,6 +27,7 @@ def test_handle_lpmbuild_publishes_artifacts(tmp_path):
         "DISTRO_GIT_ROOT",
         "DISTRO_GIT_REMOTE",
         "DISTRO_GIT_BRANCH",
+        "DISTRO_LPMSPEC_PATH",
     ]
     snapshot = _snapshot_config(cfg_keys)
     try:
