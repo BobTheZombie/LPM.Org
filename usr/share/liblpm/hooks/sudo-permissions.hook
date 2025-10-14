@@ -1,0 +1,9 @@
+[Trigger]
+Type = Package
+Operation = Install
+Operation = Upgrade
+Target = sudo
+
+[Action]
+When = PostTransaction
+Exec = /usr/libexec/lpm/hooks/sudo-permissions
