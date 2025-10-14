@@ -46,7 +46,7 @@ _ENV_DEVELOPER = "LPM_DEVELOPER"
 _ENV_URL = "LPM_URL"
 
 _DEFAULT_NAME = "LPM"
-_FALLBACK_VERSION = "0.9.19.25"
+_FALLBACK_VERSION = "1.0.0"
 _FALLBACK_BUILD = "development"
 def _format_timestamp(value: float) -> str:
     return (

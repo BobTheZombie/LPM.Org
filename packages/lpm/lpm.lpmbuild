@@ -2,7 +2,7 @@
 # lpmbuild script for the LPM package manager
 
 NAME="lpm"
-VERSION="0.9.19.25"
+VERSION="1.0.0"
 RELEASE="1"
 ARCH="x86_64"
 SUMMARY="Linux Package Manager with SAT solver, hooks, and .lpmbuild support"
