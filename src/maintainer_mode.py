@@ -123,6 +123,9 @@ def _write_metadata(
         "generated_at": int(time.time()),
         "artifacts": [str(path) for path in published_artifacts],
     }
+    developer = getattr(meta, "developer", "")
+    if developer:
+        metadata["developer"] = developer
     script_dest_path: Optional[Path] = None
     if script_path and script_path.exists():
         script_dest = target_dir / script_path.name

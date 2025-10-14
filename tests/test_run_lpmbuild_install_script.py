@@ -144,6 +144,39 @@ def test_run_lpmbuild_defaults_arch_to_noarch(tmp_path, monkeypatch):
     assert ".." not in out_path.name
 
 
+def test_run_lpmbuild_captures_developer_metadata(tmp_path, monkeypatch):
+    script = tmp_path / "foo.lpmbuild"
+    script.write_text(
+        textwrap.dedent(
+            """
+            NAME=foo
+            VERSION=1
+            DEVELOPER="Jane Doe <jane@example.com>"
+
+            prepare() { :; }
+            build() { :; }
+            staging() { :; }
+            """
+        ).strip()
+        + "\n"
+    )
+
+    monkeypatch.setattr(lpm, "sandboxed_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(lpm, "generate_install_script", lambda stagedir: ":")
+
+    captured = {}
+
+    def fake_build_package(stagedir, meta, out, sign=True):
+        captured["developer"] = meta.developer
+        out.write_text("pkg")
+
+    monkeypatch.setattr(lpm, "build_package", fake_build_package)
+
+    lpm.run_lpmbuild(script, outdir=tmp_path, prompt_install=False, build_deps=False)
+
+    assert captured["developer"] == "Jane Doe <jane@example.com>"
+
+
 def test_run_lpmbuild_accepts_legacy_install_phase(tmp_path, monkeypatch):
     script = tmp_path / "legacy.lpmbuild"
     script.write_text(

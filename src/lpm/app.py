@@ -584,6 +584,7 @@ class PkgMeta:
     summary: str = ""
     url: str = ""
     license: str = ""
+    developer: str = ""
     requires: List[str] = field(default_factory=list)
     conflicts: List[str] = field(default_factory=list)
     obsoletes: List[str] = field(default_factory=list)
@@ -606,7 +607,7 @@ class PkgMeta:
         return PkgMeta(
             name=d["name"], version=d["version"], release=d.get("release","1"),
             arch=d.get("arch","noarch"), summary=d.get("summary",""), url=d.get("url",""),
-            license=d.get("license",""), requires=d.get("requires",[]), conflicts=d.get("conflicts",[]),
+            license=d.get("license",""), developer=d.get("developer",""), requires=d.get("requires",[]), conflicts=d.get("conflicts",[]),
             obsoletes=d.get("obsoletes",[]), provides=d.get("provides",[]), symbols=d.get("symbols",[]), recommends=d.get("recommends",[]),
             suggests=d.get("suggests",[]), size=d.get("size",0), sha256=d.get("sha256"), blob=d.get("blob"),
             repo=repo_name, prio=prio, bias=bias, decay=decay, kernel=d.get("kernel", False),
@@ -2356,7 +2357,7 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
         '  fi',
         '  printf "\\n"',
         "}",
-        "for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE CFLAGS KERNEL MKINITCPIO_PRESET install INSTALL; do _emit_scalar \"$v\"; done",
+        "for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE DEVELOPER CFLAGS KERNEL MKINITCPIO_PRESET install INSTALL; do _emit_scalar \"$v\"; done",
         "for a in SOURCE REQUIRES REQUIRES_PYTHON_DEPENDENCIES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS; do _emit_array \"$a\"; done",
     ]
     bcmd = "\n".join(lines)
@@ -2758,6 +2759,7 @@ def run_lpmbuild(
     summary = scal.get("SUMMARY", "")
     url = scal.get("URL", "")
     license_ = scal.get("LICENSE", "")
+    developer = scal.get("DEVELOPER", "")
     kernel = scal.get("KERNEL", "").lower() == "true"
     mkinitcpio_preset = scal.get("MKINITCPIO_PRESET") or None
     if not name or not version:
@@ -3025,6 +3027,7 @@ def run_lpmbuild(
         "summary": summary,
         "url": url,
         "license": license_,
+        "developer": developer,
         "requires": arr.get("REQUIRES", []),
         "provides": arr.get("PROVIDES", []),
         "conflicts": arr.get("CONFLICTS", []),
@@ -3410,7 +3413,7 @@ def run_lpmbuild(
     # --- Package metadata ---
     meta = PkgMeta(
         name=name, version=version, release=release, arch=arch,
-        summary=summary, url=url, license=license_,
+        summary=summary, url=url, license=license_, developer=developer,
         requires=arr.get("REQUIRES", []),
         provides=arr.get("PROVIDES", []),
         conflicts=arr.get("CONFLICTS", []),
@@ -3439,6 +3442,7 @@ def run_lpmbuild(
                     meta_dict.setdefault("version", meta.version)
                     meta_dict.setdefault("release", meta.release)
                     meta_dict.setdefault("arch", meta.arch)
+                    meta_dict.setdefault("developer", meta.developer)
                     pkg_meta = PkgMeta.from_dict(meta_dict)
                     split_records.append((path, pkg_meta))
                 except Exception as e:
@@ -3933,7 +3937,7 @@ def cmd_build(a):
     stagedir=Path(a.stagedir)
     meta = PkgMeta(
         name=a.name, version=a.version, release=a.release, arch=a.arch,
-        summary=a.summary, url=a.url, license=a.license,
+        summary=a.summary, url=a.url, license=a.license, developer=a.developer,
         requires=a.requires, provides=a.provides, conflicts=a.conflicts,
         obsoletes=a.obsoletes, recommends=a.recommends, suggests=a.suggests
     )
@@ -3972,6 +3976,7 @@ def cmd_splitpkg(a):
     summary = _get_default("summary", "")
     url = _get_default("url", "")
     license_ = _get_default("license", "")
+    developer = _get_default("developer", "")
 
     def _merge_list(opt_name: str) -> List[str]:
         opt = getattr(a, opt_name, None)
@@ -3999,6 +4004,7 @@ def cmd_splitpkg(a):
         summary=str(summary),
         url=str(url),
         license=str(license_),
+        developer=str(developer),
         requires=requires,
         provides=provides,
         conflicts=conflicts,
@@ -4923,6 +4929,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--summary", default="")
     sp.add_argument("--url", default="")
     sp.add_argument("--license", default="")
+    sp.add_argument("--developer", default="")
     sp.add_argument("--requires", nargs="*", default=[])
     sp.add_argument("--provides", nargs="*", default=[])
     sp.add_argument("--conflicts", nargs="*", default=[])
@@ -4943,6 +4950,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--summary", help="package summary")
     sp.add_argument("--url", help="homepage URL")
     sp.add_argument("--license", help="license identifier")
+    sp.add_argument("--developer", help="package developer/maintainer")
     sp.add_argument("--requires", action="append", help="dependency (can be repeated)")
     sp.add_argument("--provides", action="append", help="virtual provide (can be repeated)")
     sp.add_argument("--conflicts", action="append", help="conflicting package (can be repeated)")
