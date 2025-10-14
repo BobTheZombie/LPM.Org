@@ -1,0 +1,112 @@
+#!/bin/bash
+# lpmbuild script for the LPM package manager
+
+NAME="lpm"
+VERSION="0.9.19.25"
+RELEASE="1"
+ARCH="x86_64"
+SUMMARY="Linux Package Manager with SAT solver, hooks, and .lpmbuild support"
+URL="https://github.com/BobTheZombie/LPM"
+LICENSE=("MIT")
+
+SOURCE=(
+  'lpm-src::git+https://github.com/BobTheZombie/LPM.git#commit=5c1f3d8ffa59249db99076b41cebe318d1a3dc46'
+)
+
+# Runtime dependencies provided as native packages
+REQUIRES=(
+  'openssl'
+  'tar'
+  'gzip'
+  'xz'
+  'zstd'
+  'git'
+)
+
+PROVIDES=("lpm")
+SUGGESTS=("python-pyside6")
+CONFLICTS=()
+OBSOLETES=()
+
+prepare() {
+    set -euxo pipefail
+    cd "$SRCROOT/lpm-src"
+
+    # Ensure the working tree is clean and in a deterministic state
+    git reset --hard HEAD
+    git clean -xfd
+}
+
+build() {
+    set -euxo pipefail
+    cd "$SRCROOT/lpm-src"
+
+    # Ensure the build toolchain is present for Nuitka
+    python3 -m pip install --upgrade pip wheel setuptools
+    python3 -m pip install --upgrade nuitka packaging tqdm zstandard
+
+    local build_date
+    if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
+        build_date="$(date -u -d "@${SOURCE_DATE_EPOCH}" +"%Y-%m-%dT%H:%M:%SZ")"
+    else
+        build_date="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    fi
+
+    make_args=(
+        "VERSION=${VERSION}"
+        "BUILD_DATE=${build_date}"
+    )
+
+    make "${make_args[@]}" all
+    make "${make_args[@]}" build/build-info.json
+}
+
+check() {
+    set -euxo pipefail
+    cd "$SRCROOT/lpm-src"
+
+    # Running the full test suite is optional and can be time-consuming.
+    # Uncomment the following line to execute it during package builds.
+    # pytest
+}
+
+staging() {
+    set -euxo pipefail
+    cd "$SRCROOT/lpm-src"
+
+    install -d "$pkgdir/usr/bin"
+    install -Dm755 build/nuitka/lpm.bin "$pkgdir/usr/bin/lpm"
+    install -Dm755 build/nuitka/lpm-ui.bin "$pkgdir/usr/bin/lpm-ui"
+
+    install -Dm644 etc/lpm/lpm.conf "$pkgdir/etc/lpm/lpm.conf"
+
+    if [ -d usr/share ]; then
+        mkdir -p "$pkgdir/usr/share"
+        cp -a usr/share/lpm "$pkgdir/usr/share/"
+        cp -a usr/share/liblpm "$pkgdir/usr/share/"
+    fi
+
+    if [ -d usr/libexec ]; then
+        mkdir -p "$pkgdir/usr/libexec"
+        cp -a usr/libexec/lpm "$pkgdir/usr/libexec/"
+    fi
+
+    install -Dm644 README.md "$pkgdir/usr/share/doc/lpm/README.md"
+    install -Dm644 docs/TECHNICAL-HOWTO.md "$pkgdir/usr/share/doc/lpm/TECHNICAL-HOWTO.md"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/lpm/LICENSE"
+
+    install -d "$pkgdir/var/lib/lpm/cache" "$pkgdir/var/lib/lpm/snapshots"
+    printf '[]\n' > "$pkgdir/var/lib/lpm/repos.json"
+    cat > "$pkgdir/var/lib/lpm/pins.json" <<'JSON'
+{
+  "hold": [],
+  "prefer": {}
+}
+JSON
+
+    install -Dm644 build/build-info.json "$pkgdir/usr/share/lpm/build-info.json"
+
+    find "$pkgdir/usr" -type f -exec sh -c '
+        file -b "$1" | grep -q "ELF" && strip --strip-unneeded "$1" || true
+    ' _ {} \; 2>/dev/null || true
+}
