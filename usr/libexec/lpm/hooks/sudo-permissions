@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Ensure sudo keeps its privileged ownership and permissions."""
+
+from __future__ import annotations
+
+import os
+import stat
+import sys
+from pathlib import Path
+
+EXPECTED_MODE = 0o4755
+EXPECTED_OWNER = (0, 0)  # (uid, gid) for root:root
+SUDO_RELATIVE_PATH = Path("usr/bin/sudo")
+
+
+def _resolve_target(root_value: str | None) -> Path:
+    root_value = root_value or "/"
+    if root_value in {"", "/"}:
+        return Path("/") / SUDO_RELATIVE_PATH
+    root_path = Path(root_value)
+    if not root_path.is_absolute():
+        root_path = (Path.cwd() / root_path).resolve()
+    return root_path / SUDO_RELATIVE_PATH
+
+
+def _ensure_mode(path: Path) -> bool:
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return False
+
+    current_mode = stat.S_IMODE(current.st_mode)
+    if current_mode != EXPECTED_MODE:
+        os.chmod(path, EXPECTED_MODE, follow_symlinks=False)
+        return True
+    return False
+
+
+def _ensure_owner(path: Path) -> bool:
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return False
+
+    if (current.st_uid, current.st_gid) != EXPECTED_OWNER:
+        os.chown(path, *EXPECTED_OWNER, follow_symlinks=False)
+        return True
+    return False
+
+
+def main() -> None:
+    sudo_path = _resolve_target(os.environ.get("LPM_ROOT"))
+
+    if not sudo_path.exists():
+        # Nothing to do if sudo is not installed in the target root.
+        return
+
+    changed_mode = changed_owner = False
+
+    try:
+        changed_mode = _ensure_mode(sudo_path)
+        changed_owner = _ensure_owner(sudo_path)
+    except PermissionError as exc:
+        print(f"[lpm] Unable to adjust sudo permissions: {exc}", file=sys.stderr)
+        return
+    except OSError as exc:
+        print(f"[lpm] Failed to validate sudo permissions: {exc}", file=sys.stderr)
+        return
+
+    if changed_mode or changed_owner:
+        print(f"[lpm] ensured privileged permissions on {sudo_path}")
+
+
+if __name__ == "__main__":
+    main()
