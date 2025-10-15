@@ -142,7 +142,7 @@ NUITKA_FLAGS += $(if $(filter yes,$(STATIC_LIBPYTHON_EFFECTIVE)),$(STATIC_MODULE
 
 export PYTHONPATH := $(PWD)$(if $(PYTHONPATH),:$(PYTHONPATH),)
 
-PREFIX ?= /usr/local
+PREFIX ?= /usr
 
 BIN_TARGET = $(BUILD_DIR)/$(APP).bin
 UI_BIN_TARGET = $(BUILD_DIR)/$(UI_APP_NAME).bin
