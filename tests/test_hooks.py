@@ -252,25 +252,61 @@ def test_ldconfig_runs_only_for_real_root(tmp_path, monkeypatch, system_hook_dir
     assert log.read_text().strip() == ""
 
 
-def test_update_grub_hook_runs_for_grub(tmp_path, monkeypatch, system_hook_dir):
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    log = tmp_path / "grub.log"
-    mkconfig = bin_dir / "grub-mkconfig"
-    mkconfig.write_text(
-        f"#!/bin/sh\necho grub-mkconfig \"$@\" >> {log}\n",
-        encoding="utf-8",
-    )
-    mkconfig.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
-
-    hooks = load_hooks([system_hook_dir])
-    txn = HookTransactionManager(hooks=hooks, root=Path("/"))
+def _prepare_boot_dirs():
     boot_dir = Path("/boot/grub")
     created_boot = False
     if not boot_dir.exists():
         boot_dir.mkdir(parents=True)
         created_boot = True
+    efi_dir = Path("/boot/efi")
+    created_efi = False
+    if not efi_dir.exists():
+        efi_dir.mkdir(parents=True)
+        created_efi = True
+    return boot_dir, efi_dir, created_boot, created_efi
+
+
+def _cleanup_boot_dirs(boot_dir: Path, efi_dir: Path, *, created_boot: bool, created_efi: bool) -> None:
+    if created_efi:
+        try:
+            efi_dir.rmdir()
+        except OSError:
+            pass
+    if created_boot:
+        shutil.rmtree(boot_dir, ignore_errors=True)
+        try:
+            Path("/boot").rmdir()
+        except OSError:
+            pass
+
+
+def test_update_grub_hook_runs_update_tool_for_upgrade(
+    tmp_path, monkeypatch, system_hook_dir
+):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "grub.log"
+    for name in ("grub-install", "grub-mkconfig", "update-grub", "mount"):
+        script = bin_dir / name
+        script.write_text(
+            f"#!/bin/sh\necho {name} \"$@\" >> {log}\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    fstab = tmp_path / "fstab"
+    fstab.write_text("UUID=FAKE /boot/efi vfat defaults 0 1\n", encoding="utf-8")
+    monkeypatch.setenv("LPM_FSTAB", str(fstab))
+
+    hooks = load_hooks([system_hook_dir])
+    txn = HookTransactionManager(hooks=hooks, root=Path("/"))
+    boot_dir, efi_dir, created_boot, created_efi = _prepare_boot_dirs()
+    grub_cfg = boot_dir / "grub.cfg"
+    had_cfg = grub_cfg.exists()
+    backup_cfg = grub_cfg.read_bytes() if had_cfg else None
+    grub_cfg.write_text("existing", encoding="utf-8")
+
     try:
         txn.add_package_event(
             name="grub2",
@@ -282,18 +318,71 @@ def test_update_grub_hook_runs_for_grub(tmp_path, monkeypatch, system_hook_dir):
         txn.ensure_pre_transaction()
         txn.run_post_transaction()
     finally:
-        if created_boot:
-            shutil.rmtree(boot_dir)
+        if had_cfg and backup_cfg is not None:
+            grub_cfg.write_bytes(backup_cfg)
+        else:
             try:
-                Path("/boot").rmdir()
-            except OSError:
+                grub_cfg.unlink()
+            except FileNotFoundError:
                 pass
+        _cleanup_boot_dirs(boot_dir, efi_dir, created_boot=created_boot, created_efi=created_efi)
 
     calls = log.read_text(encoding="utf-8").splitlines()
-    assert any(
-        "grub-mkconfig -o /boot/grub/grub.cfg" in call
-        for call in calls
-    )
+    assert "mount /boot/efi" in calls
+    assert "grub-install --target=x86_64-efi --efi-directory /boot/efi --bootloader-id=Lumin" in calls
+    assert any(call.startswith("update-grub") for call in calls)
+    assert all("grub-mkconfig" not in call for call in calls)
+
+
+def test_update_grub_hook_runs_mkconfig_for_install(
+    tmp_path, monkeypatch, system_hook_dir
+):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "grub.log"
+    for name in ("grub-install", "grub-mkconfig", "update-grub", "mount"):
+        script = bin_dir / name
+        script.write_text(
+            f"#!/bin/sh\necho {name} \"$@\" >> {log}\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    fstab = tmp_path / "fstab"
+    fstab.write_text("UUID=FAKE /boot/efi vfat defaults 0 1\n", encoding="utf-8")
+    monkeypatch.setenv("LPM_FSTAB", str(fstab))
+
+    hooks = load_hooks([system_hook_dir])
+    txn = HookTransactionManager(hooks=hooks, root=Path("/"))
+    boot_dir, efi_dir, created_boot, created_efi = _prepare_boot_dirs()
+    grub_cfg = boot_dir / "grub.cfg"
+    had_cfg = grub_cfg.exists()
+    backup_cfg = grub_cfg.read_bytes() if had_cfg else None
+    if had_cfg:
+        grub_cfg.unlink()
+
+    try:
+        txn.add_package_event(
+            name="grub2",
+            operation="Install",
+            version="2.06",
+            release="1",
+            paths=["/usr/share/grub"],
+        )
+        txn.ensure_pre_transaction()
+        txn.run_post_transaction()
+    finally:
+        if had_cfg and backup_cfg is not None:
+            boot_dir.mkdir(parents=True, exist_ok=True)
+            grub_cfg.write_bytes(backup_cfg)
+        _cleanup_boot_dirs(boot_dir, efi_dir, created_boot=created_boot, created_efi=created_efi)
+
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert "mount /boot/efi" in calls
+    assert "grub-install --target=x86_64-efi --efi-directory /boot/efi --bootloader-id=Lumin" in calls
+    assert any("grub-mkconfig -o /boot/grub/grub.cfg" in call for call in calls)
+    assert all(not call.startswith("update-grub") for call in calls)
 
 
 def test_systemd_daemon_reload_runs_only_for_real_root(

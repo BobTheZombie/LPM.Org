@@ -6,37 +6,138 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 
 ROOT = Path(os.environ.get("LPM_ROOT", "/"))
 
 
+@dataclass
+class FstabEntry:
+    source: str
+    mount_point: str
+    fs_type: str
+    options: str | None = None
+
+
+def _fstab_path() -> Path:
+    override = os.environ.get("LPM_FSTAB")
+    if override:
+        return Path(override)
+    return ROOT / "etc/fstab"
+
+
+def _desired_mount_point() -> str:
+    return os.environ.get("LPM_EFI_MOUNTPOINT", "/boot/efi")
+
+
+def _efi_directory() -> Path:
+    mount_point = Path(_desired_mount_point())
+    if mount_point.is_absolute():
+        return mount_point
+    return ROOT / mount_point
+
+
+def _iter_fstab_entries() -> list[FstabEntry]:
+    path = _fstab_path()
+    try:
+        content = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+
+    entries: list[FstabEntry] = []
+    for raw_line in content.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        source = parts[0]
+        mount_point = parts[1]
+        fs_type = parts[2] if len(parts) > 2 else ""
+        options = parts[3] if len(parts) > 3 else None
+        entries.append(FstabEntry(source, mount_point, fs_type, options))
+    return entries
+
+
+def _find_efi_fstab_entry() -> FstabEntry | None:
+    desired = _desired_mount_point()
+    for entry in _iter_fstab_entries():
+        if entry.mount_point == desired:
+            return entry
+    return None
+
+
+def _ensure_efi_mounted(efi_dir: Path) -> bool:
+    if os.path.ismount(str(efi_dir)):
+        return True
+
+    entry = _find_efi_fstab_entry()
+    if not entry:
+        return False
+
+    efi_dir.mkdir(parents=True, exist_ok=True)
+    target = Path(entry.mount_point)
+    if not target.is_absolute():
+        target = ROOT / target
+
+    result = subprocess.run(["mount", str(target)], check=False)
+    return result.returncode == 0
+
+
+def _run_grub_install(efi_dir: Path) -> None:
+    grub_install = shutil.which("grub-install")
+    if not grub_install:
+        return
+
+    if not _ensure_efi_mounted(efi_dir):
+        return
+
+    subprocess.run(
+        [
+            grub_install,
+            "--target=x86_64-efi",
+            "--efi-directory",
+            str(efi_dir),
+            "--bootloader-id=Lumin",
+        ],
+        check=False,
+    )
+
+
 def _is_real_root() -> bool:
     return ROOT == Path("/")
 
 
-def _find_command() -> tuple[str, list[str]] | None:
+def _grub_cfg_path() -> Path:
+    return ROOT / "boot/grub/grub.cfg"
+
+
+def _run_update_grub(*, grub_cfg_existed: bool) -> None:
     update_grub = shutil.which("update-grub")
-    if update_grub:
-        return update_grub, [update_grub]
+    if grub_cfg_existed and update_grub:
+        subprocess.run([update_grub], check=False)
+        return
+
     grub_mkconfig = shutil.which("grub-mkconfig")
-    if grub_mkconfig:
-        grub_cfg = ROOT / "boot/grub/grub.cfg"
-        if not grub_cfg.parent.exists():
-            return None
-        return grub_mkconfig, [grub_mkconfig, "-o", str(grub_cfg)]
-    return None
+    if not grub_mkconfig:
+        return
+
+    grub_cfg = _grub_cfg_path()
+    grub_cfg.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run([grub_mkconfig, "-o", str(grub_cfg)], check=False)
 
 
 def main() -> None:
     if not _is_real_root():
         return
-    command = _find_command()
-    if not command:
-        return
-    _, argv = command
-    subprocess.run(argv, check=False)
+    efi_dir = _efi_directory()
+    grub_cfg = _grub_cfg_path()
+    grub_cfg_existed = grub_cfg.exists()
+    _run_grub_install(efi_dir)
+    _run_update_grub(grub_cfg_existed=grub_cfg_existed)
 
 
 if __name__ == "__main__":
