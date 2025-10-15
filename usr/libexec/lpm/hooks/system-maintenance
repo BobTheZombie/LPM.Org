@@ -54,10 +54,20 @@ def _recent_history_actions(state_dir: Path, window: int = _RECENT_WINDOW_SECOND
 def _should_skip_autoremove(actions: set[str]) -> bool:
     if not actions:
         return False
-    has_install = "install" in actions
-    has_upgrade = "upgrade" in actions
-    has_remove = "remove" in actions
-    return has_install and not has_remove and not has_upgrade
+
+    # If the transaction explicitly removed packages, do not immediately run
+    # autoremove.  In practice this can cascade into removing dependencies that
+    # the user did not intend to purge (see `lpm removepkg` invocations).
+    if "remove" in actions:
+        return True
+
+    # Likewise, skip autoremove for transactions that *only* install new
+    # packages.  This mirrors the previous behaviour that avoided cleaning up
+    # packages right after they were installed.
+    if actions == {"install"}:
+        return True
+
+    return False
 
 
 def _build_tasks(lpm_path: str, root: str, *, skip_autoremove: bool = False) -> List[List[str]]:
