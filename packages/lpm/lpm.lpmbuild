@@ -2,7 +2,7 @@
 # lpmbuild script for the LPM package manager
 
 NAME="lpm"
-VERSION="1.0.0"
+VERSION="1.0.1"
 RELEASE="1"
 ARCH="x86_64"
 SUMMARY="Linux Package Manager with SAT solver, hooks, and .lpmbuild support"
@@ -10,41 +10,46 @@ URL="https://github.com/BobTheZombie/LPM"
 LICENSE=("MIT")
 
 SOURCE=(
-  'lpm-src::git+https://github.com/BobTheZombie/LPM.git#commit=5c1f3d8ffa59249db99076b41cebe318d1a3dc46'
+  "https://github.com/BobTheZombie/LPM.Org/archive/refs/tags/${VERSION}.tar.gz"
 )
 
-# Runtime dependencies provided as native packages
 REQUIRES=(
-  'openssl'
-  'tar'
-  'gzip'
-  'xz'
-  'zstd'
-  'git'
+  "python"
+  "openssl"
+  "tar"
+  "gzip"
+  "xz"
+  "zstd"
+  "git"
+  "sqlite"
 )
 
-PROVIDES=("lpm")
 SUGGESTS=("python-pyside6")
+PROVIDES=("lpm")
 CONFLICTS=()
 OBSOLETES=()
 
 prepare() {
     set -euxo pipefail
-    cd "$SRCROOT/lpm-src"
-
-    # Ensure the working tree is clean and in a deterministic state
-    git reset --hard HEAD
-    git clean -xfd
+    cd "$SRCROOT/$NAME-$VERSION"
 }
 
 build() {
     set -euxo pipefail
-    cd "$SRCROOT/lpm-src"
+    cd "$SRCROOT/$NAME-$VERSION"
 
-    # Ensure the build toolchain is present for Nuitka
-    python3 -m pip install --upgrade pip wheel setuptools
-    python3 -m pip install --upgrade nuitka packaging tqdm zstandard
+    # ✅ Only install missing Python build dependencies
+    PYTHON_DEPS=(pip wheel autocommand nuitka packaging tqdm zstandard)
+    for pkg in "${PYTHON_DEPS[@]}"; do
+        if ! python3 -m pip show "$pkg" >/dev/null 2>&1; then
+            echo "[LPM] Installing missing build dependency: $pkg"
+            python3 -m pip install --upgrade "$pkg"
+        else
+            echo "[LPM] Python package '$pkg' already installed, skipping."
+        fi
+    done
 
+    # Determine reproducible build date
     local build_date
     if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
         build_date="$(date -u -d "@${SOURCE_DATE_EPOCH}" +"%Y-%m-%dT%H:%M:%SZ")"
@@ -52,29 +57,14 @@ build() {
         build_date="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
     fi
 
-    make_args=(
-        "VERSION=${VERSION}"
-        "BUILD_DATE=${build_date}"
-    )
-
-    make "${make_args[@]}" all
-    make "${make_args[@]}" build/build-info.json
-}
-
-check() {
-    set -euxo pipefail
-    cd "$SRCROOT/lpm-src"
-
-    # Running the full test suite is optional and can be time-consuming.
-    # Uncomment the following line to execute it during package builds.
-    # pytest
+    make VERSION="${VERSION}" BUILD_DATE="${build_date}" all
+    make VERSION="${VERSION}" BUILD_DATE="${build_date}" build/build-info.json
 }
 
 staging() {
     set -euxo pipefail
-    cd "$SRCROOT/lpm-src"
+    cd "$SRCROOT/$NAME-$VERSION"
 
-    install -d "$pkgdir/usr/bin"
     install -Dm755 build/nuitka/lpm.bin "$pkgdir/usr/bin/lpm"
     install -Dm755 build/nuitka/lpm-ui.bin "$pkgdir/usr/bin/lpm-ui"
 
@@ -96,6 +86,7 @@ staging() {
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/lpm/LICENSE"
 
     install -d "$pkgdir/var/lib/lpm/cache" "$pkgdir/var/lib/lpm/snapshots"
+
     printf '[]\n' > "$pkgdir/var/lib/lpm/repos.json"
     cat > "$pkgdir/var/lib/lpm/pins.json" <<'JSON'
 {
@@ -106,7 +97,5 @@ JSON
 
     install -Dm644 build/build-info.json "$pkgdir/usr/share/lpm/build-info.json"
 
-    find "$pkgdir/usr" -type f -exec sh -c '
-        file -b "$1" | grep -q "ELF" && strip --strip-unneeded "$1" || true
-    ' _ {} \; 2>/dev/null || true
 }
+
