@@ -132,7 +132,7 @@ def _write_minimal_script(path, body: str = "") -> None:
 
 def test_run_lpmbuild_disables_auto_optimisation(monkeypatch, tmp_path):
     script = tmp_path / "noopt.lpmbuild"
-    _write_minimal_script(script, body="BUIILD_OPT=(\"@none!\")")
+    _write_minimal_script(script, body="BUILD_OPT=(\"@none!\")")
 
     captured_envs = _capture_envs(monkeypatch)
     monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *args, **kwargs: None)
@@ -153,9 +153,31 @@ def test_run_lpmbuild_disables_auto_optimisation(monkeypatch, tmp_path):
         assert lpm.OPT_LEVEL not in env.get("LDFLAGS", "")
 
 
+def test_run_lpmbuild_supports_legacy_buiild_opt(monkeypatch, tmp_path):
+    script = tmp_path / "legacy-noopt.lpmbuild"
+    _write_minimal_script(script, body="BUIILD_OPT=(\"@none!\")")
+
+    captured_envs = _capture_envs(monkeypatch)
+    monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *args, **kwargs: None)
+
+    lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    assert captured_envs, "expected sandboxed phases to run"
+    for env in captured_envs.values():
+        cflags = env.get("CFLAGS", "")
+        assert lpm.OPT_LEVEL not in cflags
+        assert "-march" not in cflags
+        assert "-mtune" not in cflags
+
+
 def test_run_lpmbuild_enables_lto(monkeypatch, tmp_path):
     script = tmp_path / "lto.lpmbuild"
-    _write_minimal_script(script, body="BUIILD_OPT=(\"@lto!=on\")")
+    _write_minimal_script(script, body="BUILD_OPT=(\"@lto!=on\")")
 
     captured_envs = _capture_envs(monkeypatch)
     monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *args, **kwargs: None)
@@ -176,7 +198,7 @@ def test_run_lpmbuild_enables_lto(monkeypatch, tmp_path):
 
 def test_run_lpmbuild_disable_opt_with_lto(monkeypatch, tmp_path):
     script = tmp_path / "noopt-lto.lpmbuild"
-    _write_minimal_script(script, body="BUIILD_OPT=(\"@none!\" \"@lto!=on\")")
+    _write_minimal_script(script, body="BUILD_OPT=(\"@none!\" \"@lto!=on\")")
 
     captured_envs = _capture_envs(monkeypatch)
     monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *args, **kwargs: None)

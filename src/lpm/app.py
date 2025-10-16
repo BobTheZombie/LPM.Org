@@ -2358,7 +2358,7 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
         '  printf "\\n"',
         "}",
         "for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE DEVELOPER CFLAGS CXXFLAGS KERNEL MKINITCPIO_PRESET install INSTALL; do _emit_scalar \"$v\"; done",
-        "for a in SOURCE REQUIRES REQUIRES_PYTHON_DEPENDENCIES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS BUIILD_OPT; do _emit_array \"$a\"; done",
+        "for a in SOURCE REQUIRES REQUIRES_PYTHON_DEPENDENCIES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS BUIILD_OPT BUILD_OPT; do _emit_array \"$a\"; done",
     ]
     bcmd = "\n".join(lines)
 
@@ -2380,6 +2380,7 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
         "RECOMMENDS",
         "SUGGESTS",
         "BUIILD_OPT",
+        "BUILD_OPT",
     ]}
 
     i=0; n=len(data)
@@ -2403,6 +2404,15 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
             j = data.find(b"\n", i)
             if j==-1: break
             i = j+1
+
+    legacy_opts = arrays.get("BUIILD_OPT", [])
+    modern_opts = arrays.get("BUILD_OPT", [])
+    if legacy_opts and not modern_opts:
+        arrays["BUILD_OPT"] = list(legacy_opts)
+    elif legacy_opts and modern_opts:
+        arrays["BUILD_OPT"] = modern_opts + legacy_opts
+    arrays.setdefault("BUILD_OPT", [])
+    arrays.setdefault("BUIILD_OPT", legacy_opts)
 
     install_value = None
     for key in ("INSTALL", "install"):
@@ -3127,7 +3137,7 @@ def run_lpmbuild(
     mtune_base = overrides.mtune if overrides and overrides.mtune else default_mtune
     march_value = (march_base or "").strip() or default_march
     mtune_value = (mtune_base or "").strip() or default_mtune
-    raw_build_opts = arr.get("BUIILD_OPT", [])
+    raw_build_opts = arr.get("BUILD_OPT", []) or arr.get("BUIILD_OPT", [])
     build_opts: List[str] = []
     for opt in raw_build_opts:
         if not isinstance(opt, str):
