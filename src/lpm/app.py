@@ -2358,7 +2358,7 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
         '  printf "\\n"',
         "}",
         "for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE DEVELOPER CFLAGS CXXFLAGS KERNEL MKINITCPIO_PRESET install INSTALL; do _emit_scalar \"$v\"; done",
-        "for a in SOURCE REQUIRES REQUIRES_PYTHON_DEPENDENCIES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS; do _emit_array \"$a\"; done",
+        "for a in SOURCE REQUIRES REQUIRES_PYTHON_DEPENDENCIES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS BUIILD_OPT; do _emit_array \"$a\"; done",
     ]
     bcmd = "\n".join(lines)
 
@@ -2379,6 +2379,7 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
         "OBSOLETES",
         "RECOMMENDS",
         "SUGGESTS",
+        "BUIILD_OPT",
     ]}
 
     i=0; n=len(data)
@@ -3126,24 +3127,80 @@ def run_lpmbuild(
     mtune_base = overrides.mtune if overrides and overrides.mtune else default_mtune
     march_value = (march_base or "").strip() or default_march
     mtune_value = (mtune_base or "").strip() or default_mtune
-    base_flags = f"{OPT_LEVEL} -march={march_value} -mtune={mtune_value} -pipe -fPIC"
+    raw_build_opts = arr.get("BUIILD_OPT", [])
+    build_opts: List[str] = []
+    for opt in raw_build_opts:
+        if not isinstance(opt, str):
+            continue
+        cleaned = opt.strip()
+        if cleaned:
+            build_opts.append(cleaned)
+
+    lower_opts = {opt.lower() for opt in build_opts}
+    disable_auto_opt = "@none!" in lower_opts
+    lto_enabled = "@lto!=on" in lower_opts
 
     host_cflags = env.get("CFLAGS", "").strip()
-    script_cflags = scal.get("CFLAGS", "").strip()
-    combined_cflags = " ".join(filter(None, [base_flags, host_cflags])).strip() or base_flags
-    final_cflags = " ".join(filter(None, [combined_cflags, script_cflags])).strip() or combined_cflags
-
     host_cxxflags = env.get("CXXFLAGS", "").strip()
+    host_ldflags = env.get("LDFLAGS", "").strip()
+    script_cflags = scal.get("CFLAGS", "").strip()
     script_cxxflags = scal.get("CXXFLAGS", "").strip()
-    combined_cxxflags = " ".join(filter(None, [base_flags, host_cxxflags])).strip() or base_flags
-    env["CFLAGS"] = combined_cflags
-    env["CXXFLAGS"] = combined_cxxflags
-    env["LDFLAGS"] = OPT_LEVEL
+
+    def _set_env_value(key: str, value: str) -> None:
+        if value:
+            env[key] = value
+        else:
+            env.pop(key, None)
+
+    def _ensure_flag(key: str, flag: str) -> None:
+        current = env.get(key, "").strip()
+        parts = current.split()
+        if flag in parts:
+            new_value = current
+        else:
+            new_value = " ".join(filter(None, [current, flag])).strip()
+        _set_env_value(key, new_value)
+
+    if not disable_auto_opt:
+        base_parts = [
+            OPT_LEVEL,
+            f"-march={march_value}",
+            f"-mtune={mtune_value}",
+            "-pipe",
+            "-fPIC",
+        ]
+        if lto_enabled:
+            base_parts.append("-flto")
+        base_flags = " ".join(base_parts)
+        combined_cflags = " ".join(filter(None, [base_flags, host_cflags])).strip() or base_flags
+        combined_cxxflags = " ".join(filter(None, [base_flags, host_cxxflags])).strip() or base_flags
+        _set_env_value("CFLAGS", combined_cflags)
+        _set_env_value("CXXFLAGS", combined_cxxflags)
+        ldflags_parts = [OPT_LEVEL]
+        if lto_enabled:
+            ldflags_parts.append("-flto")
+        ldflags_value = " ".join(filter(None, ldflags_parts)).strip()
+        _set_env_value("LDFLAGS", ldflags_value)
+    else:
+        _set_env_value("CFLAGS", host_cflags)
+        _set_env_value("CXXFLAGS", host_cxxflags)
+        _set_env_value("LDFLAGS", host_ldflags)
+        if lto_enabled:
+            for key in ("CFLAGS", "CXXFLAGS", "LDFLAGS"):
+                _ensure_flag(key, "-flto")
+
     env["ARCH"] = arch
     env["LPM_CPU_MARCH"] = march_value
     env["LPM_CPU_MTUNE"] = mtune_value
     env["LPM_ARCH"] = arch
     log_suffix = " (override)" if overrides and (overrides.march or overrides.mtune or overrides.arch) else ""
+    effective_cflags = env.get("CFLAGS", "").strip()
+    if not disable_auto_opt:
+        final_cflags = " ".join(filter(None, [effective_cflags, script_cflags])).strip() or effective_cflags
+    else:
+        final_cflags = " ".join(filter(None, [effective_cflags or host_cflags, script_cflags])).strip()
+        if not final_cflags:
+            final_cflags = "(disabled)"
     log(f"[opt] vendor={CPU_VENDOR} family={CPU_FAMILY} -> {final_cflags}{log_suffix}")
 
     sources = []

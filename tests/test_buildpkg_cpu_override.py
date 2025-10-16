@@ -102,3 +102,98 @@ def test_run_lpmbuild_appends_script_cflags_once(monkeypatch, tmp_path):
         recorded = (log_dir / f"{phase}.flags").read_text(encoding="utf-8").strip()
         assert recorded.count(extra_flag) == 1
         assert recorded.endswith(extra_flag)
+
+
+def _capture_envs(monkeypatch):
+    captured_envs = {}
+
+    def fake_sandboxed_run(func, cwd, env, script_path, stagedir, buildroot, srcroot, aliases=()):
+        captured_envs.setdefault(func, dict(env))
+
+    monkeypatch.setattr(lpm, "sandboxed_run", fake_sandboxed_run)
+    return captured_envs
+
+
+def _write_minimal_script(path, body: str = "") -> None:
+    contents = textwrap.dedent(
+        f"""
+        NAME=demo
+        VERSION=1
+        RELEASE=1
+        ARCH=noarch
+        {body}
+        prepare() {{ :; }}
+        build() {{ :; }}
+        staging() {{ :; }}
+        """
+    ).strip()
+    path.write_text(contents + "\n", encoding="utf-8")
+
+
+def test_run_lpmbuild_disables_auto_optimisation(monkeypatch, tmp_path):
+    script = tmp_path / "noopt.lpmbuild"
+    _write_minimal_script(script, body="BUIILD_OPT=(\"@none!\")")
+
+    captured_envs = _capture_envs(monkeypatch)
+    monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *args, **kwargs: None)
+
+    lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    assert captured_envs, "expected sandboxed phases to run"
+    for env in captured_envs.values():
+        cflags = env.get("CFLAGS", "")
+        assert lpm.OPT_LEVEL not in cflags
+        assert "-march" not in cflags
+        assert "-mtune" not in cflags
+        assert lpm.OPT_LEVEL not in env.get("LDFLAGS", "")
+
+
+def test_run_lpmbuild_enables_lto(monkeypatch, tmp_path):
+    script = tmp_path / "lto.lpmbuild"
+    _write_minimal_script(script, body="BUIILD_OPT=(\"@lto!=on\")")
+
+    captured_envs = _capture_envs(monkeypatch)
+    monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *args, **kwargs: None)
+
+    lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    assert captured_envs, "expected sandboxed phases to run"
+    for env in captured_envs.values():
+        assert "-flto" in env.get("CFLAGS", "")
+        assert "-flto" in env.get("CXXFLAGS", "")
+        assert "-flto" in env.get("LDFLAGS", "")
+
+
+def test_run_lpmbuild_disable_opt_with_lto(monkeypatch, tmp_path):
+    script = tmp_path / "noopt-lto.lpmbuild"
+    _write_minimal_script(script, body="BUIILD_OPT=(\"@none!\" \"@lto!=on\")")
+
+    captured_envs = _capture_envs(monkeypatch)
+    monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *args, **kwargs: None)
+
+    lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    assert captured_envs, "expected sandboxed phases to run"
+    for env in captured_envs.values():
+        cflags = env.get("CFLAGS", "")
+        assert lpm.OPT_LEVEL not in cflags
+        assert "-march" not in cflags
+        assert "-mtune" not in cflags
+        assert "-flto" in env.get("CFLAGS", "")
+        assert "-flto" in env.get("CXXFLAGS", "")
+        assert "-flto" in env.get("LDFLAGS", "")
