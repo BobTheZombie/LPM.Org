@@ -151,6 +151,8 @@ def test_run_lpmbuild_disables_auto_optimisation(monkeypatch, tmp_path):
         assert "-march" not in cflags
         assert "-mtune" not in cflags
         assert lpm.OPT_LEVEL not in env.get("LDFLAGS", "")
+        assert env.get("LPM_CPU_MARCH") == "generic"
+        assert env.get("LPM_CPU_MTUNE") == "generic"
 
 
 def test_run_lpmbuild_supports_legacy_buiild_opt(monkeypatch, tmp_path):

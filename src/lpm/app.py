@@ -3131,12 +3131,6 @@ def run_lpmbuild(
         "LPM_SPLIT_RECORD": str(split_record_path),
         "LPM_SPLIT_OUTDIR": str(outdir or script_dir),
     })
-    default_march = MARCH or "generic"
-    default_mtune = MTUNE or "generic"
-    march_base = overrides.march if overrides and overrides.march else default_march
-    mtune_base = overrides.mtune if overrides and overrides.mtune else default_mtune
-    march_value = (march_base or "").strip() or default_march
-    mtune_value = (mtune_base or "").strip() or default_mtune
     raw_build_opts = arr.get("BUILD_OPT", []) or arr.get("BUIILD_OPT", [])
     build_opts: List[str] = []
     for opt in raw_build_opts:
@@ -3149,6 +3143,19 @@ def run_lpmbuild(
     lower_opts = {opt.lower() for opt in build_opts}
     disable_auto_opt = "@none!" in lower_opts
     lto_enabled = "@lto!=on" in lower_opts
+
+    default_march = MARCH or "generic"
+    default_mtune = MTUNE or "generic"
+    march_base = overrides.march if overrides and overrides.march else default_march
+    mtune_base = overrides.mtune if overrides and overrides.mtune else default_mtune
+    march_value = (march_base or "").strip() or default_march
+    mtune_value = (mtune_base or "").strip() or default_mtune
+
+    if disable_auto_opt:
+        march_override = (overrides.march if overrides and overrides.march else "").strip()
+        mtune_override = (overrides.mtune if overrides and overrides.mtune else "").strip()
+        march_value = march_override or "generic"
+        mtune_value = mtune_override or "generic"
 
     host_cflags = env.get("CFLAGS", "").strip()
     host_cxxflags = env.get("CXXFLAGS", "").strip()
