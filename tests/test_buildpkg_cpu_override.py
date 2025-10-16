@@ -53,3 +53,52 @@ def test_buildpkg_override_applies_cpu_flags(monkeypatch, tmp_path):
     expected_prefix = f"{lpm.OPT_LEVEL} -march=x86_64v3 -mtune=generic"
     assert prepare_env["CFLAGS"].startswith(expected_prefix)
     assert prepare_env["ARCH"] == "x86_64v3"
+
+
+def test_run_lpmbuild_appends_script_cflags_once(monkeypatch, tmp_path):
+    script = tmp_path / "append.lpmbuild"
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+
+    extra_flag = "-DWITH_FEATURE"
+
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            NAME=append
+            VERSION=1
+            RELEASE=1
+            ARCH=noarch
+
+            CFLAGS+=" {extra_flag}"
+
+            LOG_DIR="{log_dir.as_posix()}"
+            log_flags() {{
+                phase="$1"
+                printf '%s\n' "$CFLAGS" > "$LOG_DIR/${{phase}}.flags"
+            }}
+
+            prepare() {{ log_flags prepare; }}
+            build() {{ log_flags build; }}
+            staging() {{ log_flags staging; }}
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setitem(lpm.CONF, "SANDBOX_MODE", "none")
+    monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *args, **kwargs: None)
+
+    out_path, _, _, _ = lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    assert out_path is not None
+    for phase in ("prepare", "build", "staging"):
+        recorded = (log_dir / f"{phase}.flags").read_text(encoding="utf-8").strip()
+        assert recorded.count(extra_flag) == 1
+        assert recorded.endswith(extra_flag)

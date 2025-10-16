@@ -2357,7 +2357,7 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
         '  fi',
         '  printf "\\n"',
         "}",
-        "for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE DEVELOPER CFLAGS KERNEL MKINITCPIO_PRESET install INSTALL; do _emit_scalar \"$v\"; done",
+        "for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE DEVELOPER CFLAGS CXXFLAGS KERNEL MKINITCPIO_PRESET install INSTALL; do _emit_scalar \"$v\"; done",
         "for a in SOURCE REQUIRES REQUIRES_PYTHON_DEPENDENCIES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS; do _emit_array \"$a\"; done",
     ]
     bcmd = "\n".join(lines)
@@ -3127,17 +3127,24 @@ def run_lpmbuild(
     march_value = (march_base or "").strip() or default_march
     mtune_value = (mtune_base or "").strip() or default_mtune
     base_flags = f"{OPT_LEVEL} -march={march_value} -mtune={mtune_value} -pipe -fPIC"
-    extra_cflags = " ".join(filter(None, [env.get("CFLAGS", "").strip(), scal.get("CFLAGS", "").strip()]))
-    flags = f"{base_flags} {extra_cflags}".strip()
-    env["CFLAGS"] = flags
-    env["CXXFLAGS"] = flags
+
+    host_cflags = env.get("CFLAGS", "").strip()
+    script_cflags = scal.get("CFLAGS", "").strip()
+    combined_cflags = " ".join(filter(None, [base_flags, host_cflags])).strip() or base_flags
+    final_cflags = " ".join(filter(None, [combined_cflags, script_cflags])).strip() or combined_cflags
+
+    host_cxxflags = env.get("CXXFLAGS", "").strip()
+    script_cxxflags = scal.get("CXXFLAGS", "").strip()
+    combined_cxxflags = " ".join(filter(None, [base_flags, host_cxxflags])).strip() or base_flags
+    env["CFLAGS"] = combined_cflags
+    env["CXXFLAGS"] = combined_cxxflags
     env["LDFLAGS"] = OPT_LEVEL
     env["ARCH"] = arch
     env["LPM_CPU_MARCH"] = march_value
     env["LPM_CPU_MTUNE"] = mtune_value
     env["LPM_ARCH"] = arch
     log_suffix = " (override)" if overrides and (overrides.march or overrides.mtune or overrides.arch) else ""
-    log(f"[opt] vendor={CPU_VENDOR} family={CPU_FAMILY} -> {flags}{log_suffix}")
+    log(f"[opt] vendor={CPU_VENDOR} family={CPU_FAMILY} -> {final_cflags}{log_suffix}")
 
     sources = []
     for raw_entry in arr.get("SOURCE", []):
