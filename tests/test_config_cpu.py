@@ -115,3 +115,24 @@ def test_cpu_type_invalid_falls_back(monkeypatch, caplog, decl):
 
     assert (config.MARCH, config.MTUNE, config.CPU_VENDOR, config.CPU_FAMILY) == expected
     assert "Unrecognized CPU_TYPE" in caplog.text
+
+
+def test_disable_cpu_optimizations_skips_detection(monkeypatch):
+    original_conf = dict(config.CONF)
+    try:
+        def fail_detect() -> tuple[str, str, str, str]:  # pragma: no cover - should not run
+            raise AssertionError("_detect_cpu should not run when disabled")
+
+        monkeypatch.setattr(config, "_detect_cpu", fail_detect)
+        new_conf = dict(config.CONF)
+        new_conf["ENABLE_CPU_OPTIMIZATIONS"] = "false"
+        config._apply_conf(new_conf)
+
+        assert config.ENABLE_CPU_OPTIMIZATIONS is False
+        assert config.MARCH == ""
+        assert config.MTUNE == ""
+        assert config.CPU_VENDOR == ""
+        assert config.CPU_FAMILY == ""
+    finally:
+        monkeypatch.undo()
+        config._apply_conf(original_conf)

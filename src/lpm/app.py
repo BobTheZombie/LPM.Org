@@ -179,6 +179,7 @@ from ..config import (
     MARCH,
     MTUNE,
     OPT_LEVEL,
+    ENABLE_CPU_OPTIMIZATIONS,
     PIN_FILE,
     REPO_LIST,
     SIGN_KEY,
@@ -1623,11 +1624,22 @@ def build_python_package_from_pip(
 
         env = os.environ.copy()
         env.setdefault("PYTHONNOUSERSITE", "1")
-        base_flags = f"{OPT_LEVEL} -march={march_value} -mtune={mtune_value} -pipe -fPIC"
+        base_parts = [OPT_LEVEL]
+        if ENABLE_CPU_OPTIMIZATIONS:
+            base_parts.extend([f"-march={march_value}", f"-mtune={mtune_value}"])
+        base_parts.extend(["-pipe", "-fPIC"])
+        base_flags = " ".join(part for part in base_parts if part).strip()
         extra_cflags = env.get("CFLAGS", "").strip()
-        combined_flags = " ".join(filter(None, [base_flags, extra_cflags])).strip()
-        env["CFLAGS"] = combined_flags
-        env["CXXFLAGS"] = combined_flags
+        if base_flags:
+            combined_flags = " ".join(filter(None, [base_flags, extra_cflags])).strip()
+        else:
+            combined_flags = extra_cflags
+        if combined_flags:
+            env["CFLAGS"] = combined_flags
+            env["CXXFLAGS"] = combined_flags
+        else:
+            env.pop("CFLAGS", None)
+            env.pop("CXXFLAGS", None)
         env["LDFLAGS"] = OPT_LEVEL
         arch_hint = overrides.arch if overrides and overrides.arch else None
         if arch_hint:
@@ -1636,8 +1648,12 @@ def build_python_package_from_pip(
         else:
             env.setdefault("ARCH", ARCH)
             env.setdefault("LPM_ARCH", ARCH)
-        env["LPM_CPU_MARCH"] = march_value
-        env["LPM_CPU_MTUNE"] = mtune_value
+        if ENABLE_CPU_OPTIMIZATIONS:
+            env["LPM_CPU_MARCH"] = march_value
+            env["LPM_CPU_MTUNE"] = mtune_value
+        else:
+            env.pop("LPM_CPU_MARCH", None)
+            env.pop("LPM_CPU_MTUNE", None)
 
         last_error: Optional[Exception] = None
 
@@ -3147,40 +3163,43 @@ def run_lpmbuild(
 
     normalized_name = name.strip().lower()
     is_grub_build = normalized_name == "grub"
+    script_cflags = scal.get("CFLAGS", "").strip()
+    script_cxxflags = scal.get("CXXFLAGS", "").strip()
 
-    default_march = (MARCH or "").strip()
-    if not default_march or default_march.lower() == "generic":
-        default_march = _default_march_for_arch(target_arch)
-    default_mtune = (MTUNE or "").strip() or "generic"
-
-    march_source = overrides.march if overrides and overrides.march else default_march
-    mtune_source = overrides.mtune if overrides and overrides.mtune else default_mtune
-
-    march_value = _normalize_gcc_cpu_value(
-        march_source,
-        default=default_march,
-        is_march=True,
-        target_arch=target_arch,
-    )
-    mtune_value = _normalize_gcc_cpu_value(
-        mtune_source,
-        default=default_mtune,
-        is_march=False,
-        target_arch=target_arch,
-    )
-
+    march_value = ""
+    mtune_value = ""
     forced_override = False
 
-    if is_grub_build:
-        march_value = "x86-64"
-        mtune_value = "generic"
-        forced_override = True
+    if ENABLE_CPU_OPTIMIZATIONS:
+        default_march = (MARCH or "").strip()
+        if not default_march or default_march.lower() == "generic":
+            default_march = _default_march_for_arch(target_arch)
+        default_mtune = (MTUNE or "").strip() or "generic"
+
+        march_source = overrides.march if overrides and overrides.march else default_march
+        mtune_source = overrides.mtune if overrides and overrides.mtune else default_mtune
+
+        march_value = _normalize_gcc_cpu_value(
+            march_source,
+            default=default_march,
+            is_march=True,
+            target_arch=target_arch,
+        )
+        mtune_value = _normalize_gcc_cpu_value(
+            mtune_source,
+            default=default_mtune,
+            is_march=False,
+            target_arch=target_arch,
+        )
+
+        if is_grub_build:
+            march_value = "x86-64"
+            mtune_value = "generic"
+            forced_override = True
 
     host_cflags = env.get("CFLAGS", "").strip()
     host_cxxflags = env.get("CXXFLAGS", "").strip()
     host_ldflags = env.get("LDFLAGS", "").strip()
-    script_cflags = scal.get("CFLAGS", "").strip()
-    script_cxxflags = scal.get("CXXFLAGS", "").strip()
 
     def _set_env_value(key: str, value: str) -> None:
         if value:
@@ -3188,30 +3207,47 @@ def run_lpmbuild(
         else:
             env.pop(key, None)
 
-    base_parts = [
-        OPT_LEVEL,
-        f"-march={march_value}",
-        f"-mtune={mtune_value}",
-        "-pipe",
-        "-fPIC",
-    ]
-    base_flags = " ".join(base_parts)
-    combined_cflags = " ".join(filter(None, [base_flags, host_cflags])).strip() or base_flags
-    combined_cxxflags = " ".join(filter(None, [base_flags, host_cxxflags])).strip() or base_flags
-    _set_env_value("CFLAGS", combined_cflags)
-    _set_env_value("CXXFLAGS", combined_cxxflags)
-    ldflags_base = " ".join(filter(None, [OPT_LEVEL, host_ldflags])).strip() or OPT_LEVEL
-    _set_env_value("LDFLAGS", ldflags_base)
+    if ENABLE_CPU_OPTIMIZATIONS:
+        base_parts = [
+            OPT_LEVEL,
+            f"-march={march_value}",
+            f"-mtune={mtune_value}",
+            "-pipe",
+            "-fPIC",
+        ]
+        base_flags = " ".join(base_parts)
+        combined_cflags = " ".join(filter(None, [base_flags, host_cflags])).strip() or base_flags
+        combined_cxxflags = " ".join(filter(None, [base_flags, host_cxxflags])).strip() or base_flags
+        _set_env_value("CFLAGS", combined_cflags)
+        _set_env_value("CXXFLAGS", combined_cxxflags)
+        ldflags_base = " ".join(filter(None, [OPT_LEVEL, host_ldflags])).strip() or OPT_LEVEL
+        _set_env_value("LDFLAGS", ldflags_base)
+        env["LPM_CPU_MARCH"] = march_value
+        env["LPM_CPU_MTUNE"] = mtune_value
+    else:
+        combined_cflags = " ".join(filter(None, [host_cflags, script_cflags])).strip()
+        combined_cxxflags = " ".join(filter(None, [host_cxxflags, script_cxxflags])).strip()
+        _set_env_value("CFLAGS", combined_cflags)
+        _set_env_value("CXXFLAGS", combined_cxxflags)
+        _set_env_value("LDFLAGS", host_ldflags)
+        env.pop("LPM_CPU_MARCH", None)
+        env.pop("LPM_CPU_MTUNE", None)
 
     env["ARCH"] = arch
-    env["LPM_CPU_MARCH"] = march_value
-    env["LPM_CPU_MTUNE"] = mtune_value
     env["LPM_ARCH"] = arch
-    has_user_override = overrides and (overrides.march or overrides.mtune or overrides.arch)
+    has_user_override = (
+        ENABLE_CPU_OPTIMIZATIONS
+        and overrides
+        and (overrides.march or overrides.mtune or overrides.arch)
+    )
     log_suffix = " (override)" if forced_override or has_user_override else ""
     effective_cflags = env.get("CFLAGS", "").strip()
-    final_cflags = " ".join(filter(None, [effective_cflags, script_cflags])).strip() or effective_cflags or "(unset)"
-    log(f"[opt] vendor={CPU_VENDOR} family={CPU_FAMILY} -> {final_cflags}{log_suffix}")
+    if ENABLE_CPU_OPTIMIZATIONS:
+        final_cflags = " ".join(filter(None, [effective_cflags, script_cflags])).strip() or effective_cflags or "(unset)"
+        log(f"[opt] vendor={CPU_VENDOR} family={CPU_FAMILY} -> {final_cflags}{log_suffix}")
+    else:
+        fallback_display = effective_cflags or script_cflags or "(unset)"
+        log(f"[opt] Automatic CPU optimizations disabled; using lpmbuild flags: {fallback_display}")
 
     sources = []
     for raw_entry in arr.get("SOURCE", []):

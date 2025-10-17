@@ -13,6 +13,7 @@ def test_save_conf_round_trip_updates_globals(tmp_path):
             {
                 "opt_level": "-O3",
                 "allow_lpmbuild_fallback": True,
+                "enable_cpu_optimizations": False,
                 "copy_out_dir": "/tmp/out",
                 "cpu_type": "x86_64v3",
                 "alpha": 1,
@@ -26,6 +27,7 @@ def test_save_conf_round_trip_updates_globals(tmp_path):
         assert "# LPM configuration file" in text
         assert "OPT_LEVEL=-O3" in text
         assert "ALLOW_LPMBUILD_FALLBACK=true" in text
+        assert "ENABLE_CPU_OPTIMIZATIONS=false" in text
         assert "COPY_OUT_DIR=/tmp/out" in text
         assert "CPU_TYPE=x86_64v3" in text
         assert "bad key" not in text
@@ -43,7 +45,8 @@ def test_save_conf_round_trip_updates_globals(tmp_path):
         assert config.CONF["COPY_OUT_DIR"] == "/tmp/out"
         assert config.OPT_LEVEL == "-O3"
         assert config.ALLOW_LPMBUILD_FALLBACK is True
-        assert config.MARCH == config.MTUNE == "x86-64-v3"
+        assert config.ENABLE_CPU_OPTIMIZATIONS is False
+        assert config.MARCH == config.MTUNE == ""
     finally:
         config._apply_conf(original_conf)
 

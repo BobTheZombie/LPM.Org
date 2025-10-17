@@ -232,6 +232,14 @@ def _build_fields() -> tuple[tuple[ConfigField, ...], tuple[ConfigField, ...]]:
             formatter=lambda value: "yes" if value else "no",
         ),
         ConfigField(
+            key="ENABLE_CPU_OPTIMIZATIONS",
+            prompt="Enable automatic CPU optimisation? (yes/no)",
+            parser=_parse_yes_no,
+            default=config.ENABLE_CPU_OPTIMIZATIONS,
+            formatter=lambda value: "yes" if value else "no",
+            help_text="Disable to rely entirely on .lpmbuild-defined CFLAGS.",
+        ),
+        ConfigField(
             key="CPU_TYPE",
             prompt="Override CPU type (x86_64v1-4 or blank)",
             parser=_parse_cpu_type,
