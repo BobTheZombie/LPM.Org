@@ -187,3 +187,30 @@ def test_run_lpmbuild_grub_uses_x86_defaults(monkeypatch, tmp_path):
         assert "znver4" not in cflags
         assert env.get("LPM_CPU_MARCH") == "x86-64"
         assert env.get("LPM_CPU_MTUNE") == "generic"
+
+
+def test_run_lpmbuild_grub_logs_override(monkeypatch, tmp_path):
+    script = tmp_path / "grub.lpmbuild"
+    _write_minimal_script(script, name="grub")
+
+    logs = []
+
+    def _capture_log(message: str):
+        logs.append(message)
+
+    monkeypatch.setattr(lpm, "log", _capture_log)
+    monkeypatch.setattr(lpm, "MARCH", "znver4")
+    monkeypatch.setattr(lpm, "MTUNE", "znver4")
+    monkeypatch.setattr(lpm, "ARCH", "x86_64")
+    monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *args, **kwargs: None)
+
+    lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    opt_logs = [entry for entry in logs if entry.startswith("[opt] ")]
+    assert opt_logs, "expected an [opt] log entry"
+    assert any(entry.endswith("(override)") for entry in opt_logs)
