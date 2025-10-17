@@ -50,7 +50,7 @@ def test_buildpkg_override_applies_cpu_flags(monkeypatch, tmp_path):
 
     prepare_env = captured_envs.get("prepare")
     assert prepare_env is not None
-    expected_prefix = f"{lpm.OPT_LEVEL} -march=x86_64v3 -mtune=generic"
+    expected_prefix = f"{lpm.OPT_LEVEL} -march=x86-64-v3 -mtune=generic"
     assert prepare_env["CFLAGS"].startswith(expected_prefix)
     assert prepare_env["ARCH"] == "x86_64v3"
 
@@ -114,10 +114,10 @@ def _capture_envs(monkeypatch):
     return captured_envs
 
 
-def _write_minimal_script(path, body: str = "") -> None:
+def _write_minimal_script(path, body: str = "", name: str = "demo") -> None:
     contents = textwrap.dedent(
         f"""
-        NAME=demo
+        NAME={name}
         VERSION=1
         RELEASE=1
         ARCH=noarch
@@ -130,11 +130,14 @@ def _write_minimal_script(path, body: str = "") -> None:
     path.write_text(contents + "\n", encoding="utf-8")
 
 
-def test_run_lpmbuild_disables_auto_optimisation(monkeypatch, tmp_path):
-    script = tmp_path / "noopt.lpmbuild"
-    _write_minimal_script(script, body="BUILD_OPT=(\"@none!\")")
+def test_run_lpmbuild_normalizes_gcc_cpu_values(monkeypatch, tmp_path):
+    script = tmp_path / "normalize.lpmbuild"
+    _write_minimal_script(script)
 
     captured_envs = _capture_envs(monkeypatch)
+    monkeypatch.setattr(lpm, "MARCH", "x86_64_v3")
+    monkeypatch.setattr(lpm, "MTUNE", "x86_64_v3")
+    monkeypatch.setattr(lpm, "ARCH", "x86_64")
     monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *args, **kwargs: None)
 
     lpm.run_lpmbuild(
@@ -147,77 +150,47 @@ def test_run_lpmbuild_disables_auto_optimisation(monkeypatch, tmp_path):
     assert captured_envs, "expected sandboxed phases to run"
     for env in captured_envs.values():
         cflags = env.get("CFLAGS", "")
-        assert lpm.OPT_LEVEL not in cflags
-        assert "-march" not in cflags
-        assert "-mtune" not in cflags
-        assert lpm.OPT_LEVEL not in env.get("LDFLAGS", "")
-        assert env.get("LPM_CPU_MARCH") == "generic"
+        cxxflags = env.get("CXXFLAGS", "")
+        assert "-march=x86-64-v3" in cflags
+        assert "-mtune=x86-64-v3" in cflags
+        assert "-march=x86-64-v3" in cxxflags
+        assert "-mtune=x86-64-v3" in cxxflags
+        assert env.get("LPM_CPU_MARCH") == "x86-64-v3"
+        assert env.get("LPM_CPU_MTUNE") == "x86-64-v3"
+
+
+def test_run_lpmbuild_grub_uses_x86_defaults(monkeypatch, tmp_path):
+    script = tmp_path / "grub.lpmbuild"
+    _write_minimal_script(script, name="grub")
+
+    captured_envs = _capture_envs(monkeypatch)
+    opt_logs = []
+    monkeypatch.setattr(lpm, "log", lambda msg: opt_logs.append(msg))
+    monkeypatch.setattr(lpm, "MARCH", "znver4")
+    monkeypatch.setattr(lpm, "MTUNE", "znver4")
+    monkeypatch.setattr(lpm, "ARCH", "x86_64")
+    monkeypatch.setattr(lpm, "CPU_VENDOR", "generic")
+    monkeypatch.setattr(lpm, "CPU_FAMILY", "generic")
+    monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *args, **kwargs: None)
+
+    lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    assert captured_envs, "expected sandboxed phases to run"
+    for env in captured_envs.values():
+        cflags = env.get("CFLAGS", "")
+        cxxflags = env.get("CXXFLAGS", "")
+        assert "-march=x86-64" in cflags
+        assert "-mtune=generic" in cflags
+        assert "-march=x86-64" in cxxflags
+        assert "-mtune=generic" in cxxflags
+        assert "znver4" not in cflags
+        assert env.get("LPM_CPU_MARCH") == "x86-64"
         assert env.get("LPM_CPU_MTUNE") == "generic"
-
-
-def test_run_lpmbuild_supports_legacy_buiild_opt(monkeypatch, tmp_path):
-    script = tmp_path / "legacy-noopt.lpmbuild"
-    _write_minimal_script(script, body="BUIILD_OPT=(\"@none!\")")
-
-    captured_envs = _capture_envs(monkeypatch)
-    monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *args, **kwargs: None)
-
-    lpm.run_lpmbuild(
-        script,
-        outdir=tmp_path,
-        prompt_install=False,
-        build_deps=False,
-    )
-
-    assert captured_envs, "expected sandboxed phases to run"
-    for env in captured_envs.values():
-        cflags = env.get("CFLAGS", "")
-        assert lpm.OPT_LEVEL not in cflags
-        assert "-march" not in cflags
-        assert "-mtune" not in cflags
-
-
-def test_run_lpmbuild_enables_lto(monkeypatch, tmp_path):
-    script = tmp_path / "lto.lpmbuild"
-    _write_minimal_script(script, body="BUILD_OPT=(\"@lto!=on\")")
-
-    captured_envs = _capture_envs(monkeypatch)
-    monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *args, **kwargs: None)
-
-    lpm.run_lpmbuild(
-        script,
-        outdir=tmp_path,
-        prompt_install=False,
-        build_deps=False,
-    )
-
-    assert captured_envs, "expected sandboxed phases to run"
-    for env in captured_envs.values():
-        assert "-flto" in env.get("CFLAGS", "")
-        assert "-flto" in env.get("CXXFLAGS", "")
-        assert "-flto" in env.get("LDFLAGS", "")
-
-
-def test_run_lpmbuild_disable_opt_with_lto(monkeypatch, tmp_path):
-    script = tmp_path / "noopt-lto.lpmbuild"
-    _write_minimal_script(script, body="BUILD_OPT=(\"@none!\" \"@lto!=on\")")
-
-    captured_envs = _capture_envs(monkeypatch)
-    monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *args, **kwargs: None)
-
-    lpm.run_lpmbuild(
-        script,
-        outdir=tmp_path,
-        prompt_install=False,
-        build_deps=False,
-    )
-
-    assert captured_envs, "expected sandboxed phases to run"
-    for env in captured_envs.values():
-        cflags = env.get("CFLAGS", "")
-        assert lpm.OPT_LEVEL not in cflags
-        assert "-march" not in cflags
-        assert "-mtune" not in cflags
-        assert "-flto" in env.get("CFLAGS", "")
-        assert "-flto" in env.get("CXXFLAGS", "")
-        assert "-flto" in env.get("LDFLAGS", "")
+    forced_opt_logs = [log for log in opt_logs if log.startswith("[opt] ")]
+    assert forced_opt_logs, "expected [opt] logs to be recorded"
+    assert any(log.endswith("(override)") for log in forced_opt_logs)

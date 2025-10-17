@@ -2358,7 +2358,7 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
         '  printf "\\n"',
         "}",
         "for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE DEVELOPER CFLAGS CXXFLAGS KERNEL MKINITCPIO_PRESET install INSTALL; do _emit_scalar \"$v\"; done",
-        "for a in SOURCE REQUIRES REQUIRES_PYTHON_DEPENDENCIES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS BUIILD_OPT BUILD_OPT; do _emit_array \"$a\"; done",
+        "for a in SOURCE REQUIRES REQUIRES_PYTHON_DEPENDENCIES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS; do _emit_array \"$a\"; done",
     ]
     bcmd = "\n".join(lines)
 
@@ -2379,8 +2379,6 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
         "OBSOLETES",
         "RECOMMENDS",
         "SUGGESTS",
-        "BUIILD_OPT",
-        "BUILD_OPT",
     ]}
 
     i=0; n=len(data)
@@ -2404,15 +2402,6 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
             j = data.find(b"\n", i)
             if j==-1: break
             i = j+1
-
-    legacy_opts = arrays.get("BUIILD_OPT", [])
-    modern_opts = arrays.get("BUILD_OPT", [])
-    if legacy_opts and not modern_opts:
-        arrays["BUILD_OPT"] = list(legacy_opts)
-    elif legacy_opts and modern_opts:
-        arrays["BUILD_OPT"] = modern_opts + legacy_opts
-    arrays.setdefault("BUILD_OPT", [])
-    arrays.setdefault("BUIILD_OPT", legacy_opts)
 
     install_value = None
     for key in ("INSTALL", "install"):
@@ -3131,31 +3120,58 @@ def run_lpmbuild(
         "LPM_SPLIT_RECORD": str(split_record_path),
         "LPM_SPLIT_OUTDIR": str(outdir or script_dir),
     })
-    raw_build_opts = arr.get("BUILD_OPT", []) or arr.get("BUIILD_OPT", [])
-    build_opts: List[str] = []
-    for opt in raw_build_opts:
-        if not isinstance(opt, str):
-            continue
-        cleaned = opt.strip()
-        if cleaned:
-            build_opts.append(cleaned)
+    def _is_x86(arch_name: str) -> bool:
+        lowered = arch_name.lower()
+        return lowered.startswith("x86_64") or lowered.startswith("x86-64") or lowered.startswith("amd64")
 
-    lower_opts = {opt.lower() for opt in build_opts}
-    disable_auto_opt = "@none!" in lower_opts
-    lto_enabled = "@lto!=on" in lower_opts
+    def _default_march_for_arch(arch_name: str) -> str:
+        if _is_x86(arch_name):
+            return "x86-64"
+        return "generic"
 
-    default_march = MARCH or "generic"
-    default_mtune = MTUNE or "generic"
-    march_base = overrides.march if overrides and overrides.march else default_march
-    mtune_base = overrides.mtune if overrides and overrides.mtune else default_mtune
-    march_value = (march_base or "").strip() or default_march
-    mtune_value = (mtune_base or "").strip() or default_mtune
+    def _normalize_gcc_cpu_value(value: str, *, default: str, is_march: bool, target_arch: str) -> str:
+        text = (value or "").strip() or default
+        lowered = text.lower().replace("_", "-")
+        if lowered.startswith("x86-64v"):
+            lowered = lowered.replace("x86-64v", "x86-64-v", 1)
+        if is_march and lowered == "generic" and _is_x86(target_arch):
+            return "x86-64"
+        return lowered
 
-    if disable_auto_opt:
-        march_override = (overrides.march if overrides and overrides.march else "").strip()
-        mtune_override = (overrides.mtune if overrides and overrides.mtune else "").strip()
-        march_value = march_override or "generic"
-        mtune_value = mtune_override or "generic"
+    host_arch = (ARCH or "").strip()
+    target_arch = arch.strip()
+    if not target_arch or target_arch.lower() in {"noarch", "any"}:
+        target_arch = host_arch or target_arch or "x86_64"
+
+    normalized_name = name.strip().lower()
+    is_grub_build = normalized_name == "grub"
+    forced_override = False
+
+    default_march = (MARCH or "").strip()
+    if not default_march or default_march.lower() == "generic":
+        default_march = _default_march_for_arch(target_arch)
+    default_mtune = (MTUNE or "").strip() or "generic"
+
+    march_source = overrides.march if overrides and overrides.march else default_march
+    mtune_source = overrides.mtune if overrides and overrides.mtune else default_mtune
+
+    march_value = _normalize_gcc_cpu_value(
+        march_source,
+        default=default_march,
+        is_march=True,
+        target_arch=target_arch,
+    )
+    mtune_value = _normalize_gcc_cpu_value(
+        mtune_source,
+        default=default_mtune,
+        is_march=False,
+        target_arch=target_arch,
+    )
+
+    if is_grub_build:
+        forced_override = True
+        march_value = "x86-64"
+        mtune_value = "generic"
 
     host_cflags = env.get("CFLAGS", "").strip()
     host_cxxflags = env.get("CXXFLAGS", "").strip()
@@ -3169,55 +3185,31 @@ def run_lpmbuild(
         else:
             env.pop(key, None)
 
-    def _ensure_flag(key: str, flag: str) -> None:
-        current = env.get(key, "").strip()
-        parts = current.split()
-        if flag in parts:
-            new_value = current
-        else:
-            new_value = " ".join(filter(None, [current, flag])).strip()
-        _set_env_value(key, new_value)
-
-    if not disable_auto_opt:
-        base_parts = [
-            OPT_LEVEL,
-            f"-march={march_value}",
-            f"-mtune={mtune_value}",
-            "-pipe",
-            "-fPIC",
-        ]
-        if lto_enabled:
-            base_parts.append("-flto")
-        base_flags = " ".join(base_parts)
-        combined_cflags = " ".join(filter(None, [base_flags, host_cflags])).strip() or base_flags
-        combined_cxxflags = " ".join(filter(None, [base_flags, host_cxxflags])).strip() or base_flags
-        _set_env_value("CFLAGS", combined_cflags)
-        _set_env_value("CXXFLAGS", combined_cxxflags)
-        ldflags_parts = [OPT_LEVEL]
-        if lto_enabled:
-            ldflags_parts.append("-flto")
-        ldflags_value = " ".join(filter(None, ldflags_parts)).strip()
-        _set_env_value("LDFLAGS", ldflags_value)
-    else:
-        _set_env_value("CFLAGS", host_cflags)
-        _set_env_value("CXXFLAGS", host_cxxflags)
-        _set_env_value("LDFLAGS", host_ldflags)
-        if lto_enabled:
-            for key in ("CFLAGS", "CXXFLAGS", "LDFLAGS"):
-                _ensure_flag(key, "-flto")
+    base_parts = [
+        OPT_LEVEL,
+        f"-march={march_value}",
+        f"-mtune={mtune_value}",
+        "-pipe",
+        "-fPIC",
+    ]
+    base_flags = " ".join(base_parts)
+    combined_cflags = " ".join(filter(None, [base_flags, host_cflags])).strip() or base_flags
+    combined_cxxflags = " ".join(filter(None, [base_flags, host_cxxflags])).strip() or base_flags
+    _set_env_value("CFLAGS", combined_cflags)
+    _set_env_value("CXXFLAGS", combined_cxxflags)
+    ldflags_base = " ".join(filter(None, [OPT_LEVEL, host_ldflags])).strip() or OPT_LEVEL
+    _set_env_value("LDFLAGS", ldflags_base)
 
     env["ARCH"] = arch
     env["LPM_CPU_MARCH"] = march_value
     env["LPM_CPU_MTUNE"] = mtune_value
     env["LPM_ARCH"] = arch
-    log_suffix = " (override)" if overrides and (overrides.march or overrides.mtune or overrides.arch) else ""
+    log_suffix = " (override)" if (
+        (overrides and (overrides.march or overrides.mtune or overrides.arch))
+        or forced_override
+    ) else ""
     effective_cflags = env.get("CFLAGS", "").strip()
-    if not disable_auto_opt:
-        final_cflags = " ".join(filter(None, [effective_cflags, script_cflags])).strip() or effective_cflags
-    else:
-        final_cflags = " ".join(filter(None, [effective_cflags or host_cflags, script_cflags])).strip()
-        if not final_cflags:
-            final_cflags = "(disabled)"
+    final_cflags = " ".join(filter(None, [effective_cflags, script_cflags])).strip() or effective_cflags or "(unset)"
     log(f"[opt] vendor={CPU_VENDOR} family={CPU_FAMILY} -> {final_cflags}{log_suffix}")
 
     sources = []
