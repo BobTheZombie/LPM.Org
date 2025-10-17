@@ -48,6 +48,7 @@ MAX_SNAPSHOTS = 10
 MAX_LEARNT_CLAUSES = 200
 INSTALL_PROMPT_DEFAULT = "n"
 ALLOW_LPMBUILD_FALLBACK = False
+ENABLE_CPU_OPTIMIZATIONS = True
 MARCH = "generic"
 MTUNE = "generic"
 CPU_VENDOR = ""
@@ -172,7 +173,8 @@ def _init_cpu_settings() -> Tuple[str, str, str, str]:
 
 def _apply_conf(conf: Mapping[str, str]) -> None:
     global CONF, ARCH, OPT_LEVEL, MAX_SNAPSHOTS, MAX_LEARNT_CLAUSES
-    global INSTALL_PROMPT_DEFAULT, ALLOW_LPMBUILD_FALLBACK, MARCH, MTUNE
+    global INSTALL_PROMPT_DEFAULT, ALLOW_LPMBUILD_FALLBACK, ENABLE_CPU_OPTIMIZATIONS
+    global MARCH, MTUNE
     global CPU_VENDOR, CPU_FAMILY, FETCH_MAX_WORKERS, IO_BUFFER_SIZE
     global DISTRO_MAINTAINER_MODE, DISTRO_NAME, DISTRO_REPO_ROOT
     global DISTRO_REPO_BASE_URL, DISTRO_SOURCE_ROOT, DISTRO_LPMBUILD_ROOT
@@ -201,8 +203,15 @@ def _apply_conf(conf: Mapping[str, str]) -> None:
         INSTALL_PROMPT_DEFAULT = "n"
 
     ALLOW_LPMBUILD_FALLBACK = _get_bool("ALLOW_LPMBUILD_FALLBACK", False)
+    ENABLE_CPU_OPTIMIZATIONS = _get_bool("ENABLE_CPU_OPTIMIZATIONS", True)
 
-    MARCH, MTUNE, CPU_VENDOR, CPU_FAMILY = _init_cpu_settings()
+    if ENABLE_CPU_OPTIMIZATIONS:
+        MARCH, MTUNE, CPU_VENDOR, CPU_FAMILY = _init_cpu_settings()
+    else:
+        MARCH = ""
+        MTUNE = ""
+        CPU_VENDOR = ""
+        CPU_FAMILY = ""
 
     default_fetch_workers = max(4, min(32, (os.cpu_count() or 4) * 2))
     try:
@@ -376,6 +385,7 @@ __all__ = [
     "MAX_LEARNT_CLAUSES",
     "INSTALL_PROMPT_DEFAULT",
     "ALLOW_LPMBUILD_FALLBACK",
+    "ENABLE_CPU_OPTIMIZATIONS",
     "MARCH",
     "MTUNE",
     "CPU_VENDOR",
