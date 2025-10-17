@@ -54,6 +54,7 @@ def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):
         "400",
         "y",
         "no",
+        "no",
         "x86_64v3",
         "https://example.com/packages/",
         "https://example.com/bin/{name}.lpm",
@@ -83,6 +84,7 @@ def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):
     assert "MAX_LEARNT_CLAUSES=400" in text
     assert "INSTALL_PROMPT_DEFAULT=y" in text
     assert "ALLOW_LPMBUILD_FALLBACK=false" in text
+    assert "ENABLE_CPU_OPTIMIZATIONS=false" in text
     assert "CPU_TYPE=x86_64v3" in text
     assert "LPMBUILD_REPO=https://example.com/packages/" in text
     assert "BINARY_REPO=https://example.com/bin/{name}.lpm" in text
