@@ -333,9 +333,9 @@ appended to the defaults.
 
 CPU detection can be overridden by specifying `CPU_TYPE` in `lpm.conf`. Set it
 to one of `x86_64v1`, `x86_64v2`, `x86_64v3` or `x86_64v4` (underscores or
-dashes are accepted) to force the corresponding `-march`/`-mtune` values and
-build for a generic target regardless of the host CPU. A per-package override
-is also available:
+dashes are accepted) to force the corresponding `-march`/`-mtune` values (with
+`x86_64v1` mapping to the GCC-compatible `x86-64`) and build for a generic
+target regardless of the host CPU. A per-package override is also available:
 
 ```
 !Override @CPU_TYPE="x86_64v2"

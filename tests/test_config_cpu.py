@@ -74,7 +74,8 @@ def test_detect_intel_generic(monkeypatch):
 @pytest.mark.parametrize(
     "decl, expected",
     [
-        ("x86_64v1", "x86-64-v1"),
+        ("x86_64v1", "x86-64"),
+        ("x86-64-v1", "x86-64"),
         ("x86_64v2", "x86-64-v2"),
         ("x86-64-v3", "x86-64-v3"),
         ("x86-64-v4", "x86-64-v4"),

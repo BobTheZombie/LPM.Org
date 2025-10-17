@@ -154,6 +154,8 @@ def _normalize_cpu_type(val: str) -> str | None:
     """Return canonical dash form for supported x86-64 levels."""
     normalized = val.lower().replace("_", "").replace("-", "")
     if normalized in {"x8664v1", "x8664v2", "x8664v3", "x8664v4"}:
+        if normalized.endswith("v1"):
+            return "x86-64"
         return f"x86-64-v{normalized[-1]}"
     return None
 
