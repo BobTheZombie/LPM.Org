@@ -3167,9 +3167,12 @@ def run_lpmbuild(
         target_arch=target_arch,
     )
 
+    forced_override = False
+
     if is_grub_build:
         march_value = "x86-64"
         mtune_value = "generic"
+        forced_override = True
 
     host_cflags = env.get("CFLAGS", "").strip()
     host_cxxflags = env.get("CXXFLAGS", "").strip()
@@ -3202,7 +3205,8 @@ def run_lpmbuild(
     env["LPM_CPU_MARCH"] = march_value
     env["LPM_CPU_MTUNE"] = mtune_value
     env["LPM_ARCH"] = arch
-    log_suffix = " (override)" if overrides and (overrides.march or overrides.mtune or overrides.arch) else ""
+    has_user_override = overrides and (overrides.march or overrides.mtune or overrides.arch)
+    log_suffix = " (override)" if forced_override or has_user_override else ""
     effective_cflags = env.get("CFLAGS", "").strip()
     final_cflags = " ".join(filter(None, [effective_cflags, script_cflags])).strip() or effective_cflags or "(unset)"
     log(f"[opt] vendor={CPU_VENDOR} family={CPU_FAMILY} -> {final_cflags}{log_suffix}")
