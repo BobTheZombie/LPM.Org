@@ -3134,6 +3134,8 @@ def run_lpmbuild(
         lowered = text.lower().replace("_", "-")
         if lowered.startswith("x86-64v"):
             lowered = lowered.replace("x86-64v", "x86-64-v", 1)
+        if lowered in {"x86-64-v1", "x8664v1", "x86_64v1"}:
+            lowered = "x86-64"
         if is_march and lowered == "generic" and _is_x86(target_arch):
             return "x86-64"
         return lowered
