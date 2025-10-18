@@ -121,6 +121,19 @@ def _parse_positive_int(value: str) -> int:
     return parsed
 
 
+def _parse_probability(value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("value cannot be empty")
+    try:
+        parsed = float(cleaned)
+    except ValueError as exc:  # pragma: no cover - defensive
+        raise ValueError("enter a decimal value between 0 and 1") from exc
+    if not (0 < parsed <= 1):
+        raise ValueError("enter a decimal value between 0 and 1")
+    return str(parsed)
+
+
 def _parse_opt_level(value: str) -> str:
     cleaned = value.strip()
     if cleaned not in _OPT_LEVELS:
@@ -217,6 +230,27 @@ def _build_fields() -> tuple[tuple[ConfigField, ...], tuple[ConfigField, ...]]:
             prompt="Maximum learnt clauses for dependency solver",
             parser=_parse_positive_int,
             default=config.MAX_LEARNT_CLAUSES,
+        ),
+        ConfigField(
+            key="VSIDS_VAR_DECAY",
+            prompt="VSIDS variable activity decay (0-1)",
+            parser=_parse_probability,
+            default=config.CONF.get("VSIDS_VAR_DECAY", "0.95"),
+        ),
+        ConfigField(
+            key="VSIDS_CLAUSE_DECAY",
+            prompt="VSIDS clause activity decay (0-1)",
+            parser=_parse_probability,
+            default=config.CONF.get("VSIDS_CLAUSE_DECAY", "0.999"),
+        ),
+        ConfigField(
+            key="BUILDPKG_WORKERS",
+            prompt="Maximum concurrent lpmbuild workers",
+            parser=_parse_positive_int,
+            default=(
+                config.CONF.get("BUILDPKG_WORKERS")
+                or max(2, min(8, os.cpu_count() or 1))
+            ),
         ),
         ConfigField(
             key="INSTALL_PROMPT_DEFAULT",
@@ -340,6 +374,12 @@ def _build_fields() -> tuple[tuple[ConfigField, ...], tuple[ConfigField, ...]]:
             prompt="Git branch to push updates",
             parser=_identity,
             default=config.DISTRO_GIT_BRANCH or "main",
+        ),
+        ConfigField(
+            key="DISTRO_LPMSPEC_PATH",
+            prompt="Path to lpmspec manifest file",
+            parser=_parse_path,
+            default=str(config.DISTRO_LPMSPEC_PATH),
         ),
     )
 
