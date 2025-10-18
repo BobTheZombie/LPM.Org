@@ -52,6 +52,9 @@ def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):
         str(state_dir),
         "7",
         "400",
+        "0.9",
+        "0.998",
+        "6",
         "y",
         "no",
         "no",
@@ -82,6 +85,9 @@ def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):
     assert f"STATE_DIR={state_dir}" in text
     assert "MAX_SNAPSHOTS=7" in text
     assert "MAX_LEARNT_CLAUSES=400" in text
+    assert "VSIDS_VAR_DECAY=0.9" in text
+    assert "VSIDS_CLAUSE_DECAY=0.998" in text
+    assert "BUILDPKG_WORKERS=6" in text
     assert "INSTALL_PROMPT_DEFAULT=y" in text
     assert "ALLOW_LPMBUILD_FALLBACK=false" in text
     assert "ENABLE_CPU_OPTIMIZATIONS=false" in text
