@@ -963,15 +963,26 @@ def encode_resolution(
         vp = var_of[(p.name,p.version)]
         # requires
         for s in p.requires:
-            if not s: continue
+            if not s:
+                continue
             e = parse_dep_expr(s)
-            if e.kind=="and":
+            if e.kind == "and":
                 for part in flatten_and(e):
                     disj = expr_to_cnf_disj(u, part, cnf, var_of)
-                    cnf.add([-vp] + (disj or [])) if disj else cnf.add([-vp])
+                    if not disj:
+                        part_label = dep_expr_to_str(part)
+                        raise ResolutionError(
+                            f"No provider for dependency '{part_label}' required by {p.name}-{p.version}"
+                        )
+                    cnf.add([-vp] + disj)
             else:
                 disj = expr_to_cnf_disj(u, e, cnf, var_of)
-                cnf.add([-vp] + (disj or [])) if disj else cnf.add([-vp])
+                if not disj:
+                    req_label = dep_expr_to_str(e)
+                    raise ResolutionError(
+                        f"No provider for dependency '{req_label}' required by {p.name}-{p.version}"
+                    )
+                cnf.add([-vp] + disj)
         # conflicts / obsoletes
         for lst in (p.conflicts, p.obsoletes):
             for s in lst:
