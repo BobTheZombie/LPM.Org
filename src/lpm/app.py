@@ -791,6 +791,14 @@ class Universe:
     pins: Dict[str,str]
     holds: Set[str]
 
+
+@dataclass
+class BootstrapBuildSpec:
+    name: str
+    script_path: Path
+    scalars: Dict[str, str]
+    arrays: Dict[str, List[str]]
+
 def build_universe() -> Universe:
     conn = db(); installed = db_installed(conn)
     pins = read_json(PIN_FILE)
@@ -808,9 +816,44 @@ def build_universe() -> Universe:
                     nm, op, ver = m.group(1), (m.group(2) or ""), (m.group(3) or "")
                     add_prov(nm, p)
                     if op and ver: add_prov(f"{nm}{'==' if op=='=' else op}{ver}", p)
-    for tok, lst in providers.items(): 
+    for tok, lst in providers.items():
         lst.sort(key=lambda p: (p.prio, parse_semver(p.version)), reverse=True)
     return Universe(allpkgs, providers, installed, prefer, holds)
+
+
+def register_universe_candidate(u: Universe, meta: PkgMeta) -> None:
+    """Register *meta* as an available candidate in *u*.
+
+    This mirrors the logic in :func:`build_universe` by inserting the package
+    into both the ``candidates_by_name`` and ``providers`` mappings while
+    preserving their priority and version ordering.
+    """
+
+    candidates = u.candidates_by_name.setdefault(meta.name, [])
+    if meta not in candidates:
+        candidates.append(meta)
+    candidates.sort(key=lambda p: (p.prio, parse_semver(p.version)), reverse=True)
+
+    def _add_provider_token(token: str) -> None:
+        providers = u.providers.setdefault(token, [])
+        if meta not in providers:
+            providers.append(meta)
+        providers.sort(key=lambda p: (p.prio, parse_semver(p.version)), reverse=True)
+
+    _add_provider_token(meta.name)
+    for prov in meta.provides:
+        prov = (prov or "").strip()
+        if not prov:
+            continue
+        m = re.match(r"^([A-Za-z0-9._+\-]+)\s*(==|=|>=|<=|>|<|~=?)*\s*(.*)?$", prov)
+        if not m:
+            continue
+        nm, op, ver = m.group(1), (m.group(2) or ""), (m.group(3) or "")
+        if nm:
+            _add_provider_token(nm)
+        if nm and op and ver:
+            norm_op = "==" if op == "=" else op
+            _add_provider_token(f"{nm}{norm_op}{ver}")
 
 def providers_for(u: Universe, atom: Atom) -> List[PkgMeta]:
     cands = list(u.providers.get(atom.name, []))
@@ -3783,24 +3826,29 @@ def cmd_bootstrap(a):
     if isinstance(build_option, str):
         build_specs = [item.strip() for item in build_option.split(",") if item.strip()]
 
-    bootstrap_builds: List[Tuple[str, Path]] = []
+    bootstrap_builds: List[BootstrapBuildSpec] = []
     cleanup_scripts: List[Path] = []
     for spec in build_specs:
         script_path, should_cleanup = _resolve_bootstrap_build_script(spec)
         if should_cleanup:
             cleanup_scripts.append(script_path)
-        scalars, _ = _capture_lpmbuild_metadata(script_path)
+        scalars, arrays = _capture_lpmbuild_metadata(script_path)
         pkg_name = scalars.get("NAME") if scalars else None
         if not pkg_name:
             pkg_name = Path(spec).stem or script_path.stem
         pkg_name = pkg_name.strip()
         if not pkg_name:
             die(f"could not determine package name for lpmbuild '{spec}'")
-        bootstrap_builds.append((pkg_name, script_path))
+        version = (scalars.get("VERSION") or "").strip()
+        if not version:
+            die(f"could not determine version for lpmbuild '{spec}'")
+        bootstrap_builds.append(
+            BootstrapBuildSpec(pkg_name, script_path, scalars, arrays)
+        )
 
     requested: List[str] = []
     seen: Set[str] = set()
-    for name in base_pkgs + include + [pkg for pkg, _ in bootstrap_builds]:
+    for name in base_pkgs + include + [b.name for b in bootstrap_builds]:
         key = name.strip()
         if not key or key in seen:
             continue
@@ -3808,7 +3856,48 @@ def cmd_bootstrap(a):
         requested.append(key)
 
     try:
-        plan = solve(requested, build_universe())
+        universe = build_universe()
+        for build_spec in bootstrap_builds:
+            scalars = build_spec.scalars
+            arrays = build_spec.arrays
+            release = (scalars.get("RELEASE") or "1").strip() or "1"
+            arch = (scalars.get("ARCH") or ARCH or "").strip() or PkgMeta.__dataclass_fields__["arch"].default
+            summary = scalars.get("SUMMARY", "")
+            url = scalars.get("URL", "")
+            license_ = scalars.get("LICENSE", "")
+            developer = scalars.get("DEVELOPER", "")
+            kernel = (scalars.get("KERNEL") or "").strip().lower() == "true"
+            mkinitcpio_preset = scalars.get("MKINITCPIO_PRESET") or None
+            provides = list(arrays.get("PROVIDES", [])) if arrays else []
+            conflicts = list(arrays.get("CONFLICTS", [])) if arrays else []
+            obsoletes = list(arrays.get("OBSOLETES", [])) if arrays else []
+            recommends = list(arrays.get("RECOMMENDS", [])) if arrays else []
+            suggests = list(arrays.get("SUGGESTS", [])) if arrays else []
+            requires = list(arrays.get("REQUIRES", [])) if arrays else []
+
+            meta = PkgMeta(
+                name=build_spec.name,
+                version=(scalars.get("VERSION") or "").strip(),
+                release=release,
+                arch=arch,
+                summary=summary,
+                url=url,
+                license=license_,
+                developer=developer,
+                requires=requires,
+                conflicts=conflicts,
+                obsoletes=obsoletes,
+                provides=provides,
+                recommends=recommends,
+                suggests=suggests,
+                repo="(bootstrap)",
+                prio=999,
+                kernel=kernel,
+                mkinitcpio_preset=mkinitcpio_preset,
+            )
+            register_universe_candidate(universe, meta)
+
+        plan = solve(requested, universe)
     except ResolutionError as e:
         for script_path in cleanup_scripts:
             with contextlib.suppress(Exception):
@@ -3820,7 +3909,9 @@ def cmd_bootstrap(a):
         log(f"  - {p.name}-{p.version}")
 
     local_overrides: Dict[str, Path] = {}
-    for pkg_name, script_path in bootstrap_builds:
+    for build_spec in bootstrap_builds:
+        pkg_name = build_spec.name
+        script_path = build_spec.script_path
         log(f"[bootstrap] building {pkg_name} from {script_path}")
         try:
             built_path, _, _, split_records = run_lpmbuild(
