@@ -42,6 +42,7 @@ def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):
     monkeypatch.setattr(lpm, "CONF_FILE", conf_path, raising=False)
 
     state_dir = tmp_path / "state"
+    copy_out_dir = tmp_path / "artifacts"
     responses = [
         "native",
         "manual",
@@ -58,7 +59,7 @@ def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):
         "x86_64v3",
         "https://example.com/packages/",
         "https://example.com/bin/{name}.lpm",
-        "",
+        str(copy_out_dir),
         "no",
         "no",
     ]
@@ -88,8 +89,25 @@ def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):
     assert "CPU_TYPE=x86_64v3" in text
     assert "LPMBUILD_REPO=https://example.com/packages/" in text
     assert "BINARY_REPO=https://example.com/bin/{name}.lpm" in text
+    assert f"COPY_OUT_DIR={copy_out_dir}" in text
     assert "ALWAYS_SIGN=no" in text
     assert "DISTRO_MAINTAINER_MODE=false" in text
+
+
+def test_setup_wizard_auto_detects_new_template_keys(monkeypatch, tmp_path):
+    template = tmp_path / "lpm.conf"
+    template.write_text(
+        "# New option introduced by distro\nNEW_TEMPLATE_OPTION=enabled\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(config, "TEMPLATE_CONF", template, raising=False)
+
+    base_fields, _ = first_run_ui._build_fields()
+    field_map = {field.key: field for field in base_fields}
+
+    assert "NEW_TEMPLATE_OPTION" in field_map
+    assert field_map["NEW_TEMPLATE_OPTION"].default == "enabled"
 
 
 def test_gather_metadata_prefers_build_info(monkeypatch, tmp_path):

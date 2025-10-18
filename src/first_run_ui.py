@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from importlib import import_module
@@ -156,8 +157,27 @@ def _default_yes_no(key: str, fallback_true: bool) -> str:
     return "yes" if fallback_true else "no"
 
 
+_TEMPLATE_LINE_PATTERN = re.compile(r"^\s*#?\s*([A-Z0-9_]+)\s*=\s*(.*)$")
+
+
+def _load_template_defaults() -> dict[str, str]:
+    try:
+        lines = config.TEMPLATE_CONF.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+
+    defaults: dict[str, str] = {}
+    for line in lines:
+        match = _TEMPLATE_LINE_PATTERN.match(line)
+        if not match:
+            continue
+        key, value = match.groups()
+        defaults[key] = value.strip()
+    return defaults
+
+
 def _build_fields() -> tuple[tuple[ConfigField, ...], tuple[ConfigField, ...]]:
-    base_fields = (
+    base_fields = [
         ConfigField(
             key="ARCH",
             prompt="System architecture",
@@ -280,9 +300,9 @@ def _build_fields() -> tuple[tuple[ConfigField, ...], tuple[ConfigField, ...]]:
             default=config.DISTRO_MAINTAINER_MODE,
             formatter=lambda value: "yes" if value else "no",
         ),
-    )
+    ]
 
-    maintainer_fields = (
+    maintainer_fields = [
         ConfigField(
             key="DISTRO_NAME",
             prompt="Distribution name",
@@ -341,9 +361,30 @@ def _build_fields() -> tuple[tuple[ConfigField, ...], tuple[ConfigField, ...]]:
             parser=_identity,
             default=config.DISTRO_GIT_BRANCH or "main",
         ),
-    )
+    ]
 
-    return base_fields, maintainer_fields
+    template_defaults = _load_template_defaults()
+    known_keys = {field.key for field in base_fields}
+    for key in sorted(template_defaults):
+        if key in known_keys:
+            continue
+        current_value = config.CONF.get(key)
+        if current_value is None:
+            current_value = template_defaults.get(key, "")
+        default_text = "" if current_value is None else str(current_value)
+        optional = default_text == ""
+        base_fields.append(
+            ConfigField(
+                key=key,
+                prompt=f"Value for {key}",
+                parser=_parse_optional_string,
+                default=default_text,
+                optional=optional,
+                help_text=f"Enter a value for {key} (auto-detected from lpm.conf).",
+            )
+        )
+
+    return tuple(base_fields), tuple(maintainer_fields)
 
 
 _BUILD_INFO_PATHS = (Path("/usr/share/lpm/build-info.json"),)
