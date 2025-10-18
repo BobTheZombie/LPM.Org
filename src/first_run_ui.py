@@ -267,11 +267,17 @@ def _build_fields() -> tuple[tuple[ConfigField, ...], tuple[ConfigField, ...]]:
         ),
         ConfigField(
             key="ENABLE_CPU_OPTIMIZATIONS",
-            prompt="ENABLE_CPU_OPTIMIZATIONS (enable automatic CPU optimisation? yes/no)",
+            prompt=(
+                "Enable automatic optimisation using -march="
+                f"{config.MARCH} / -mtune={config.MTUNE}? (yes/no)"
+            ),
             parser=_parse_yes_no,
             default=config.ENABLE_CPU_OPTIMIZATIONS,
             formatter=lambda value: "yes" if value else "no",
-            help_text="Disable to rely entirely on .lpmbuild-defined CFLAGS.",
+            help_text=(
+                "Set to 'no' to disable CPU-specific -march/-mtune flags and rely "
+                "on package-defined settings or a manual CPU_TYPE override."
+            ),
         ),
         ConfigField(
             key="CPU_TYPE",
