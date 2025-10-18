@@ -2070,6 +2070,9 @@ def transaction(conn: sqlite3.Connection, action: str, dry: bool):
         if not dry: conn.execute("ROLLBACK")
         die(f"[tx] rollback {action}: {e}")
 
+_FORCE_BUILD_SENTINEL = object()
+
+
 def do_install(
     pkgs: List[PkgMeta],
     root: Path,
@@ -2078,6 +2081,7 @@ def do_install(
     force: bool = False,
     explicit: Optional[Set[str]] = None,
     allow_fallback: bool = ALLOW_LPMBUILD_FALLBACK,
+    force_build: bool = False,
 ):
     global PROTECTED
     PROTECTED = load_protected()
@@ -2087,7 +2091,10 @@ def do_install(
     explicit = set(explicit or [])
 
     to_fetch = [p for p in pkgs if not (p.name in PROTECTED and not force)]
-    downloads = fetch_all(to_fetch)
+    if force_build:
+        downloads = {p.name: _FORCE_BUILD_SENTINEL for p in to_fetch}
+    else:
+        downloads = fetch_all(to_fetch)
 
     hook_txn: Optional[HookTransactionManager] = None
     installed_state: Dict[str, dict] = {}
@@ -2109,7 +2116,12 @@ def do_install(
             warn(f"{pkg.name} is protected (from {PROTECTED_FILE}) and cannot be installed/upgraded without --force")
             continue
         res = downloads.get(pkg.name)
-        if isinstance(res, Exception):
+        if res is _FORCE_BUILD_SENTINEL:
+            log(f"[build] Building {pkg.name} from source for installation")
+            tmp = Path(f"/tmp/lpm-dep-{pkg.name}.lpmbuild")
+            fetch_lpmbuild(pkg.name, tmp)
+            blob_path, _, _, _ = run_lpmbuild(tmp, prompt_install=False, is_dep=True, build_deps=True)
+        elif isinstance(res, Exception):
             if not allow_fallback:
                 die(
                     f"Failed to fetch {pkg.name}: {res}. GitLab fallback is disabled. "
@@ -3704,8 +3716,19 @@ def cmd_bootstrap(a):
     for p in plan:
         log(f"  - {p.name}-{p.version}")
 
+    allow_fallback = True if getattr(a, "build", False) else ALLOW_LPMBUILD_FALLBACK
+
     try:
-        do_install(plan, root, dry=False, verify=(not a.no_verify), force=False, explicit=set(pkgs))
+        do_install(
+            plan,
+            root,
+            dry=False,
+            verify=(not a.no_verify),
+            force=False,
+            explicit=set(pkgs),
+            allow_fallback=allow_fallback,
+            force_build=getattr(a, "build", False),
+        )
     except SystemExit:
         raise
     except Exception as e:
@@ -5121,6 +5144,11 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("root", help="target directory for the new system")
     sp.add_argument("--include", nargs="*", default=[], help="extra packages to add")
     sp.add_argument("--no-verify", action="store_true", help="skip signature verification")
+    sp.add_argument(
+        "--build",
+        action="store_true",
+        help="build packages from source instead of downloading binaries",
+    )
     sp.set_defaults(func=cmd_bootstrap)
 
     sp = sub.add_parser("protected", help="Show or edit protected package list")
