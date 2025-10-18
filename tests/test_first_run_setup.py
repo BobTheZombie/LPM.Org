@@ -42,6 +42,8 @@ def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):
     monkeypatch.setattr(lpm, "CONF_FILE", conf_path, raising=False)
 
     state_dir = tmp_path / "state"
+    monkeypatch.setattr(config, "MARCH", "znver2", raising=False)
+    monkeypatch.setattr(config, "MTUNE", "znver2", raising=False)
     responses = [
         "native",
         "manual",
@@ -76,7 +78,10 @@ def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):
         config._apply_conf(original_conf)
 
     text = conf_path.read_text(encoding="utf-8")
-    assert "ENABLE_CPU_OPTIMIZATIONS" in output.getvalue()
+    expected_prompt = (
+        "Enable automatic optimisation using -march=znver2 / -mtune=znver2? (yes/no)"
+    )
+    assert expected_prompt in output.getvalue()
     assert "ARCH=native" in text
     assert "INIT_POLICY=manual" in text
     assert "SANDBOX_MODE=bwrap" in text
