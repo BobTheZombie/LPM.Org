@@ -13,6 +13,7 @@ from src.lpm.app import (  # noqa: E402
     Universe,
     cmd_bootstrap,
     db,
+    BootstrapRuleSet,
 )
 
 
@@ -61,6 +62,7 @@ def test_bootstrap_build_injects_local_provider(tmp_path, monkeypatch):
         assert any(pkg.name == "system-base" for pkg in plan)
         assert local_overrides["system-base"] == built_pkg_path
 
+    monkeypatch.setattr("src.lpm.app._load_mkchroot_rules", lambda path=...: BootstrapRuleSet())
     monkeypatch.setattr("src.lpm.app.build_universe", fake_build_universe)
     monkeypatch.setattr("src.lpm.app.solve", fake_solve)
     monkeypatch.setattr("src.lpm.app.run_lpmbuild", fake_run_lpmbuild)
@@ -153,6 +155,7 @@ def test_bootstrap_build_uses_isolated_db(tmp_path, monkeypatch):
         finally:
             conn.close()
 
+    monkeypatch.setattr("src.lpm.app._load_mkchroot_rules", lambda path=...: BootstrapRuleSet())
     monkeypatch.setattr("src.lpm.app.build_universe", fake_build_universe)
     monkeypatch.setattr("src.lpm.app.solve", fake_solve)
     monkeypatch.setattr("src.lpm.app.run_lpmbuild", fake_run_lpmbuild)

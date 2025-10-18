@@ -198,6 +198,8 @@ from .hooks import HookTransactionManager, load_hooks
 
 # =========================== Protected packages ===============================
 PROTECTED_FILE = Path("/etc/lpm/protected.json")
+MKCHROOT_RULES_PATH = Path("/etc/lpm/mkchroot-rules.conf")
+DEFAULT_BOOTSTRAP_BASE: Tuple[str, ...] = ("lpm-base", "lpm-core")
 
 def load_protected() -> List[str]:
     default = ["glibc", "zlib", "lpm"]
@@ -837,6 +839,13 @@ class BootstrapBuildSpec:
     script_path: Path
     scalars: Dict[str, str]
     arrays: Dict[str, List[str]]
+
+
+@dataclass
+class BootstrapRuleSet:
+    base: List[str] = field(default_factory=lambda: list(DEFAULT_BOOTSTRAP_BASE))
+    include: List[str] = field(default_factory=list)
+    build: List[str] = field(default_factory=list)
 
 def build_universe() -> Universe:
     conn = db(); installed = db_installed(conn)
@@ -2184,6 +2193,80 @@ def transaction(conn: sqlite3.Connection, action: str, dry: bool):
         die(f"[tx] rollback {action}: {e}")
 
 _FORCE_BUILD_SENTINEL = object()
+
+
+def _normalize_package_list(values: Iterable[str]) -> List[str]:
+    seen: Set[str] = set()
+    result: List[str] = []
+    for value in values:
+        token = (value or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        result.append(token)
+    return result
+
+
+def _ensure_default_base(base: Iterable[str]) -> List[str]:
+    normalized = _normalize_package_list(base)
+    result: List[str] = list(DEFAULT_BOOTSTRAP_BASE)
+    for pkg in normalized:
+        if pkg not in result:
+            result.append(pkg)
+    return result
+
+
+def _ensure_bootstrap_root(root: Path) -> None:
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        die(f"could not create root {root}: {e}")
+
+    for d in ["dev", "proc", "sys", "tmp", "var", "etc"]:
+        try:
+            (root / d).mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            die(f"could not create {d}: {e}")
+
+
+def _load_mkchroot_rules(rule_path: Path = MKCHROOT_RULES_PATH) -> BootstrapRuleSet:
+    rules = BootstrapRuleSet()
+    if not rule_path.exists():
+        rules.base = _ensure_default_base(rules.base)
+        return rules
+
+    try:
+        lines = rule_path.read_text(encoding="utf-8").splitlines()
+    except Exception as exc:
+        die(f"failed to read {rule_path}: {exc}")
+
+    for idx, raw_line in enumerate(lines, 1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            warn(f"ignoring malformed directive in {rule_path}:{idx}: '{raw_line}'")
+            continue
+        key, raw_value = line.split("=", 1)
+        key = key.strip().lower()
+        try:
+            entries = [token for token in shlex.split(raw_value) if token]
+        except ValueError as exc:
+            die(f"failed to parse {rule_path}:{idx}: {exc}")
+
+        if key == "base":
+            rules.base = entries
+        elif key == "include":
+            rules.include.extend(entries)
+        elif key == "build":
+            rules.build.extend(entries)
+        else:
+            warn(f"unknown directive '{key}' in {rule_path}:{idx}")
+
+    rules.base = _ensure_default_base(rules.base)
+    rules.include = _normalize_package_list(rules.include)
+    rules.build = _normalize_package_list(rules.build)
+    return rules
 
 
 def _resolve_bootstrap_build_script(spec: str) -> Tuple[Path, bool]:
@@ -3892,25 +3975,22 @@ def _bootstrap_db_context(root: Path, enabled: bool = False):
 
 def cmd_bootstrap(a):
     root = Path(a.root)
-    try:
-        root.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        die(f"could not create root {root}: {e}")
+    _ensure_bootstrap_root(root)
 
-    for d in ["dev", "proc", "sys", "tmp", "var", "etc"]:
-        try:
-            (root / d).mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            die(f"could not create {d}: {e}")
-
-    base_pkgs = ["lpm-base", "lpm-core"]
-    include = list(a.include or [])
+    rules = _load_mkchroot_rules()
+    base_pkgs = list(rules.base)
+    include = list(rules.include)
+    include.extend(a.include or [])
+    include = _normalize_package_list(include)
 
     build_option = getattr(a, "build", False)
     force_build_all = build_option is True
     build_specs: List[str] = []
+    if build_option:
+        build_specs.extend(rules.build)
     if isinstance(build_option, str):
-        build_specs = [item.strip() for item in build_option.split(",") if item.strip()]
+        build_specs.extend(item.strip() for item in build_option.split(",") if item.strip())
+    build_specs = _normalize_package_list(build_specs)
 
     bootstrap_builds: List[BootstrapBuildSpec] = []
     cleanup_scripts: List[Path] = []
@@ -3932,14 +4012,7 @@ def cmd_bootstrap(a):
             BootstrapBuildSpec(pkg_name, script_path, scalars, arrays)
         )
 
-    requested: List[str] = []
-    seen: Set[str] = set()
-    for name in base_pkgs + include + [b.name for b in bootstrap_builds]:
-        key = name.strip()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        requested.append(key)
+    requested = _normalize_package_list(base_pkgs + include + [b.name for b in bootstrap_builds])
 
     with _bootstrap_db_context(root, enabled=bool(build_option)):
         try:
