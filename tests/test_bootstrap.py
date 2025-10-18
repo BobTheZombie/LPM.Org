@@ -185,3 +185,75 @@ def test_bootstrap_build_uses_isolated_db(tmp_path, monkeypatch):
     assert row is not None
     provides = json.loads(row[0])
     assert "virtual-system" in provides
+
+
+def test_bootstrap_force_build_builds_all_plan_packages(tmp_path, monkeypatch):
+    rules = BootstrapRuleSet()
+    rules.base = ["pkg-alpha", "pkg-beta"]
+
+    plan = [
+        PkgMeta(name="pkg-alpha", version="1.0.0"),
+        PkgMeta(name="pkg-beta", version="1.0.0"),
+    ]
+
+    def fake_build_universe():
+        universe = Universe(candidates_by_name={}, providers={}, installed={}, pins={}, holds=set())
+        for meta in plan:
+            universe.candidates_by_name.setdefault(meta.name, []).append(meta)
+            universe.providers.setdefault(meta.name, []).append(meta)
+        return universe
+
+    def fake_solve(goals, universe):
+        assert set(goals) == {"pkg-alpha", "pkg-beta"}
+        return plan
+
+    fetch_calls = []
+    fetch_targets = {}
+
+    def fake_fetch_lpmbuild(name, dest):
+        fetch_calls.append(name)
+        fetch_targets[Path(dest)] = name
+        Path(dest).write_text("# dummy script")
+        return dest
+
+    def fake_run_lpmbuild(script_path, *args, **kwargs):
+        script_path = Path(script_path)
+        name = fetch_targets.get(script_path)
+        assert name is not None, f"unexpected lpmbuild path: {script_path}"
+        built_path = tmp_path / f"{name}.lpm"
+        built_path.write_text("package")
+        return built_path, 0.0, 0, []
+
+    def fake_do_install(
+        plan,
+        root,
+        dry,
+        verify,
+        force,
+        explicit,
+        allow_fallback,
+        force_build,
+        local_overrides,
+    ):
+        assert force_build is True
+        assert Path(root).exists()
+        expected = {pkg.name: tmp_path / f"{pkg.name}.lpm" for pkg in plan}
+        assert local_overrides == expected
+
+    monkeypatch.setattr("src.lpm.app._load_mkchroot_rules", lambda path=...: rules)
+    monkeypatch.setattr("src.lpm.app.build_universe", fake_build_universe)
+    monkeypatch.setattr("src.lpm.app.solve", fake_solve)
+    monkeypatch.setattr("src.lpm.app.fetch_lpmbuild", fake_fetch_lpmbuild)
+    monkeypatch.setattr("src.lpm.app.run_lpmbuild", fake_run_lpmbuild)
+    monkeypatch.setattr("src.lpm.app.do_install", fake_do_install)
+
+    args = SimpleNamespace(
+        root=str(tmp_path / "root"),
+        include=[],
+        no_verify=True,
+        build=True,
+    )
+
+    cmd_bootstrap(args)
+
+    assert set(fetch_calls) == {"pkg-alpha", "pkg-beta"}

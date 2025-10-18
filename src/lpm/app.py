@@ -4089,6 +4089,49 @@ def cmd_bootstrap(a):
             for split_path, split_meta in split_records:
                 local_overrides[split_meta.name] = split_path
 
+        if force_build_all:
+            for pkg in plan:
+                if pkg.name in local_overrides:
+                    continue
+
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix=f"lpm-bootstrap-{pkg.name}-", suffix=".lpmbuild"
+                )
+                os.close(fd)
+                tmp_path = Path(tmp_name)
+                try:
+                    fetch_lpmbuild(pkg.name, tmp_path)
+                except Exception as exc:
+                    with contextlib.suppress(Exception):
+                        tmp_path.unlink()
+                    for cleanup_path in cleanup_scripts:
+                        with contextlib.suppress(Exception):
+                            cleanup_path.unlink()
+                    die(f"failed to fetch lpmbuild for {pkg.name}: {exc}")
+
+                log(f"[bootstrap] building {pkg.name} from fetched lpmbuild")
+                try:
+                    built_path, _, _, split_records = run_lpmbuild(
+                        tmp_path,
+                        prompt_install=False,
+                        is_dep=False,
+                        build_deps=True,
+                    )
+                except Exception as exc:
+                    with contextlib.suppress(Exception):
+                        tmp_path.unlink()
+                    for cleanup_path in cleanup_scripts:
+                        with contextlib.suppress(Exception):
+                            cleanup_path.unlink()
+                    die(f"failed to build {pkg.name} from {tmp_path}: {exc}")
+                else:
+                    with contextlib.suppress(Exception):
+                        tmp_path.unlink()
+
+                local_overrides[pkg.name] = built_path
+                for split_path, split_meta in split_records:
+                    local_overrides[split_meta.name] = split_path
+
         allow_fallback = True if force_build_all else ALLOW_LPMBUILD_FALLBACK
 
         try:
