@@ -716,11 +716,13 @@ CREATE TABLE IF NOT EXISTS snapshots(
   archive TEXT NOT NULL
 );
 """
-def db() -> sqlite3.Connection:
-    override = _resolve_lpm_attr("db", None)
-    if override is not None and override is not db:
-        return override()
-    c = sqlite3.connect(str(DB_PATH))
+_DB_PATH_OVERRIDE: Optional[Path] = None
+
+
+def _open_state_db(path: Path) -> sqlite3.Connection:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    c = sqlite3.connect(str(path))
     c.execute("PRAGMA journal_mode=WAL")
     c.executescript(SCHEMA)
     cols = [r[1] for r in c.execute("PRAGMA table_info(installed)")]
@@ -732,6 +734,14 @@ def db() -> sqlite3.Connection:
         c.execute("ALTER TABLE installed ADD COLUMN explicit INTEGER NOT NULL DEFAULT 0")
     c.commit()
     return c
+
+
+def db() -> sqlite3.Connection:
+    override = _resolve_lpm_attr("db", None)
+    if override is not None and override is not db:
+        return override()
+    path = _DB_PATH_OVERRIDE or DB_PATH
+    return _open_state_db(path)
 
 def db_installed(conn) -> Dict[str,dict]:
     override = _resolve_lpm_attr("db_installed", None)
@@ -3864,6 +3874,22 @@ def cmd_install(a):
         raise
 
 
+@contextlib.contextmanager
+def _bootstrap_db_context(root: Path, enabled: bool = False):
+    if not enabled:
+        yield
+        return
+    new_db_path = Path(root) / "var" / "lib" / "lpm" / "state.db"
+    new_db_path.parent.mkdir(parents=True, exist_ok=True)
+    global _DB_PATH_OVERRIDE
+    previous = _DB_PATH_OVERRIDE
+    _DB_PATH_OVERRIDE = new_db_path
+    try:
+        yield
+    finally:
+        _DB_PATH_OVERRIDE = previous
+
+
 def cmd_bootstrap(a):
     root = Path(a.root)
     try:
@@ -3915,108 +3941,109 @@ def cmd_bootstrap(a):
         seen.add(key)
         requested.append(key)
 
-    try:
-        universe = build_universe()
-        for build_spec in bootstrap_builds:
-            scalars = build_spec.scalars
-            arrays = build_spec.arrays
-            release = (scalars.get("RELEASE") or "1").strip() or "1"
-            arch = (scalars.get("ARCH") or ARCH or "").strip() or PkgMeta.__dataclass_fields__["arch"].default
-            summary = scalars.get("SUMMARY", "")
-            url = scalars.get("URL", "")
-            license_ = scalars.get("LICENSE", "")
-            developer = scalars.get("DEVELOPER", "")
-            kernel = (scalars.get("KERNEL") or "").strip().lower() == "true"
-            mkinitcpio_preset = scalars.get("MKINITCPIO_PRESET") or None
-            provides = list(arrays.get("PROVIDES", [])) if arrays else []
-            conflicts = list(arrays.get("CONFLICTS", [])) if arrays else []
-            obsoletes = list(arrays.get("OBSOLETES", [])) if arrays else []
-            recommends = list(arrays.get("RECOMMENDS", [])) if arrays else []
-            suggests = list(arrays.get("SUGGESTS", [])) if arrays else []
-            requires = list(arrays.get("REQUIRES", [])) if arrays else []
-
-            meta = PkgMeta(
-                name=build_spec.name,
-                version=(scalars.get("VERSION") or "").strip(),
-                release=release,
-                arch=arch,
-                summary=summary,
-                url=url,
-                license=license_,
-                developer=developer,
-                requires=requires,
-                conflicts=conflicts,
-                obsoletes=obsoletes,
-                provides=provides,
-                recommends=recommends,
-                suggests=suggests,
-                repo="(bootstrap)",
-                prio=999,
-                kernel=kernel,
-                mkinitcpio_preset=mkinitcpio_preset,
-            )
-            register_universe_candidate(universe, meta)
-
-        plan = solve(requested, universe)
-    except ResolutionError as e:
-        for script_path in cleanup_scripts:
-            with contextlib.suppress(Exception):
-                script_path.unlink()
-        die(f"dependency resolution failed: {e}")
-
-    log("[plan] bootstrap install order:")
-    for p in plan:
-        log(f"  - {p.name}-{p.version}")
-
-    local_overrides: Dict[str, Path] = {}
-    for build_spec in bootstrap_builds:
-        pkg_name = build_spec.name
-        script_path = build_spec.script_path
-        log(f"[bootstrap] building {pkg_name} from {script_path}")
+    with _bootstrap_db_context(root, enabled=bool(build_option)):
         try:
-            built_path, _, _, split_records = run_lpmbuild(
-                script_path,
-                prompt_install=False,
-                is_dep=False,
-                build_deps=True,
-            )
-        except Exception as exc:
-            for cleanup_path in cleanup_scripts:
+            universe = build_universe()
+            for build_spec in bootstrap_builds:
+                scalars = build_spec.scalars
+                arrays = build_spec.arrays
+                release = (scalars.get("RELEASE") or "1").strip() or "1"
+                arch = (scalars.get("ARCH") or ARCH or "").strip() or PkgMeta.__dataclass_fields__["arch"].default
+                summary = scalars.get("SUMMARY", "")
+                url = scalars.get("URL", "")
+                license_ = scalars.get("LICENSE", "")
+                developer = scalars.get("DEVELOPER", "")
+                kernel = (scalars.get("KERNEL") or "").strip().lower() == "true"
+                mkinitcpio_preset = scalars.get("MKINITCPIO_PRESET") or None
+                provides = list(arrays.get("PROVIDES", [])) if arrays else []
+                conflicts = list(arrays.get("CONFLICTS", [])) if arrays else []
+                obsoletes = list(arrays.get("OBSOLETES", [])) if arrays else []
+                recommends = list(arrays.get("RECOMMENDS", [])) if arrays else []
+                suggests = list(arrays.get("SUGGESTS", [])) if arrays else []
+                requires = list(arrays.get("REQUIRES", [])) if arrays else []
+
+                meta = PkgMeta(
+                    name=build_spec.name,
+                    version=(scalars.get("VERSION") or "").strip(),
+                    release=release,
+                    arch=arch,
+                    summary=summary,
+                    url=url,
+                    license=license_,
+                    developer=developer,
+                    requires=requires,
+                    conflicts=conflicts,
+                    obsoletes=obsoletes,
+                    provides=provides,
+                    recommends=recommends,
+                    suggests=suggests,
+                    repo="(bootstrap)",
+                    prio=999,
+                    kernel=kernel,
+                    mkinitcpio_preset=mkinitcpio_preset,
+                )
+                register_universe_candidate(universe, meta)
+
+            plan = solve(requested, universe)
+        except ResolutionError as e:
+            for script_path in cleanup_scripts:
                 with contextlib.suppress(Exception):
-                    cleanup_path.unlink()
-            die(f"failed to build {pkg_name} from {script_path}: {exc}")
-        local_overrides[pkg_name] = built_path
-        for split_path, split_meta in split_records:
-            local_overrides[split_meta.name] = split_path
+                    script_path.unlink()
+            die(f"dependency resolution failed: {e}")
 
-    allow_fallback = True if force_build_all else ALLOW_LPMBUILD_FALLBACK
+        log("[plan] bootstrap install order:")
+        for p in plan:
+            log(f"  - {p.name}-{p.version}")
 
-    try:
-        do_install(
-            plan,
-            root,
-            dry=False,
-            verify=(not a.no_verify),
-            force=False,
-            explicit=set(requested),
-            allow_fallback=allow_fallback,
-            force_build=force_build_all,
-            local_overrides=local_overrides,
-        )
-    except SystemExit:
+        local_overrides: Dict[str, Path] = {}
+        for build_spec in bootstrap_builds:
+            pkg_name = build_spec.name
+            script_path = build_spec.script_path
+            log(f"[bootstrap] building {pkg_name} from {script_path}")
+            try:
+                built_path, _, _, split_records = run_lpmbuild(
+                    script_path,
+                    prompt_install=False,
+                    is_dep=False,
+                    build_deps=True,
+                )
+            except Exception as exc:
+                for cleanup_path in cleanup_scripts:
+                    with contextlib.suppress(Exception):
+                        cleanup_path.unlink()
+                die(f"failed to build {pkg_name} from {script_path}: {exc}")
+            local_overrides[pkg_name] = built_path
+            for split_path, split_meta in split_records:
+                local_overrides[split_meta.name] = split_path
+
+        allow_fallback = True if force_build_all else ALLOW_LPMBUILD_FALLBACK
+
+        try:
+            do_install(
+                plan,
+                root,
+                dry=False,
+                verify=(not a.no_verify),
+                force=False,
+                explicit=set(requested),
+                allow_fallback=allow_fallback,
+                force_build=force_build_all,
+                local_overrides=local_overrides,
+            )
+        except SystemExit:
+            for script_path in cleanup_scripts:
+                with contextlib.suppress(Exception):
+                    script_path.unlink()
+            raise
+        except Exception as e:
+            for script_path in cleanup_scripts:
+                with contextlib.suppress(Exception):
+                    script_path.unlink()
+            die(f"install failed: {e}")
+
         for script_path in cleanup_scripts:
             with contextlib.suppress(Exception):
                 script_path.unlink()
-        raise
-    except Exception as e:
-        for script_path in cleanup_scripts:
-            with contextlib.suppress(Exception):
-                script_path.unlink()
-        die(f"install failed: {e}")
-
-    for script_path in cleanup_scripts:
-        with contextlib.suppress(Exception):
-            script_path.unlink()
 
     try:
         shutil.copy2("/etc/resolv.conf", root / "etc/resolv.conf")
