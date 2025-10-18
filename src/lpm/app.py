@@ -22,7 +22,7 @@ from email.parser import Parser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Iterable, Callable, BinaryIO
+from typing import Any, Dict, List, Optional, Set, Tuple, Iterable, Callable, BinaryIO, Mapping
 from collections import deque
 try:
     import zstandard as zstd
@@ -2073,6 +2073,59 @@ def transaction(conn: sqlite3.Connection, action: str, dry: bool):
 _FORCE_BUILD_SENTINEL = object()
 
 
+def _resolve_bootstrap_build_script(spec: str) -> Tuple[Path, bool]:
+    """Resolve a bootstrap ``--build`` spec to a local .lpmbuild path.
+
+    Returns the path along with a boolean indicating whether the caller should
+    delete the file after use (for fetched temporary files).
+    """
+
+    normalized = (spec or "").strip()
+    if not normalized:
+        die("empty --build spec provided")
+
+    candidate = Path(normalized)
+    if candidate.exists():
+        return candidate.resolve(), False
+
+    parsed = urllib.parse.urlparse(normalized)
+    candidates: List[str] = []
+
+    if parsed.scheme:
+        candidates.append(normalized)
+    else:
+        base_url = CONF.get("LPMBUILD_REPO", "https://gitlab.com/lpm-org/packages/-/raw/main").rstrip("/")
+        spec_path = normalized.lstrip("/")
+        if spec_path.endswith(".lpmbuild"):
+            candidates.append(f"{base_url}/{spec_path}")
+        else:
+            name_guess = Path(spec_path).name or spec_path
+            candidates.append(f"{base_url}/{spec_path}/{name_guess}.lpmbuild")
+            candidates.append(f"{base_url}/{spec_path}.lpmbuild")
+
+    last_error: Optional[Exception] = None
+    for url in candidates:
+        try:
+            data, _ = urlread(url)
+        except Exception as exc:
+            last_error = exc
+            continue
+        fd, tmp_name = tempfile.mkstemp(prefix="lpm-bootstrap-", suffix=".lpmbuild")
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+        tmp_path.write_bytes(data)
+        log(f"[bootstrap] fetched lpmbuild script from {url}")
+        return tmp_path, True
+
+    if parsed.scheme:
+        detail = f" ({last_error})" if last_error else ""
+        die(f"failed to download lpmbuild from {normalized}{detail}")
+
+    die(
+        f"could not locate lpmbuild '{spec}'. Provide an existing path or a repository path",
+    )
+
+
 def do_install(
     pkgs: List[PkgMeta],
     root: Path,
@@ -2082,6 +2135,7 @@ def do_install(
     explicit: Optional[Set[str]] = None,
     allow_fallback: bool = ALLOW_LPMBUILD_FALLBACK,
     force_build: bool = False,
+    local_overrides: Optional[Mapping[str, Path]] = None,
 ):
     global PROTECTED
     PROTECTED = load_protected()
@@ -2090,11 +2144,26 @@ def do_install(
 
     explicit = set(explicit or [])
 
+    overrides: Dict[str, Tuple[Path, Optional[Path]]] = {}
+    if local_overrides:
+        for name, path in local_overrides.items():
+            try:
+                overrides[name] = (Path(path).resolve(), None)
+            except Exception:
+                overrides[name] = (Path(path), None)
+
     to_fetch = [p for p in pkgs if not (p.name in PROTECTED and not force)]
+    downloads: Dict[str, object] = {}
+    for pkg in to_fetch:
+        if pkg.name in overrides:
+            downloads[pkg.name] = overrides[pkg.name]
+
+    remaining = [p for p in to_fetch if p.name not in downloads]
     if force_build:
-        downloads = {p.name: _FORCE_BUILD_SENTINEL for p in to_fetch}
+        for pkg in remaining:
+            downloads[pkg.name] = _FORCE_BUILD_SENTINEL
     else:
-        downloads = fetch_all(to_fetch)
+        downloads.update(fetch_all(remaining))
 
     hook_txn: Optional[HookTransactionManager] = None
     installed_state: Dict[str, dict] = {}
@@ -3706,17 +3775,70 @@ def cmd_bootstrap(a):
             die(f"could not create {d}: {e}")
 
     base_pkgs = ["lpm-base", "lpm-core"]
-    pkgs = base_pkgs + list(a.include or [])
+    include = list(a.include or [])
+
+    build_option = getattr(a, "build", False)
+    force_build_all = build_option is True
+    build_specs: List[str] = []
+    if isinstance(build_option, str):
+        build_specs = [item.strip() for item in build_option.split(",") if item.strip()]
+
+    bootstrap_builds: List[Tuple[str, Path]] = []
+    cleanup_scripts: List[Path] = []
+    for spec in build_specs:
+        script_path, should_cleanup = _resolve_bootstrap_build_script(spec)
+        if should_cleanup:
+            cleanup_scripts.append(script_path)
+        scalars, _ = _capture_lpmbuild_metadata(script_path)
+        pkg_name = scalars.get("NAME") if scalars else None
+        if not pkg_name:
+            pkg_name = Path(spec).stem or script_path.stem
+        pkg_name = pkg_name.strip()
+        if not pkg_name:
+            die(f"could not determine package name for lpmbuild '{spec}'")
+        bootstrap_builds.append((pkg_name, script_path))
+
+    requested: List[str] = []
+    seen: Set[str] = set()
+    for name in base_pkgs + include + [pkg for pkg, _ in bootstrap_builds]:
+        key = name.strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        requested.append(key)
+
     try:
-        plan = solve(pkgs, build_universe())
+        plan = solve(requested, build_universe())
     except ResolutionError as e:
+        for script_path in cleanup_scripts:
+            with contextlib.suppress(Exception):
+                script_path.unlink()
         die(f"dependency resolution failed: {e}")
 
     log("[plan] bootstrap install order:")
     for p in plan:
         log(f"  - {p.name}-{p.version}")
 
-    allow_fallback = True if getattr(a, "build", False) else ALLOW_LPMBUILD_FALLBACK
+    local_overrides: Dict[str, Path] = {}
+    for pkg_name, script_path in bootstrap_builds:
+        log(f"[bootstrap] building {pkg_name} from {script_path}")
+        try:
+            built_path, _, _, split_records = run_lpmbuild(
+                script_path,
+                prompt_install=False,
+                is_dep=False,
+                build_deps=True,
+            )
+        except Exception as exc:
+            for cleanup_path in cleanup_scripts:
+                with contextlib.suppress(Exception):
+                    cleanup_path.unlink()
+            die(f"failed to build {pkg_name} from {script_path}: {exc}")
+        local_overrides[pkg_name] = built_path
+        for split_path, split_meta in split_records:
+            local_overrides[split_meta.name] = split_path
+
+    allow_fallback = True if force_build_all else ALLOW_LPMBUILD_FALLBACK
 
     try:
         do_install(
@@ -3725,14 +3847,25 @@ def cmd_bootstrap(a):
             dry=False,
             verify=(not a.no_verify),
             force=False,
-            explicit=set(pkgs),
+            explicit=set(requested),
             allow_fallback=allow_fallback,
-            force_build=getattr(a, "build", False),
+            force_build=force_build_all,
+            local_overrides=local_overrides,
         )
     except SystemExit:
+        for script_path in cleanup_scripts:
+            with contextlib.suppress(Exception):
+                script_path.unlink()
         raise
     except Exception as e:
+        for script_path in cleanup_scripts:
+            with contextlib.suppress(Exception):
+                script_path.unlink()
         die(f"install failed: {e}")
+
+    for script_path in cleanup_scripts:
+        with contextlib.suppress(Exception):
+            script_path.unlink()
 
     try:
         shutil.copy2("/etc/resolv.conf", root / "etc/resolv.conf")
@@ -5146,8 +5279,10 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--no-verify", action="store_true", help="skip signature verification")
     sp.add_argument(
         "--build",
-        action="store_true",
-        help="build packages from source instead of downloading binaries",
+        nargs="?",
+        const=True,
+        default=False,
+        help="build packages from source; optionally provide a .lpmbuild script to build and install",
     )
     sp.set_defaults(func=cmd_bootstrap)
 
