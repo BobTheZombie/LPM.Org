@@ -267,7 +267,7 @@ def _build_fields() -> tuple[tuple[ConfigField, ...], tuple[ConfigField, ...]]:
         ),
         ConfigField(
             key="ENABLE_CPU_OPTIMIZATIONS",
-            prompt="Enable automatic CPU optimisation? (yes/no)",
+            prompt="ENABLE_CPU_OPTIMIZATIONS (enable automatic CPU optimisation? yes/no)",
             parser=_parse_yes_no,
             default=config.ENABLE_CPU_OPTIMIZATIONS,
             formatter=lambda value: "yes" if value else "no",

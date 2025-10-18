@@ -76,6 +76,7 @@ def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):
         config._apply_conf(original_conf)
 
     text = conf_path.read_text(encoding="utf-8")
+    assert "ENABLE_CPU_OPTIMIZATIONS" in output.getvalue()
     assert "ARCH=native" in text
     assert "INIT_POLICY=manual" in text
     assert "SANDBOX_MODE=bwrap" in text
