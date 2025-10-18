@@ -307,8 +307,12 @@ compatible.
 
 ### System bootstrap
 
-- `lpm bootstrap ROOT [--include PKG ...] [--no-verify]` – create a minimal
-  chroot populated with packages.
+- `lpm bootstrap ROOT [--include PKG ...] [--no-verify] [--build [SCRIPT]]`
+  – create a minimal chroot populated with packages. Passing `--build`
+  without a value forces every package in the bootstrap plan to be built from
+  source. Supplying a `.lpmbuild` `SCRIPT` builds that package (and any split
+  outputs) locally and installs the result into the new chroot instead of
+  downloading binaries.
 
 ## First run configuration
 
