@@ -572,8 +572,37 @@ def parse_dep_expr(s: str) -> DepExpr:
     return expr
 
 def flatten_and(e: DepExpr) -> List[DepExpr]:
-    if e.kind!="and": return [e]
+    if e.kind != "and":
+        return [e]
     return flatten_and(e.left) + flatten_and(e.right)
+
+
+def flatten_or(e: DepExpr) -> List[DepExpr]:
+    if e.kind != "or":
+        return [e]
+    return flatten_or(e.left) + flatten_or(e.right)
+
+
+def atom_to_str(atom: Optional[Atom]) -> str:
+    if not atom:
+        return "<invalid>"
+    if atom.op and atom.ver:
+        return f"{atom.name}{atom.op}{atom.ver}"
+    return atom.name
+
+
+def dep_expr_to_str(expr: DepExpr) -> str:
+    if expr.kind == "atom":
+        return atom_to_str(expr.atom)
+    if expr.kind == "and":
+        parts = [dep_expr_to_str(part) for part in flatten_and(expr)]
+        joined = " && ".join(parts)
+        return joined if len(parts) == 1 else f"({joined})"
+    if expr.kind == "or":
+        parts = [dep_expr_to_str(part) for part in flatten_or(expr)]
+        joined = " || ".join(parts)
+        return joined if len(parts) == 1 else f"({joined})"
+    return "<invalid expr>"
 
 # =========================== Package metadata =================================
 @dataclass
@@ -871,7 +900,18 @@ def expr_to_cnf_disj(u: Universe, e: DepExpr, cnf: CNF, var_of: Dict[Tuple[str,s
     else:
         die("expr_to_cnf_disj called on AND unexpectedly")
 
-def encode_resolution(u: Universe, goals: List[DepExpr]) -> Tuple[CNF, Dict[Tuple[str,str],int], Set[int], Set[int], Dict[int,float], Dict[int,float]]:
+def encode_resolution(
+    u: Universe,
+    goals: List[DepExpr],
+    goal_texts: Optional[List[str]] = None,
+) -> Tuple[
+    CNF,
+    Dict[Tuple[str, str], int],
+    Set[int],
+    Set[int],
+    Dict[int, float],
+    Dict[int, float],
+]:
     cnf = CNF()
     var_of: Dict[Tuple[str,str],int] = {}
     bias_map: Dict[int,float] = {}
@@ -956,24 +996,33 @@ def encode_resolution(u: Universe, goals: List[DepExpr]) -> Tuple[CNF, Dict[Tupl
         for p in lst: add_pkg_constraints(p)
 
     # goals
-    for g in goals:
+    for idx, g in enumerate(goals):
+        goal_label = None
+        if goal_texts and idx < len(goal_texts):
+            goal_label = goal_texts[idx]
+        goal_label = goal_label or dep_expr_to_str(g)
         if g.kind=="and":
             for part in flatten_and(g):
                 disj = expr_to_cnf_disj(u, part, cnf, var_of)
                 if not disj:
-                    raise ResolutionError("No provider for goal part")
+                    part_label = dep_expr_to_str(part)
+                    raise ResolutionError(
+                        f"No provider for goal part '{part_label}' (from '{goal_label}')"
+                    )
                 cnf.add(disj)
         else:
             disj = expr_to_cnf_disj(u, g, cnf, var_of)
             if not disj:
-                raise ResolutionError("No provider for goal")
+                raise ResolutionError(f"No provider for goal '{goal_label}'")
             cnf.add(disj)
 
     return cnf, var_of, prefer_true, prefer_false, bias_map, decay_map
 
 def solve(goals: List[str], universe: Universe) -> List[PkgMeta]:
     goal_exprs = [parse_dep_expr(s) for s in goals]
-    cnf, var_of, ptrue, pfalse, bias_map, decay_map = encode_resolution(universe, goal_exprs)
+    cnf, var_of, ptrue, pfalse, bias_map, decay_map = encode_resolution(
+        universe, goal_exprs, goals
+    )
     var_decay = float(CONF.get("VSIDS_VAR_DECAY", "0.95"))
     cla_decay = float(CONF.get("VSIDS_CLAUSE_DECAY", "0.999"))
     solver = CDCLSolver(
@@ -5149,6 +5198,8 @@ def cmd_generate_lpmspec(args) -> None:
     output_path = Path(args.output) if args.output else _config.DISTRO_LPMSPEC_PATH
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(spec, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if args.output is None:
+        _config.DISTRO_LPMSPEC_PATH = output_path
     ok(f"Generated lpmspec at {output_path}")
 
 
