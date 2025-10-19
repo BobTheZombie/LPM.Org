@@ -342,6 +342,10 @@ You can also supply a `.lpmbuild` path (for example
 `--build system-base/system-base.lpmbuild`) to rebuild a single package locally
 while using binaries for everything else.【F:src/lpm/app.py†L3777-L3854】
 
+Projects that need a custom bootstrap foundation can override the defaults via
+`mkchroot-rules.conf`; specifying your own `base=` entries suppresses the
+implicit `lpm-base` and `lpm-core` goals.【F:src/lpm/app.py†L2356-L2375】
+
 ```bash
 $ sudo lpm bootstrap /srv/chroot --include openssh vim
 $ sudo lpm bootstrap /srv/chroot --include openssh vim --build
