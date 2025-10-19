@@ -336,3 +336,67 @@ def test_bootstrap_build_passes_dependency_overrides(tmp_path, monkeypatch):
 
     assert observed_overrides["system-base"] == built_pkg_path
     assert observed_overrides["foo"] == dep_pkg_path
+
+
+def test_bootstrap_build_creates_fhs_structure(tmp_path, monkeypatch):
+    rules = BootstrapRuleSet()
+    rules.base = []
+    rules.include = []
+    rules.build = []
+
+    def fake_build_universe():
+        return Universe(candidates_by_name={}, providers={}, installed={}, pins={}, holds=set())
+
+    def fake_solve(goals, universe):
+        return []
+
+    monkeypatch.setattr("src.lpm.app._load_mkchroot_rules", lambda path=...: rules)
+    monkeypatch.setattr("src.lpm.app.build_universe", fake_build_universe)
+    monkeypatch.setattr("src.lpm.app.solve", fake_solve)
+    monkeypatch.setattr("src.lpm.app.do_install", lambda *args, **kwargs: None)
+
+    root = tmp_path / "root"
+
+    args = SimpleNamespace(
+        root=str(root),
+        include=[],
+        no_verify=True,
+        build=True,
+    )
+
+    cmd_bootstrap(args)
+
+    expected_dirs = {
+        "dev",
+        "proc",
+        "sys",
+        "tmp",
+        "var",
+        "etc",
+        "bin",
+        "sbin",
+        "lib",
+        "lib64",
+        "opt",
+        "home",
+        "run",
+        "usr",
+        "usr/bin",
+        "usr/sbin",
+        "usr/lib",
+        "usr/lib64",
+        "usr/local",
+        "usr/local/bin",
+        "usr/local/sbin",
+        "usr/local/lib",
+        "usr/share",
+        "var/cache",
+        "var/lib",
+        "var/log",
+        "var/spool",
+        "var/tmp",
+        "var/run",
+    }
+
+    for rel in expected_dirs:
+        assert (root / rel).is_dir(), f"missing {rel}"
