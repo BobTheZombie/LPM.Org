@@ -257,5 +257,82 @@ def test_bootstrap_force_build_builds_all_plan_packages(tmp_path, monkeypatch):
     )
 
     cmd_bootstrap(args)
-
     assert set(fetch_calls) == {"pkg-alpha", "pkg-beta"}
+
+
+def test_bootstrap_build_passes_dependency_overrides(tmp_path, monkeypatch):
+    script = tmp_path / "system-base.lpmbuild"
+    script.write_text(
+        "\n".join(
+            [
+                "NAME=system-base",
+                "VERSION=1.0.0",
+                "RELEASE=1",
+                "ARCH=x86_64",
+                'SUMMARY="System base"',
+                'REQUIRES=("foo")',
+            ]
+        )
+    )
+
+    built_pkg_path = tmp_path / "system-base-1.0.0-1.x86_64.lpm"
+    dep_pkg_path = tmp_path / "foo-1.0.0-1.x86_64.lpm"
+
+    base_pkg = PkgMeta(name="lpm-base", version="1.0.0")
+    core_pkg = PkgMeta(name="lpm-core", version="1.0.0")
+    foo_pkg = PkgMeta(name="foo", version="1.0.0")
+
+    def fake_build_universe():
+        universe = Universe(candidates_by_name={}, providers={}, installed={}, pins={}, holds=set())
+        for meta in (base_pkg, core_pkg, foo_pkg):
+            universe.candidates_by_name.setdefault(meta.name, []).append(meta)
+            universe.providers.setdefault(meta.name, []).append(meta)
+        return universe
+
+    def fake_solve(goals, universe):
+        return [base_pkg, core_pkg, foo_pkg, PkgMeta(name="system-base", version="1.0.0")]
+
+    def fake_run_lpmbuild(script_path, *args, **kwargs):
+        on_built = kwargs.get("on_built_package")
+        if on_built:
+            on_built(built_pkg_path, PkgMeta(name="system-base", version="1.0.0"))
+            on_built(dep_pkg_path, PkgMeta(name="foo", version="1.0.0"))
+        return built_pkg_path, 0.0, 0, []
+
+    observed_overrides = {}
+
+    def fake_do_install(
+        plan,
+        root,
+        dry,
+        verify,
+        force,
+        explicit,
+        allow_fallback,
+        force_build,
+        local_overrides,
+    ):
+        observed_overrides.update(local_overrides)
+
+    rules = BootstrapRuleSet()
+    rules.base = []
+    rules.include = []
+    rules.build = []
+
+    monkeypatch.setattr("src.lpm.app._load_mkchroot_rules", lambda path=...: rules)
+    monkeypatch.setattr("src.lpm.app.build_universe", fake_build_universe)
+    monkeypatch.setattr("src.lpm.app.solve", fake_solve)
+    monkeypatch.setattr("src.lpm.app.run_lpmbuild", fake_run_lpmbuild)
+    monkeypatch.setattr("src.lpm.app.do_install", fake_do_install)
+
+    args = SimpleNamespace(
+        root=str(tmp_path / "root"),
+        include=[],
+        no_verify=True,
+        build=str(script),
+    )
+
+    cmd_bootstrap(args)
+
+    assert observed_overrides["system-base"] == built_pkg_path
+    assert observed_overrides["foo"] == dep_pkg_path
