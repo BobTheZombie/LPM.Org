@@ -1,5 +1,7 @@
 import importlib
 import json
+import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -142,3 +144,15 @@ def test_build_info_file_overrides_defaults(tmp_path, monkeypatch, import_lpm):
     assert metadata["version"] == "2024-05-06T07:08:09Z"
     assert metadata["build"] == "nightly"
     assert metadata["build_date"] == "2024-05-06T07:08:09Z"
+
+
+def test_lpm_package_provides_core_alias():
+    script_path = Path(__file__).resolve().parents[1] / "packages" / "lpm" / "lpm.lpmbuild"
+    contents = script_path.read_text(encoding="utf-8")
+
+    match = re.search(r"^PROVIDES=\(([^)]*)\)", contents, flags=re.MULTILINE)
+    assert match is not None, "PROVIDES array missing from lpm.lpmbuild"
+
+    provides_tokens = shlex.split(match.group(1))
+    assert "lpm" in provides_tokens, "lpm package should provide itself"
+    assert "lpm-core" in provides_tokens, "lpm package should provide lpm-core for bootstrap goals"
