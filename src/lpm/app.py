@@ -3205,6 +3205,7 @@ def run_lpmbuild(
     prompt_default: Optional[str] = None,
     is_dep: bool = False,
     build_deps: bool = True,
+    force_rebuild: bool = False,
     fetcher: Optional[Callable[[str, Path], Path]] = None,
     _building_stack: Optional[Tuple[str, ...]] = None,
     executor: Optional[ThreadPoolExecutor] = None,
@@ -3279,22 +3280,23 @@ def run_lpmbuild(
                 if cap:
                     capabilities.add(cap)
 
-        conn = db()
-        try:
-            installed = db_installed(conn)
-            capabilities.update(installed)
-            for pkg_name, meta in installed.items():
-                if pkg_name:
-                    capabilities.add(pkg_name)
-                provides = meta.get("provides") if isinstance(meta, dict) else getattr(meta, "provides", None)
-                if not provides:
-                    continue
-                for provide in provides:
-                    cap = _canonical_capability(provide)
-                    if cap:
-                        capabilities.add(cap)
-        finally:
-            conn.close()
+        if not force_rebuild:
+            conn = db()
+            try:
+                installed = db_installed(conn)
+                capabilities.update(installed)
+                for pkg_name, meta in installed.items():
+                    if pkg_name:
+                        capabilities.add(pkg_name)
+                    provides = meta.get("provides") if isinstance(meta, dict) else getattr(meta, "provides", None)
+                    if not provides:
+                        continue
+                    for provide in provides:
+                        cap = _canonical_capability(provide)
+                        if cap:
+                            capabilities.add(cap)
+            finally:
+                conn.close()
 
         for dep in arr.get("REQUIRES", []):
             try:
@@ -3349,6 +3351,7 @@ def run_lpmbuild(
                 prompt_default=prompt_default,
                 is_dep=True,
                 build_deps=True,
+                force_rebuild=force_rebuild,
                 fetcher=fetch_fn,
                 _building_stack=building_stack,
                 executor=executor,
@@ -4946,6 +4949,7 @@ def cmd_buildpkg(a):
             script_path,
             a.outdir,
             build_deps=not a.no_deps,
+            force_rebuild=a.force_rebuild,
             prompt_default=a.install_default,
             executor=executor if worker_count > 1 else None,
             cpu_overrides=cpu_override,
@@ -5756,6 +5760,11 @@ def build_parser()->argparse.ArgumentParser:
     )
     sp.add_argument("--outdir", default=Path.cwd(), type=Path)
     sp.add_argument("--no-deps", action="store_true", help="do not fetch or build dependencies")
+    sp.add_argument(
+        "--force-rebuild",
+        action="store_true",
+        help="rebuild the target package and all dependencies even if already available",
+    )
     sp.add_argument("--install-default", choices=["y", "n"], help="default answer for install prompt")
     sp.add_argument("--python-pip", metavar="SPEC", help="build a package from a Python distribution fetched via pip")
     sp.set_defaults(func=cmd_buildpkg)

@@ -27,7 +27,14 @@ def test_cmd_buildpkg_shows_progress_and_summary(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(lpm, "run_lpmbuild", fake_run_lpmbuild)
     monkeypatch.setattr(lpm, "read_package_meta", fake_read_package_meta)
 
-    args = SimpleNamespace(script=script, outdir=tmp_path, no_deps=False, install_default=None, python_pip=None)
+    args = SimpleNamespace(
+        script=script,
+        outdir=tmp_path,
+        no_deps=False,
+        install_default=None,
+        python_pip=None,
+        force_rebuild=False,
+    )
     lpm.cmd_buildpkg(args)
 
     captured = capsys.readouterr()
@@ -58,7 +65,14 @@ def test_cmd_buildpkg_runs_on_background_thread(monkeypatch, tmp_path):
     monkeypatch.setattr(lpm, "run_lpmbuild", fake_run_lpmbuild)
     monkeypatch.setattr(lpm, "read_package_meta", fake_read_package_meta)
 
-    args = SimpleNamespace(script=script, outdir=tmp_path, no_deps=False, install_default=None, python_pip=None)
+    args = SimpleNamespace(
+        script=script,
+        outdir=tmp_path,
+        no_deps=False,
+        install_default=None,
+        python_pip=None,
+        force_rebuild=False,
+    )
     lpm.cmd_buildpkg(args)
 
     assert thread_ids
