@@ -328,14 +328,24 @@ Creates a minimal chroot rooted at `ROOT`. The command ensures essential
 directories exist, resolves the package set `lpm-base` and `lpm-core` (plus any
 `--include` extras), installs them into the new root, and copies
 `/etc/resolv.conf` for network access. Use `--no-verify` if signatures are
-unavailable (not recommended). Passing `--build` forces every package in the
-plan to be compiled from source instead of downloaded. You can also supply a
-`.lpmbuild` path (for example `--build system-base/system-base.lpmbuild`) to
-build that package locally and have the resulting artifact installed into the
-new chroot during bootstrap.【F:src/lpm/app.py†L3777-L3854】
+unavailable (not recommended). The bootstrapper operates in two modes:
+
+- **Binary bootstrap (default):** packages are downloaded as signed binaries
+  from configured repositories.
+- **Source bootstrap (`--build`):** packages are built from source inside a full
+  FHS directory tree that LPM prepares within `ROOT`. Each package recipe is
+  pulled from the `lpmbuilds` Git repository at build time, dependencies are
+  resolved against the target chroot instead of the host, and the built
+  artifacts are installed into the new system as soon as they finish building.
+
+You can also supply a `.lpmbuild` path (for example
+`--build system-base/system-base.lpmbuild`) to rebuild a single package locally
+while using binaries for everything else.【F:src/lpm/app.py†L3777-L3854】
 
 ```bash
 $ sudo lpm bootstrap /srv/chroot --include openssh vim
+$ sudo lpm bootstrap /srv/chroot --include openssh vim --build
+$ sudo lpm bootstrap /srv/chroot --build system-base/system-base.lpmbuild
 ```
 
 ## 10. Building Packages and Repositories
