@@ -2362,13 +2362,43 @@ def _ensure_default_base(base: Iterable[str]) -> List[str]:
     return result
 
 
-def _ensure_bootstrap_root(root: Path) -> None:
+def _ensure_bootstrap_root(root: Path, *, full_fhs: bool = False) -> None:
     try:
         root.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         die(f"could not create root {root}: {e}")
 
-    for d in ["dev", "proc", "sys", "tmp", "var", "etc"]:
+    base_dirs = ["dev", "proc", "sys", "tmp", "var", "etc"]
+    if full_fhs:
+        base_dirs.extend(
+            [
+                "bin",
+                "sbin",
+                "lib",
+                "lib64",
+                "opt",
+                "home",
+                "run",
+                "usr",
+                "usr/bin",
+                "usr/sbin",
+                "usr/lib",
+                "usr/lib64",
+                "usr/local",
+                "usr/local/bin",
+                "usr/local/sbin",
+                "usr/local/lib",
+                "usr/share",
+                "var/cache",
+                "var/lib",
+                "var/log",
+                "var/spool",
+                "var/tmp",
+                "var/run",
+            ]
+        )
+
+    for d in base_dirs:
         try:
             (root / d).mkdir(parents=True, exist_ok=True)
         except Exception as e:
@@ -4191,7 +4221,11 @@ def _bootstrap_db_context(root: Path, enabled: bool = False):
 
 def cmd_bootstrap(a):
     root = Path(a.root)
-    _ensure_bootstrap_root(root)
+
+    build_option = getattr(a, "build", False)
+    is_source_bootstrap = bool(build_option)
+
+    _ensure_bootstrap_root(root, full_fhs=is_source_bootstrap)
 
     rules = _load_mkchroot_rules()
     base_pkgs = list(rules.base)
@@ -4199,7 +4233,6 @@ def cmd_bootstrap(a):
     include.extend(a.include or [])
     include = _normalize_package_list(include)
 
-    build_option = getattr(a, "build", False)
     force_build_all = build_option is True
     build_specs: List[str] = []
     if build_option:
