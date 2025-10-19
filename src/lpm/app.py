@@ -621,6 +621,7 @@ class PkgMeta:
     conflicts: List[str] = field(default_factory=list)
     obsoletes: List[str] = field(default_factory=list)
     provides: List[str] = field(default_factory=list)
+    provides_by_package: Dict[str, List[str]] = field(default_factory=dict)
     symbols: List[str] = field(default_factory=list)
     recommends: List[str] = field(default_factory=list)
     suggests: List[str] = field(default_factory=list)
@@ -640,7 +641,7 @@ class PkgMeta:
             name=d["name"], version=d["version"], release=d.get("release","1"),
             arch=d.get("arch","noarch"), summary=d.get("summary",""), url=d.get("url",""),
             license=d.get("license",""), developer=d.get("developer",""), requires=d.get("requires",[]), conflicts=d.get("conflicts",[]),
-            obsoletes=d.get("obsoletes",[]), provides=d.get("provides",[]), symbols=d.get("symbols",[]), recommends=d.get("recommends",[]),
+            obsoletes=d.get("obsoletes",[]), provides=d.get("provides",[]), provides_by_package=d.get("provides_by_package", {}), symbols=d.get("symbols",[]), recommends=d.get("recommends",[]),
             suggests=d.get("suggests",[]), size=d.get("size",0), sha256=d.get("sha256"), blob=d.get("blob"),
             repo=repo_name, prio=prio, bias=bias, decay=decay, kernel=d.get("kernel", False),
             mkinitcpio_preset=d.get("mkinitcpio_preset"))
@@ -839,6 +840,7 @@ class BootstrapBuildSpec:
     script_path: Path
     scalars: Dict[str, str]
     arrays: Dict[str, List[str]]
+    maps: Dict[str, Dict[str, List[str]]]
 
 
 @dataclass
@@ -2808,11 +2810,51 @@ def gen_index(repo_dir: Path, base_url: Optional[str], arch_filter: Optional[str
 
 
 # =========================== .lpmbuild support ================================
-def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,List[str]]]:
+def _merge_provides_with_map(
+    existing: List[str],
+    mapping: Optional[Mapping[str, Iterable[str]]],
+) -> Tuple[List[str], Dict[str, List[str]]]:
+    """Merge per-package provides information into a flat provides list."""
+
+    if not mapping:
+        return list(existing), {}
+
+    merged: List[str] = list(existing)
+    seen = set(merged)
+    normalized: Dict[str, List[str]] = {}
+
+    for pkg, values in mapping.items():
+        if not pkg:
+            continue
+        pkg = str(pkg).strip()
+        if not pkg:
+            continue
+        collected: List[str] = []
+        for value in values or []:
+            if not isinstance(value, str):
+                continue
+            token = value.strip()
+            if not token:
+                continue
+            collected.append(token)
+            if token not in seen:
+                merged.append(token)
+                seen.add(token)
+        if collected:
+            normalized[pkg] = collected
+
+    return merged, normalized
+
+
+def _capture_lpmbuild_metadata(
+    script: Path,
+) -> Tuple[Dict[str, str], Dict[str, List[str]], Dict[str, Dict[str, List[str]]]]:
     """
-    Source the .lpmbuild (bash) and dump scalars + arrays.
+    Source the .lpmbuild (bash) and dump scalars, arrays, and associative maps.
     """
+
     script_path = str(script.resolve())
+
     def _emit_scalar_line(canonical: str, *aliases: str) -> str:
         names = " ".join(f'"{name}"' for name in (canonical, canonical, *aliases))
         return f"_emit_scalar {names}"
@@ -2821,9 +2863,12 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
         names = " ".join(f'"{name}"' for name in (canonical, canonical, *aliases))
         return f"_emit_array {names}"
 
+    def _emit_map_line(canonical: str, *aliases: str) -> str:
+        names = " ".join(f'"{name}"' for name in (canonical, canonical, *aliases))
+        return f"_emit_map {names}"
+
     lines = [
         "set -e",
-        f'source "{script_path}"',
         "_emit_scalar() {",
         '  canon="$1"',
         '  shift',
@@ -2854,6 +2899,23 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
         '  done',
         '  printf "\n"',
         "}",
+        "_emit_map() {",
+        '  canon="$1"',
+        '  shift',
+        '  printf "__MAP__ %s\n" "$canon"',
+        '  for n in "$@"; do',
+        '    if declare -p "$n" 2>/dev/null | grep -q "declare -A"; then',
+        '      declare -n ref="$n"',
+        '      for k in "${!ref[@]}"; do',
+        '        printf "%s\\0%s\\0" "$k" "${ref[$k]}"',
+        '      done',
+        '      printf "\n"',
+        '      return',
+        '    fi',
+        '  done',
+        '  printf "\n"',
+        "}",
+        f'source "{script_path}"',
         _emit_scalar_line("NAME", "name", "pkgname"),
         _emit_scalar_line("VERSION", "version", "pkgver"),
         _emit_scalar_line("RELEASE", "release", "pkgrel"),
@@ -2875,50 +2937,91 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
         _emit_array_line("OBSOLETES", "obsoletes", "replaces"),
         _emit_array_line("RECOMMENDS", "recommends"),
         _emit_array_line("SUGGESTS", "suggests", "optional_depends"),
+        _emit_map_line("META_PROVIDES", "meta_provides", "provides_by_package"),
     ]
+
     bcmd = "\n".join(lines)
 
     try:
-        proc = subprocess.run(["bash","-c", bcmd], capture_output=True, check=True)
+        proc = subprocess.run(["bash", "-c", bcmd], capture_output=True, check=True)
     except subprocess.CalledProcessError as e:
         warn(f"lpmbuild parse failed: {e}")
-        return {}, {}
+        return {}, {}, {"META_PROVIDES": {}}
 
     data = proc.stdout
-    scalars: Dict[str,str] = {}
-    arrays: Dict[str,List[str]] = {k: [] for k in [
-        "SOURCE",
-        "REQUIRES",
-        "REQUIRES_PYTHON_DEPENDENCIES",
-        "PROVIDES",
-        "CONFLICTS",
-        "OBSOLETES",
-        "RECOMMENDS",
-        "SUGGESTS",
-    ]}
+    scalars: Dict[str, str] = {}
+    arrays: Dict[str, List[str]] = {
+        key: []
+        for key in [
+            "SOURCE",
+            "REQUIRES",
+            "REQUIRES_PYTHON_DEPENDENCIES",
+            "PROVIDES",
+            "CONFLICTS",
+            "OBSOLETES",
+            "RECOMMENDS",
+            "SUGGESTS",
+        ]
+    }
+    maps: Dict[str, Dict[str, List[str]]] = {"META_PROVIDES": {}}
 
-    i=0; n=len(data)
+    i = 0
+    n = len(data)
     while i < n:
         if data.startswith(b"__SCALAR__ ", i):
             j = data.find(b"\n", i)
-            line = data[i+11:j].decode("utf-8", "replace")
-            k, v = line.split("=", 1)
-            scalars[k.upper()] = v
+            line = data[i + 11 : j].decode("utf-8", "replace")
+            key, value = line.split("=", 1)
+            scalars[key.upper()] = value
             i = j + 1
         elif data.startswith(b"__ARRAY__ ", i):
             j = data.find(b"\n", i)
-            name = data[i+10:j].decode("utf-8","replace").strip()
+            name = data[i + 10 : j].decode("utf-8", "replace").strip()
             canonical = name.upper()
-            k = j + 1
-            t = data.find(b"\n", k)
-            items = data[k:t].split(b"\0")
-            items = [x.decode("utf-8","replace") for x in items if x]
-            arrays.setdefault(canonical, []).extend(items)
-            i = t + 1
-        else:
+            start = j + 1
+            end = data.find(b"\n", start)
+            if end == -1:
+                end = n
+            elements = [
+                chunk.decode("utf-8", "replace")
+                for chunk in data[start:end].split(b"\0")
+                if chunk
+            ]
+            arrays.setdefault(canonical, []).extend(elements)
+            i = end + 1
+        elif data.startswith(b"__MAP__ ", i):
             j = data.find(b"\n", i)
-            if j==-1: break
-            i = j+1
+            map_name = data[i + 8 : j].decode("utf-8", "replace").strip()
+            start = j + 1
+            end = data.find(b"\n", start)
+            if end == -1:
+                end = n
+            payload = data[start:end]
+            parts = [chunk for chunk in payload.split(b"\0") if chunk]
+            entries: Dict[str, List[str]] = {}
+            for idx in range(0, len(parts), 2):
+                entry_key = parts[idx].decode("utf-8", "replace").strip()
+                if not entry_key:
+                    continue
+                raw_value = ""
+                if idx + 1 < len(parts):
+                    raw_value = parts[idx + 1].decode("utf-8", "replace")
+                try:
+                    tokens = [tok for tok in shlex.split(raw_value) if tok]
+                except ValueError:
+                    tokens = [raw_value.strip()] if raw_value.strip() else []
+                if tokens:
+                    entries.setdefault(entry_key, []).extend(tokens)
+            if map_name in maps:
+                target = maps[map_name]
+                for entry_key, values in entries.items():
+                    target.setdefault(entry_key, []).extend(values)
+            i = end + 1
+        else:
+            next_newline = data.find(b"\n", i)
+            if next_newline == -1:
+                break
+            i = next_newline + 1
 
     install_value = None
     for key in ("INSTALL", "install"):
@@ -2929,7 +3032,7 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
     if install_value is not None:
         scalars["INSTALL"] = install_value
 
-    return scalars, arrays
+    return scalars, arrays, maps
 
 def _url_digest(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
@@ -3261,7 +3364,7 @@ def run_lpmbuild(
         os.environ["LPM_SPLIT_PACKAGE"] = shutil.which("true") or "/bin/true"
 
     try:
-        scal, arr = _capture_lpmbuild_metadata(script_path)
+        scal, arr, maps = _capture_lpmbuild_metadata(script_path)
     finally:
         if not had_split_cmd:
             with contextlib.suppress(KeyError):
@@ -3555,6 +3658,10 @@ def run_lpmbuild(
     buildroot = Path(f"/tmp/build-{name}")
     srcroot   = Path(f"/tmp/src-{name}")
 
+    provides_list, provides_by_package = _merge_provides_with_map(
+        arr.get("PROVIDES", []), maps.get("META_PROVIDES")
+    )
+
     split_meta = {
         "name": name,
         "version": version,
@@ -3565,7 +3672,8 @@ def run_lpmbuild(
         "license": license_,
         "developer": developer,
         "requires": arr.get("REQUIRES", []),
-        "provides": arr.get("PROVIDES", []),
+        "provides": provides_list,
+        "provides_by_package": provides_by_package,
         "conflicts": arr.get("CONFLICTS", []),
         "obsoletes": arr.get("OBSOLETES", []),
         "recommends": arr.get("RECOMMENDS", []),
@@ -4045,7 +4153,8 @@ def run_lpmbuild(
         name=name, version=version, release=release, arch=arch,
         summary=summary, url=url, license=license_, developer=developer,
         requires=arr.get("REQUIRES", []),
-        provides=arr.get("PROVIDES", []),
+        provides=provides_list,
+        provides_by_package=provides_by_package,
         conflicts=arr.get("CONFLICTS", []),
         obsoletes=arr.get("OBSOLETES", []),
         recommends=arr.get("RECOMMENDS", []),
@@ -4257,7 +4366,7 @@ def cmd_bootstrap(a):
         script_path, should_cleanup = _resolve_bootstrap_build_script(spec)
         if should_cleanup:
             cleanup_scripts.append(script_path)
-        scalars, arrays = _capture_lpmbuild_metadata(script_path)
+        scalars, arrays, maps = _capture_lpmbuild_metadata(script_path)
         pkg_name = scalars.get("NAME") if scalars else None
         if not pkg_name:
             pkg_name = Path(spec).stem or script_path.stem
@@ -4268,7 +4377,7 @@ def cmd_bootstrap(a):
         if not version:
             die(f"could not determine version for lpmbuild '{spec}'")
         bootstrap_builds.append(
-            BootstrapBuildSpec(pkg_name, script_path, scalars, arrays)
+            BootstrapBuildSpec(pkg_name, script_path, scalars, arrays, maps)
         )
 
     requested = _normalize_package_list(base_pkgs + include + [b.name for b in bootstrap_builds])
@@ -4279,6 +4388,7 @@ def cmd_bootstrap(a):
             for build_spec in bootstrap_builds:
                 scalars = build_spec.scalars
                 arrays = build_spec.arrays
+                maps = build_spec.maps
                 release = (scalars.get("RELEASE") or "1").strip() or "1"
                 arch = (scalars.get("ARCH") or ARCH or "").strip() or PkgMeta.__dataclass_fields__["arch"].default
                 summary = scalars.get("SUMMARY", "")
@@ -4287,7 +4397,11 @@ def cmd_bootstrap(a):
                 developer = scalars.get("DEVELOPER", "")
                 kernel = (scalars.get("KERNEL") or "").strip().lower() == "true"
                 mkinitcpio_preset = scalars.get("MKINITCPIO_PRESET") or None
-                provides = list(arrays.get("PROVIDES", [])) if arrays else []
+                provides_raw = list(arrays.get("PROVIDES", [])) if arrays else []
+                provides_map = maps.get("META_PROVIDES", {}) if maps else {}
+                provides, provides_by_package = _merge_provides_with_map(
+                    provides_raw, provides_map
+                )
                 conflicts = list(arrays.get("CONFLICTS", [])) if arrays else []
                 obsoletes = list(arrays.get("OBSOLETES", [])) if arrays else []
                 recommends = list(arrays.get("RECOMMENDS", [])) if arrays else []
@@ -4307,6 +4421,7 @@ def cmd_bootstrap(a):
                     conflicts=conflicts,
                     obsoletes=obsoletes,
                     provides=provides,
+                    provides_by_package=provides_by_package,
                     recommends=recommends,
                     suggests=suggests,
                     repo="(bootstrap)",

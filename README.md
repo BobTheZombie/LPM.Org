@@ -280,6 +280,21 @@ contents and runs common maintenance commands based on what it finds:
   distribution names, skips entries already provided by packages exposing
   `pypi(<name>)`, and otherwise invokes the built-in pip builder (with
   dependency resolution enabled) before executing your script.【F:lpm.py†L2367-L2486】
+  Meta-packages can also map individual dependencies to virtual provides by
+  declaring an associative array named `META_PROVIDES` (or the lowercase
+  `meta_provides`). Each key corresponds to a required package while the value
+  is a space-separated list of capabilities that should be exposed by the
+  meta-package. For example:
+
+  ```bash
+  declare -A META_PROVIDES=([
+    glibc="glibc virtual(libc)"
+    filesystem="filesystem"
+  ])
+  ```
+
+  ensures that `system-base` advertises `glibc` and `virtual(libc)` while still
+  depending on the real `glibc` package.【F:src/lpm/app.py†L3628-L3659】
 - `lpm genindex REPO_DIR [--base-url URL] [--arch ARCH]` – generate an
   `index.json` for a directory of packages.
 - `lpm installpkg FILE... [--root PATH] [--dry-run] [--verify] [--force]`

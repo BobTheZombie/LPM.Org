@@ -85,6 +85,73 @@ def test_bootstrap_build_injects_local_provider(tmp_path, monkeypatch):
     assert system_base_candidates[0].provides == ["glibc"]
 
 
+def test_bootstrap_build_reads_meta_provides_map(tmp_path, monkeypatch):
+    script = tmp_path / "system-base.lpmbuild"
+    script.write_text(
+        "\n".join(
+            [
+                "NAME=system-base",
+                "VERSION=1.0.0",
+                "RELEASE=1",
+                "ARCH=x86_64",
+                'SUMMARY="System base"',
+                'declare -A META_PROVIDES=([glibc]="glibc virtual(libc)")',
+                'REQUIRES=("glibc")',
+            ]
+        )
+    )
+
+    built_pkg_path = tmp_path / "system-base-1.0.0-1.x86_64.lpm"
+
+    base_pkg = PkgMeta(name="lpm-base", version="1.0.0")
+    core_pkg = PkgMeta(name="lpm-core", version="1.0.0")
+    glibc_pkg = PkgMeta(name="glibc", version="1.0.0")
+
+    def fake_build_universe():
+        universe = Universe(candidates_by_name={}, providers={}, installed={}, pins={}, holds=set())
+        for meta in (base_pkg, core_pkg, glibc_pkg):
+            universe.candidates_by_name.setdefault(meta.name, []).append(meta)
+            universe.providers.setdefault(meta.name, []).append(meta)
+        return universe
+
+    observed = {}
+
+    def fake_solve(goals, universe):
+        observed["goals"] = goals
+        observed["universe"] = universe
+        system_base_candidates = universe.candidates_by_name.get("system-base")
+        assert system_base_candidates, "bootstrap build candidate missing from universe"
+        return [base_pkg, core_pkg, system_base_candidates[0]]
+
+    def fake_run_lpmbuild(*args, **kwargs):
+        return built_pkg_path, 0.0, 0, []
+
+    def fake_do_install(plan, root, dry, verify, force, explicit, allow_fallback, force_build, local_overrides):
+        assert Path(root).exists()
+        assert any(pkg.name == "system-base" for pkg in plan)
+
+    monkeypatch.setattr("src.lpm.app._load_mkchroot_rules", lambda path=...: BootstrapRuleSet())
+    monkeypatch.setattr("src.lpm.app.build_universe", fake_build_universe)
+    monkeypatch.setattr("src.lpm.app.solve", fake_solve)
+    monkeypatch.setattr("src.lpm.app.run_lpmbuild", fake_run_lpmbuild)
+    monkeypatch.setattr("src.lpm.app.do_install", fake_do_install)
+
+    args = SimpleNamespace(
+        root=str(tmp_path / "root"),
+        include=[],
+        no_verify=True,
+        build=str(script),
+    )
+
+    cmd_bootstrap(args)
+
+    assert observed["goals"] == ["lpm-base", "lpm-core", "system-base"]
+    system_base_candidates = observed["universe"].candidates_by_name["system-base"]
+    candidate = system_base_candidates[0]
+    assert candidate.provides == ["glibc", "virtual(libc)"]
+    assert candidate.provides_by_package == {"glibc": ["glibc", "virtual(libc)"]}
+
+
 def test_bootstrap_build_uses_isolated_db(tmp_path, monkeypatch):
     script = tmp_path / "system-base.lpmbuild"
     script.write_text(
