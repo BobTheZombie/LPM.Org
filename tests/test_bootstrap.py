@@ -27,6 +27,7 @@ def test_bootstrap_build_injects_local_provider(tmp_path, monkeypatch):
                 "RELEASE=1",
                 "ARCH=x86_64",
                 'SUMMARY="System base"',
+                "provides=(\"glibc\")",
                 "REQUIRES=(\"foo\")",
             ]
         )
@@ -81,6 +82,7 @@ def test_bootstrap_build_injects_local_provider(tmp_path, monkeypatch):
     system_base_candidates = observed["universe"].candidates_by_name["system-base"]
     assert system_base_candidates[0].repo == "(bootstrap)"
     assert system_base_candidates[0].requires == ["foo"]
+    assert system_base_candidates[0].provides == ["glibc"]
 
 
 def test_bootstrap_build_uses_isolated_db(tmp_path, monkeypatch):
