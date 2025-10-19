@@ -2627,31 +2627,68 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
     Source the .lpmbuild (bash) and dump scalars + arrays.
     """
     script_path = str(script.resolve())
+    def _emit_scalar_line(canonical: str, *aliases: str) -> str:
+        names = " ".join(f'"{name}"' for name in (canonical, canonical, *aliases))
+        return f"_emit_scalar {names}"
+
+    def _emit_array_line(canonical: str, *aliases: str) -> str:
+        names = " ".join(f'"{name}"' for name in (canonical, canonical, *aliases))
+        return f"_emit_array {names}"
+
     lines = [
         "set -e",
         f'source "{script_path}"',
         "_emit_scalar() {",
-        '  n="$1"',
-        '  if [[ ${!n+x} == x ]]; then',
-        '    v="${!n}"',
-        '    printf "__SCALAR__ %s=%s\\n" "$n" "$v"',
-        '  fi',
+        '  canon="$1"',
+        '  shift',
+        '  for n in "$@"; do',
+        '    if [[ ${!n+x} == x ]]; then',
+        '      declare -n ref="$n"',
+        '      printf "__SCALAR__ %s=%s\n" "$canon" "${ref}"',
+        '      return',
+        '    fi',
+        '  done',
         "}",
         "_emit_array() {",
-        '  n="$1"',
-        '  printf "__ARRAY__ %s\\n" "$n"',
-        "  if declare -p \"$n\" 2>/dev/null | grep -q 'declare -a'; then",
-        '    eval "for x in \\\"\\${${n}[@]}\\\"; do printf \\\"%s\\0\\\" \\\"\\$x\\\"; done"',
-        '  elif [[ ${!n+x} == x ]]; then',
-        '    v="${!n}"',
-        '    if [[ -n "$v" ]]; then',
-        '      printf "%s\\0" "$v"',
+        '  canon="$1"',
+        '  shift',
+        '  printf "__ARRAY__ %s\n" "$canon"',
+        '  for n in "$@"; do',
+        '    if declare -p "$n" 2>/dev/null | grep -q "declare -a"; then',
+        '      declare -n ref="$n"',
+        '      for x in "${ref[@]}"; do printf "%s\\0" "$x"; done',
+        '      printf "\n"',
+        '      return',
+        '    elif [[ ${!n+x} == x ]]; then',
+        '      declare -n ref="$n"',
+        '      if [[ -n "${ref}" ]]; then printf "%s\\0" "${ref}"; fi',
+        '      printf "\n"',
+        '      return',
         '    fi',
-        '  fi',
-        '  printf "\\n"',
+        '  done',
+        '  printf "\n"',
         "}",
-        "for v in NAME VERSION RELEASE ARCH SUMMARY URL LICENSE DEVELOPER CFLAGS CXXFLAGS KERNEL MKINITCPIO_PRESET install INSTALL; do _emit_scalar \"$v\"; done",
-        "for a in SOURCE REQUIRES REQUIRES_PYTHON_DEPENDENCIES PROVIDES CONFLICTS OBSOLETES RECOMMENDS SUGGESTS; do _emit_array \"$a\"; done",
+        _emit_scalar_line("NAME", "name", "pkgname"),
+        _emit_scalar_line("VERSION", "version", "pkgver"),
+        _emit_scalar_line("RELEASE", "release", "pkgrel"),
+        _emit_scalar_line("ARCH", "arch"),
+        _emit_scalar_line("SUMMARY", "summary", "pkgdesc"),
+        _emit_scalar_line("URL", "url"),
+        _emit_scalar_line("LICENSE", "license"),
+        _emit_scalar_line("DEVELOPER", "developer", "maintainer"),
+        _emit_scalar_line("CFLAGS", "cflags"),
+        _emit_scalar_line("CXXFLAGS", "cxxflags"),
+        _emit_scalar_line("KERNEL", "kernel"),
+        _emit_scalar_line("MKINITCPIO_PRESET", "mkinitcpio_preset"),
+        _emit_scalar_line("INSTALL", "INSTALL", "install"),
+        _emit_array_line("SOURCE", "source"),
+        _emit_array_line("REQUIRES", "requires", "depends"),
+        _emit_array_line("REQUIRES_PYTHON_DEPENDENCIES", "requires_python_dependencies"),
+        _emit_array_line("PROVIDES", "provides"),
+        _emit_array_line("CONFLICTS", "conflicts"),
+        _emit_array_line("OBSOLETES", "obsoletes", "replaces"),
+        _emit_array_line("RECOMMENDS", "recommends"),
+        _emit_array_line("SUGGESTS", "suggests", "optional_depends"),
     ]
     bcmd = "\n".join(lines)
 
@@ -2679,18 +2716,19 @@ def _capture_lpmbuild_metadata(script: Path) -> Tuple[Dict[str,str], Dict[str,Li
         if data.startswith(b"__SCALAR__ ", i):
             j = data.find(b"\n", i)
             line = data[i+11:j].decode("utf-8", "replace")
-            k,v = line.split("=",1)
-            scalars[k]=v
-            i = j+1
+            k, v = line.split("=", 1)
+            scalars[k.upper()] = v
+            i = j + 1
         elif data.startswith(b"__ARRAY__ ", i):
             j = data.find(b"\n", i)
             name = data[i+10:j].decode("utf-8","replace").strip()
-            k = j+1
+            canonical = name.upper()
+            k = j + 1
             t = data.find(b"\n", k)
             items = data[k:t].split(b"\0")
             items = [x.decode("utf-8","replace") for x in items if x]
-            arrays.setdefault(name,[]).extend(items)
-            i = t+1
+            arrays.setdefault(canonical, []).extend(items)
+            i = t + 1
         else:
             j = data.find(b"\n", i)
             if j==-1: break
