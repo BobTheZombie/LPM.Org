@@ -268,8 +268,10 @@ contents and runs common maintenance commands based on what it finds:
   `[--suggests PKG ...] [--outdir DIR] [--output FILE] [--no-sign]` – package an
   additional staged root (for split packages) using the metadata gathered from
   the parent `.lpmbuild`.
-- `lpm buildpkg SCRIPT [--outdir PATH] [--no-deps]` – run a `.lpmbuild` script to
-  produce a package. `.lpmbuild` scripts may declare a `SOURCE=()` array; entries
+- `lpm buildpkg SCRIPT [--outdir PATH] [--no-deps] [--force-rebuild] [--root PATH]` – run a `.lpmbuild` script to
+  produce a package. When `--root` is provided, newly built packages (including
+  forced dependency rebuilds) are installed into that filesystem root instead of
+  the default. `.lpmbuild` scripts may declare a `SOURCE=()` array; entries
   without a URL scheme automatically resolve to
   `{LPMBUILD_REPO}/{pkgname}/{filename}`, matching Arch Linux's `source=()`
   behaviour, while explicit URLs and `foo::https://example.com/src` rename

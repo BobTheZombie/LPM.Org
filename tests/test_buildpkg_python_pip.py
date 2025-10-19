@@ -122,7 +122,11 @@ def test_cmd_buildpkg_python_pip_generates_metadata(monkeypatch, tmp_path):
     _prepare_fake_pip(monkeypatch, metadata)
 
     recorded = []
-    monkeypatch.setattr(lpm, "prompt_install_pkg", lambda blob, **_: recorded.append(blob))
+
+    def _record_prompt(blob, **kwargs):
+        recorded.append((blob, kwargs.get("root")))
+
+    monkeypatch.setattr(lpm, "prompt_install_pkg", _record_prompt)
 
     args = SimpleNamespace(
         script=None,
@@ -130,12 +134,14 @@ def test_cmd_buildpkg_python_pip_generates_metadata(monkeypatch, tmp_path):
         outdir=tmp_path,
         no_deps=False,
         install_default=None,
+        force_rebuild=False,
+        root=tmp_path / "install-root",
     )
     lpm.cmd_buildpkg(args)
 
     built = tmp_path / "python-demo-1.2-1.noarch.zst"
     assert built.exists()
-    assert recorded and recorded[0] == built
+    assert recorded and recorded[0] == (built, args.root)
 
     meta, _ = lpm.read_package_meta(built)
     assert meta.name == "python-demo"
@@ -169,6 +175,8 @@ def test_cmd_buildpkg_python_pip_respects_no_deps(monkeypatch, tmp_path):
         outdir=tmp_path,
         no_deps=True,
         install_default=None,
+        force_rebuild=False,
+        root=None,
     )
     lpm.cmd_buildpkg(args)
 
@@ -194,6 +202,8 @@ def test_cmd_buildpkg_python_pip_native_arch(monkeypatch, tmp_path):
         outdir=tmp_path,
         no_deps=True,
         install_default=None,
+        force_rebuild=False,
+        root=None,
     )
     lpm.cmd_buildpkg(args)
 
@@ -221,6 +231,7 @@ def test_cmd_buildpkg_python_pip_preserves_existing_python_prefix(monkeypatch, t
         outdir=tmp_path,
         no_deps=True,
         install_default=None,
+        force_rebuild=False,
     )
     lpm.cmd_buildpkg(args)
 
@@ -264,6 +275,7 @@ def test_cmd_buildpkg_python_pip_falls_back_to_python_from_which(monkeypatch, tm
         outdir=tmp_path,
         no_deps=True,
         install_default=None,
+        force_rebuild=False,
     )
     lpm.cmd_buildpkg(args)
 

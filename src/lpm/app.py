@@ -3107,7 +3107,13 @@ def build_from_gitlab(pkgname: str) -> Path:
     return cache_pkg
 
 
-def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str] = None) -> None:
+def prompt_install_pkg(
+    blob: Path,
+    kind: str = "package",
+    default: Optional[str] = None,
+    *,
+    root: Optional[Path] = None,
+) -> None:
     """Prompt the user to install a built package.
 
     Parameters
@@ -3135,7 +3141,10 @@ def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str]
     if not resp:
         resp = default
     if resp in {"y", "yes"}:
-        installpkg(blob, explicit=(kind != "dependency"))
+        install_kwargs = {"explicit": kind != "dependency"}
+        if root is not None:
+            install_kwargs["root"] = Path(root)
+        installpkg(blob, **install_kwargs)
 
 
 @dataclass
@@ -3205,6 +3214,8 @@ def run_lpmbuild(
     prompt_default: Optional[str] = None,
     is_dep: bool = False,
     build_deps: bool = True,
+    force_rebuild: bool = False,
+    install_root: Optional[Path] = None,
     fetcher: Optional[Callable[[str, Path], Path]] = None,
     _building_stack: Optional[Tuple[str, ...]] = None,
     executor: Optional[ThreadPoolExecutor] = None,
@@ -3253,6 +3264,8 @@ def run_lpmbuild(
     # --- Auto-build dependencies before continuing ---
     fetch_fn = fetcher or _resolve_lpm_attr("fetch_lpmbuild", fetch_lpmbuild)
 
+    install_root_path = Path(install_root) if install_root is not None else None
+
     if build_deps:
         seen: Set[Tuple[str, str]] = set()
         deps_to_build: List[str] = []
@@ -3279,22 +3292,23 @@ def run_lpmbuild(
                 if cap:
                     capabilities.add(cap)
 
-        conn = db()
-        try:
-            installed = db_installed(conn)
-            capabilities.update(installed)
-            for pkg_name, meta in installed.items():
-                if pkg_name:
-                    capabilities.add(pkg_name)
-                provides = meta.get("provides") if isinstance(meta, dict) else getattr(meta, "provides", None)
-                if not provides:
-                    continue
-                for provide in provides:
-                    cap = _canonical_capability(provide)
-                    if cap:
-                        capabilities.add(cap)
-        finally:
-            conn.close()
+        if not force_rebuild:
+            conn = db()
+            try:
+                installed = db_installed(conn)
+                capabilities.update(installed)
+                for pkg_name, meta in installed.items():
+                    if pkg_name:
+                        capabilities.add(pkg_name)
+                    provides = meta.get("provides") if isinstance(meta, dict) else getattr(meta, "provides", None)
+                    if not provides:
+                        continue
+                    for provide in provides:
+                        cap = _canonical_capability(provide)
+                        if cap:
+                            capabilities.add(cap)
+            finally:
+                conn.close()
 
         for dep in arr.get("REQUIRES", []):
             try:
@@ -3349,6 +3363,8 @@ def run_lpmbuild(
                 prompt_default=prompt_default,
                 is_dep=True,
                 build_deps=True,
+                force_rebuild=force_rebuild,
+                install_root=install_root_path,
                 fetcher=fetch_fn,
                 _building_stack=building_stack,
                 executor=executor,
@@ -3458,7 +3474,12 @@ def run_lpmbuild(
                 if meta_canonical:
                     capabilities.add(f"pypi({meta_canonical})")
             if prompt_install:
-                prompt_install_pkg(out, kind="dependency", default=prompt_default)
+                prompt_install_pkg(
+                    out,
+                    kind="dependency",
+                    default=prompt_default,
+                    root=install_root_path,
+                )
             if on_built_package:
                 try:
                     on_built_package(Path(out), meta)
@@ -4070,11 +4091,17 @@ def run_lpmbuild(
 
     if prompt_install:
         _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(
-            out, kind="dependency" if is_dep else "package", default=prompt_default
+            out,
+            kind="dependency" if is_dep else "package",
+            default=prompt_default,
+            root=install_root_path,
         )
         for split_path, _split_meta in split_records:
             _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(
-                split_path, kind="split package", default=prompt_default
+                split_path,
+                kind="split package",
+                default=prompt_default,
+                root=install_root_path,
             )
     return out, duration, phase_count, split_records
 
@@ -4914,6 +4941,8 @@ def cmd_buildpkg(a):
         return max(2, min(8, cpu_workers))
 
     worker_count = _get_buildpkg_worker_count()
+    install_root = getattr(a, "root", None)
+    install_root_path = Path(install_root) if install_root else None
     cpu_override = _parse_cpu_overrides(getattr(a, "overrides", []))
 
     if a.python_pip:
@@ -4928,7 +4957,11 @@ def cmd_buildpkg(a):
                 cpu_overrides=cpu_override,
             )
             out, meta, duration = future.result()
-        _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(out, default=a.install_default)
+        _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(
+            out,
+            default=a.install_default,
+            root=install_root_path,
+        )
         print_build_summary(meta, out, duration, len(meta.requires), 1)
         ok(f"Built {out}")
         return
@@ -4946,6 +4979,8 @@ def cmd_buildpkg(a):
             script_path,
             a.outdir,
             build_deps=not a.no_deps,
+            force_rebuild=a.force_rebuild,
+            install_root=install_root_path,
             prompt_default=a.install_default,
             executor=executor if worker_count > 1 else None,
             cpu_overrides=cpu_override,
@@ -5756,6 +5791,12 @@ def build_parser()->argparse.ArgumentParser:
     )
     sp.add_argument("--outdir", default=Path.cwd(), type=Path)
     sp.add_argument("--no-deps", action="store_true", help="do not fetch or build dependencies")
+    sp.add_argument(
+        "--force-rebuild",
+        action="store_true",
+        help="rebuild the target package and all dependencies even if already available",
+    )
+    sp.add_argument("--root", type=Path, help="install built packages into this filesystem root")
     sp.add_argument("--install-default", choices=["y", "n"], help="default answer for install prompt")
     sp.add_argument("--python-pip", metavar="SPEC", help="build a package from a Python distribution fetched via pip")
     sp.set_defaults(func=cmd_buildpkg)

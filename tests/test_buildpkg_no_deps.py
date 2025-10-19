@@ -5,6 +5,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 def test_buildpkg_no_deps_skips_dependency_build(tmp_path):
     script = tmp_path / "foo.lpmbuild"
     script.write_text(
@@ -127,3 +129,111 @@ def test_run_lpmbuild_defaults_missing_arch(tmp_path, monkeypatch):
     meta, _ = lpm.read_package_meta(built)
     assert meta.arch == lpm.ARCH
     assert splits == []
+
+
+def test_run_lpmbuild_force_rebuild_builds_installed_dependencies(monkeypatch, tmp_path):
+    monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "state"))
+
+    import lpm as lpm_module
+
+    script = tmp_path / "force.lpmbuild"
+    script.write_text("", encoding="utf-8")
+
+    scal = {"NAME": "force", "VERSION": "1", "ARCH": "noarch"}
+    arr = {"REQUIRES": ["installed-dep"]}
+
+    monkeypatch.setattr(lpm_module, "_capture_lpmbuild_metadata", lambda path: (scal, arr))
+
+    class DummyConn:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(lpm_module, "db", lambda: DummyConn())
+    monkeypatch.setattr(lpm_module, "db_installed", lambda conn: {"installed-dep": {"provides": []}})
+    monkeypatch.setattr(lpm_module, "prompt_install_pkg", lambda *args, **kwargs: None)
+
+    def stop_sandbox(*args, **kwargs):
+        raise StopIteration("sandbox")
+
+    monkeypatch.setattr(lpm_module, "sandboxed_run", stop_sandbox)
+
+    fetch_calls = []
+
+    def no_force_fetch(name, dst):
+        fetch_calls.append(name)
+        raise AssertionError("fetch should not be called without force")
+
+    monkeypatch.setattr(lpm_module, "fetch_lpmbuild", no_force_fetch)
+
+    with pytest.raises(StopIteration, match="sandbox"):
+        lpm_module.run_lpmbuild(
+            script,
+            outdir=tmp_path,
+            prompt_install=False,
+            build_deps=True,
+            force_rebuild=False,
+        )
+
+    assert fetch_calls == []
+
+    def force_fetch(name, dst):
+        fetch_calls.append(name)
+        raise StopIteration("force-fetch")
+
+    monkeypatch.setattr(lpm_module, "fetch_lpmbuild", force_fetch)
+
+    with pytest.raises(StopIteration, match="force-fetch"):
+        lpm_module.run_lpmbuild(
+            script,
+            outdir=tmp_path,
+            prompt_install=False,
+            build_deps=True,
+            force_rebuild=True,
+        )
+
+    assert fetch_calls[-1] == "installed-dep"
+
+
+def test_run_lpmbuild_prompts_use_install_root(monkeypatch, tmp_path):
+    monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "state"))
+
+    import lpm as lpm_module
+
+    script = tmp_path / "install-root.lpmbuild"
+    script.write_text("", encoding="utf-8")
+
+    scal = {"NAME": "install-root", "VERSION": "1", "ARCH": "noarch"}
+    arr = {"REQUIRES": []}
+
+    monkeypatch.setattr(lpm_module, "_capture_lpmbuild_metadata", lambda path: (scal, arr))
+    monkeypatch.setattr(lpm_module, "sandboxed_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(lpm_module, "generate_install_script", lambda stagedir: "exit 0\n")
+
+    built_packages = []
+
+    def _fake_build_package(stagedir, meta, out, sign=True):
+        out.write_text("payload", encoding="utf-8")
+        built_packages.append(out)
+
+    monkeypatch.setattr(lpm_module, "build_package", _fake_build_package)
+
+    recorded_roots = []
+
+    def _record_prompt(blob, **kwargs):
+        recorded_roots.append(kwargs.get("root"))
+
+    monkeypatch.setattr(lpm_module, "prompt_install_pkg", _record_prompt)
+
+    install_root = tmp_path / "dest"
+
+    out, _, _, splits = lpm_module.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=True,
+        build_deps=False,
+        install_root=install_root,
+    )
+
+    assert splits == []
+    assert out in built_packages
+    assert recorded_roots == [install_root]

@@ -1,5 +1,5 @@
-from pathlib import Path
 from types import SimpleNamespace
+from pathlib import Path
 import sys
 import threading
 
@@ -13,7 +13,10 @@ def test_cmd_buildpkg_shows_progress_and_summary(monkeypatch, tmp_path, capsys):
     script = tmp_path / "dummy.lpmbuild"
     script.write_text("")
 
+    expected_root = tmp_path / "install-root"
+
     def fake_run_lpmbuild(script, outdir=None, **kwargs):
+        assert kwargs.get("install_root") == expected_root
         for i, phase in enumerate(["prepare", "build", "staging"], start=1):
             print(f"[{i}/3] {phase}", file=sys.stderr)
         out = (outdir or script.parent) / "foo-1-1.noarch.zst"
@@ -27,7 +30,15 @@ def test_cmd_buildpkg_shows_progress_and_summary(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(lpm, "run_lpmbuild", fake_run_lpmbuild)
     monkeypatch.setattr(lpm, "read_package_meta", fake_read_package_meta)
 
-    args = SimpleNamespace(script=script, outdir=tmp_path, no_deps=False, install_default=None, python_pip=None)
+    args = SimpleNamespace(
+        script=script,
+        outdir=tmp_path,
+        no_deps=False,
+        install_default=None,
+        python_pip=None,
+        force_rebuild=False,
+        root=expected_root,
+    )
     lpm.cmd_buildpkg(args)
 
     captured = capsys.readouterr()
@@ -45,6 +56,7 @@ def test_cmd_buildpkg_runs_on_background_thread(monkeypatch, tmp_path):
     thread_ids = []
 
     def fake_run_lpmbuild(script, outdir=None, **kwargs):
+        assert kwargs.get("install_root") is None
         thread_ids.append(threading.current_thread())
         out = (outdir or script.parent) / "foo-1-1.noarch.zst"
         out.write_text("dummy")
@@ -58,7 +70,15 @@ def test_cmd_buildpkg_runs_on_background_thread(monkeypatch, tmp_path):
     monkeypatch.setattr(lpm, "run_lpmbuild", fake_run_lpmbuild)
     monkeypatch.setattr(lpm, "read_package_meta", fake_read_package_meta)
 
-    args = SimpleNamespace(script=script, outdir=tmp_path, no_deps=False, install_default=None, python_pip=None)
+    args = SimpleNamespace(
+        script=script,
+        outdir=tmp_path,
+        no_deps=False,
+        install_default=None,
+        python_pip=None,
+        force_rebuild=False,
+        root=None,
+    )
     lpm.cmd_buildpkg(args)
 
     assert thread_ids
