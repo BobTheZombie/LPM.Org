@@ -25,7 +25,7 @@ REQUIRES=(
 )
 
 SUGGESTS=("python-pyside6")
-PROVIDES=("lpm")
+PROVIDES=("lpm" "lpm-core")
 CONFLICTS=()
 OBSOLETES=()
 
