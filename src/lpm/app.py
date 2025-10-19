@@ -903,6 +903,107 @@ def register_universe_candidate(u: Universe, meta: PkgMeta) -> None:
             norm_op = "==" if op == "=" else op
             _add_provider_token(f"{nm}{norm_op}{ver}")
 
+
+def _remove_universe_candidate(u: Universe, meta: PkgMeta) -> None:
+    """Remove *meta* from the universe candidate/provider mappings."""
+
+    candidates = u.candidates_by_name.get(meta.name)
+    if candidates:
+        u.candidates_by_name[meta.name] = [p for p in candidates if p is not meta]
+        if not u.candidates_by_name[meta.name]:
+            del u.candidates_by_name[meta.name]
+
+    empty_tokens: List[str] = []
+    for token, providers in u.providers.items():
+        filtered = [p for p in providers if p is not meta]
+        if not filtered:
+            empty_tokens.append(token)
+            continue
+        if len(filtered) != len(providers):
+            u.providers[token] = filtered
+    for token in empty_tokens:
+        u.providers.pop(token, None)
+
+
+def _first_missing_dependency(u: Universe, expr: DepExpr) -> Optional[DepExpr]:
+    """Return the first dependency sub-expression without providers, if any."""
+
+    if expr.kind == "atom":
+        return None if providers_for(u, expr.atom) else expr
+
+    if expr.kind == "or":
+        parts = flatten_or(expr)
+        for part in parts:
+            if _first_missing_dependency(u, part) is None:
+                return None
+        for part in parts:
+            missing = _first_missing_dependency(u, part)
+            if missing is not None:
+                return missing
+        return expr
+
+    if expr.kind == "and":
+        for part in flatten_and(expr):
+            missing = _first_missing_dependency(u, part)
+            if missing is not None:
+                return missing
+        return None
+
+    return expr
+
+
+def prune_universe_missing_providers(
+    u: Universe,
+) -> Tuple[Dict[Tuple[str, str], str], Dict[str, List[str]]]:
+    """Prune candidates that reference dependencies with no providers."""
+
+    disqualified: Dict[Tuple[str, str], str] = {}
+    terminal: Dict[str, List[str]] = {}
+
+    changed = True
+    while changed:
+        changed = False
+        snapshot = [
+            (name, list(candidates))
+            for name, candidates in u.candidates_by_name.items()
+        ]
+        for name, candidates in snapshot:
+            for meta in candidates:
+                key = (meta.name, meta.version)
+                if key in disqualified:
+                    continue
+
+                reason: Optional[str] = None
+                for req in meta.requires:
+                    if not req:
+                        continue
+                    try:
+                        expr = parse_dep_expr(req)
+                    except Exception:
+                        continue
+                    missing = _first_missing_dependency(u, expr)
+                    if missing is not None:
+                        reason = (
+                            f"No provider for dependency '{dep_expr_to_str(missing)}' "
+                            f"required by {meta.name}-{meta.version}"
+                        )
+                        break
+
+                if reason is None:
+                    continue
+
+                disqualified[key] = reason
+                _remove_universe_candidate(u, meta)
+                if not u.candidates_by_name.get(name):
+                    terminal.setdefault(name, []).append(reason)
+                changed = True
+                break
+            if changed:
+                break
+
+    return disqualified, terminal
+
+
 def providers_for(u: Universe, atom: Atom) -> List[PkgMeta]:
     cands = list(u.providers.get(atom.name, []))
     if atom.op and atom.ver:
@@ -930,7 +1031,11 @@ def encode_resolution(
     Set[int],
     Dict[int, float],
     Dict[int, float],
+    Dict[Tuple[str, str], str],
+    Dict[str, List[str]],
 ]:
+    disqualified, terminal = prune_universe_missing_providers(u)
+
     cnf = CNF()
     var_of: Dict[Tuple[str,str],int] = {}
     bias_map: Dict[int,float] = {}
@@ -1026,6 +1131,14 @@ def encode_resolution(
         for p in lst: add_pkg_constraints(p)
 
     # goals
+    def _format_reasons(name: Optional[str]) -> Optional[str]:
+        if not name:
+            return None
+        reasons = terminal.get(name)
+        if not reasons:
+            return None
+        return "; ".join(dict.fromkeys(reasons))
+
     for idx, g in enumerate(goals):
         goal_label = None
         if goal_texts and idx < len(goal_texts):
@@ -1036,6 +1149,11 @@ def encode_resolution(
                 disj = expr_to_cnf_disj(u, part, cnf, var_of)
                 if not disj:
                     part_label = dep_expr_to_str(part)
+                    reason = None
+                    if part.kind == "atom" and part.atom:
+                        reason = _format_reasons(part.atom.name)
+                    if reason:
+                        raise ResolutionError(reason)
                     raise ResolutionError(
                         f"No provider for goal part '{part_label}' (from '{goal_label}')"
                     )
@@ -1043,16 +1161,44 @@ def encode_resolution(
         else:
             disj = expr_to_cnf_disj(u, g, cnf, var_of)
             if not disj:
+                reason = None
+                if g.kind == "atom" and g.atom:
+                    reason = _format_reasons(g.atom.name)
+                if reason:
+                    raise ResolutionError(reason)
                 raise ResolutionError(f"No provider for goal '{goal_label}'")
             cnf.add(disj)
 
-    return cnf, var_of, prefer_true, prefer_false, bias_map, decay_map
+    return (
+        cnf,
+        var_of,
+        prefer_true,
+        prefer_false,
+        bias_map,
+        decay_map,
+        disqualified,
+        terminal,
+    )
 
 def solve(goals: List[str], universe: Universe) -> List[PkgMeta]:
     goal_exprs = [parse_dep_expr(s) for s in goals]
-    cnf, var_of, ptrue, pfalse, bias_map, decay_map = encode_resolution(
-        universe, goal_exprs, goals
-    )
+    (
+        cnf,
+        var_of,
+        ptrue,
+        pfalse,
+        bias_map,
+        decay_map,
+        _disqualified,
+        terminal_errors,
+    ) = encode_resolution(universe, goal_exprs, goals)
+
+    for expr in goal_exprs:
+        if expr.kind != "atom":
+            continue
+        reasons = terminal_errors.get(expr.atom.name)
+        if reasons:
+            raise ResolutionError("; ".join(dict.fromkeys(reasons)))
     var_decay = float(CONF.get("VSIDS_VAR_DECAY", "0.95"))
     cla_decay = float(CONF.get("VSIDS_CLAUSE_DECAY", "0.999"))
     solver = CDCLSolver(
