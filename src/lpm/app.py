@@ -2354,12 +2354,22 @@ def _normalize_package_list(values: Iterable[str]) -> List[str]:
 
 
 def _ensure_default_base(base: Iterable[str]) -> List[str]:
+    """Return bootstrap base packages, respecting explicit overrides.
+
+    Historically the bootstrap logic always appended :data:`DEFAULT_BOOTSTRAP_BASE`
+    to whatever was configured in ``mkchroot-rules.conf``.  That made it
+    impossible to opt-out of the built-in ``lpm-base`` goal which, in turn,
+    caused confusing resolution errors for downstream projects that provide
+    their own base package set.  By short-circuiting when *base* already
+    contains entries we allow those projects to fully override the defaults
+    while still falling back to ``DEFAULT_BOOTSTRAP_BASE`` when nothing is
+    specified.
+    """
+
     normalized = _normalize_package_list(base)
-    result: List[str] = list(DEFAULT_BOOTSTRAP_BASE)
-    for pkg in normalized:
-        if pkg not in result:
-            result.append(pkg)
-    return result
+    if normalized:
+        return normalized
+    return list(DEFAULT_BOOTSTRAP_BASE)
 
 
 def _ensure_bootstrap_root(root: Path, *, full_fhs: bool = False) -> None:

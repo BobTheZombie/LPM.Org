@@ -260,6 +260,52 @@ def test_bootstrap_force_build_builds_all_plan_packages(tmp_path, monkeypatch):
     assert set(fetch_calls) == {"pkg-alpha", "pkg-beta"}
 
 
+def test_bootstrap_respects_custom_base_override(tmp_path, monkeypatch):
+    rules = BootstrapRuleSet()
+    rules.base = ["custom-base"]
+    rules.include = []
+    rules.build = []
+
+    custom_pkg = PkgMeta(name="custom-base", version="1.0.0")
+
+    def fake_build_universe():
+        universe = Universe(candidates_by_name={}, providers={}, installed={}, pins={}, holds=set())
+        universe.candidates_by_name.setdefault(custom_pkg.name, []).append(custom_pkg)
+        universe.providers.setdefault(custom_pkg.name, []).append(custom_pkg)
+        return universe
+
+    def fake_solve(goals, universe):
+        assert goals == ["custom-base"]
+        return [custom_pkg]
+
+    def fake_do_install(
+        plan,
+        root,
+        dry,
+        verify,
+        force,
+        explicit,
+        allow_fallback,
+        force_build,
+        local_overrides,
+    ):
+        assert [pkg.name for pkg in plan] == ["custom-base"]
+
+    monkeypatch.setattr("src.lpm.app._load_mkchroot_rules", lambda path=...: rules)
+    monkeypatch.setattr("src.lpm.app.build_universe", fake_build_universe)
+    monkeypatch.setattr("src.lpm.app.solve", fake_solve)
+    monkeypatch.setattr("src.lpm.app.do_install", fake_do_install)
+
+    args = SimpleNamespace(
+        root=str(tmp_path / "root"),
+        include=[],
+        no_verify=True,
+        build=False,
+    )
+
+    cmd_bootstrap(args)
+
+
 def test_bootstrap_build_passes_dependency_overrides(tmp_path, monkeypatch):
     script = tmp_path / "system-base.lpmbuild"
     script.write_text(
