@@ -3209,6 +3209,7 @@ def run_lpmbuild(
     _building_stack: Optional[Tuple[str, ...]] = None,
     executor: Optional[ThreadPoolExecutor] = None,
     cpu_overrides: Optional[CpuOverrides] = None,
+    on_built_package: Optional[Callable[[Path, PkgMeta], None]] = None,
 ) -> Tuple[Path, float, int, List[Tuple[Path, PkgMeta]]]:
     script_path = script.resolve()
     script_dir = script_path.parent
@@ -3312,15 +3313,24 @@ def run_lpmbuild(
                     if depname not in capabilities:
                         deps_to_build.append(depname)
 
-        def _register_built_dependency_blob(blob: Path) -> None:
+        def _register_built_dependency_blob(
+            blob: Path,
+            *,
+            splits: Optional[List[Tuple[Path, PkgMeta]]] = None,
+        ) -> None:
             if not blob:
                 return
             try:
-                meta, _ = read_package_meta(blob)
+                meta_obj, _ = read_package_meta(blob)
             except Exception as exc:
                 warn(f"[deps] unable to inspect built dependency {blob}: {exc}")
                 return
-            _register_meta_capabilities(meta)
+            if meta_obj is None:
+                return
+            _register_meta_capabilities(meta_obj)
+            if splits:
+                for _split_path, split_meta in splits:
+                    _register_meta_capabilities(split_meta)
 
         def _build_dep(depname: str, idx: Optional[int] = None, total: Optional[int] = None):
             if idx is not None and total is not None:
@@ -3332,7 +3342,7 @@ def run_lpmbuild(
                 die(f"dependency cycle detected: {cycle}")
             tmp = Path(f"/tmp/lpm-dep-{depname}.lpmbuild")
             fetch_fn(depname, tmp)
-            return run_lpmbuild(
+            built_blob, _, _, split_records = run_lpmbuild(
                 tmp,
                 outdir or script_dir,
                 prompt_install=prompt_install,
@@ -3343,7 +3353,10 @@ def run_lpmbuild(
                 _building_stack=building_stack,
                 executor=executor,
                 cpu_overrides=overrides,
-            )[0]
+                on_built_package=on_built_package,
+            )
+            _register_built_dependency_blob(built_blob, splits=split_records)
+            return built_blob
 
         if deps_to_build:
             if prompt_install:
@@ -3356,8 +3369,7 @@ def run_lpmbuild(
                 ) as pbar:
                     for idx, dep in enumerate(pbar, start=1):
                         pbar.set_description(f"[deps] {dep}")
-                        blob = _build_dep(dep, idx, total)
-                        _register_built_dependency_blob(blob)
+                        _build_dep(dep, idx, total)
             else:
                 total = len(deps_to_build)
                 manage_executor = executor is None
@@ -3380,8 +3392,7 @@ def run_lpmbuild(
                         mode="ninja",
                         leave=True,
                     ):
-                        blob = fut.result()
-                        _register_built_dependency_blob(blob)
+                        fut.result()
                 finally:
                     if manage_executor and local_executor is not None:
                         local_executor.shutdown(wait=True)
@@ -3448,6 +3459,11 @@ def run_lpmbuild(
                     capabilities.add(f"pypi({meta_canonical})")
             if prompt_install:
                 prompt_install_pkg(out, kind="dependency", default=prompt_default)
+            if on_built_package:
+                try:
+                    on_built_package(Path(out), meta)
+                except Exception as exc:
+                    warn(f"[deps] on_built_package callback failed for {meta.name}: {exc}")
             return out
 
         if python_to_build:
@@ -4039,6 +4055,19 @@ def run_lpmbuild(
             maintainer_mode.generate_indexes(maint_result, gen_index)
             maintainer_mode.finalize_git(maint_result)
 
+    if on_built_package:
+        try:
+            on_built_package(out, meta)
+        except Exception as exc:
+            warn(f"[deps] on_built_package callback failed for {meta.name}: {exc}")
+        for split_path, split_meta in split_records:
+            try:
+                on_built_package(split_path, split_meta)
+            except Exception as exc:
+                warn(
+                    f"[deps] on_built_package callback failed for {split_meta.name}: {exc}"
+                )
+
     if prompt_install:
         _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(
             out, kind="dependency" if is_dep else "package", default=prompt_default
@@ -4253,6 +4282,13 @@ def cmd_bootstrap(a):
             log(f"  - {p.name}-{p.version}")
 
         local_overrides: Dict[str, Path] = {}
+
+        def _register_override(blob: Path, meta: PkgMeta) -> None:
+            try:
+                local_overrides[meta.name] = Path(blob)
+            except Exception as exc:
+                warn(f"[bootstrap] failed to register override for {meta.name}: {exc}")
+
         for build_spec in bootstrap_builds:
             pkg_name = build_spec.name
             script_path = build_spec.script_path
@@ -4263,6 +4299,7 @@ def cmd_bootstrap(a):
                     prompt_install=False,
                     is_dep=False,
                     build_deps=True,
+                    on_built_package=_register_override,
                 )
             except Exception as exc:
                 for cleanup_path in cleanup_scripts:
@@ -4300,6 +4337,7 @@ def cmd_bootstrap(a):
                         prompt_install=False,
                         is_dep=False,
                         build_deps=True,
+                        on_built_package=_register_override,
                     )
                 except Exception as exc:
                     with contextlib.suppress(Exception):
