@@ -130,6 +130,7 @@ def test_cmd_buildpkg_python_pip_generates_metadata(monkeypatch, tmp_path):
         outdir=tmp_path,
         no_deps=False,
         install_default=None,
+        force_rebuild=False,
     )
     lpm.cmd_buildpkg(args)
 
@@ -169,6 +170,7 @@ def test_cmd_buildpkg_python_pip_respects_no_deps(monkeypatch, tmp_path):
         outdir=tmp_path,
         no_deps=True,
         install_default=None,
+        force_rebuild=False,
     )
     lpm.cmd_buildpkg(args)
 
@@ -194,6 +196,7 @@ def test_cmd_buildpkg_python_pip_native_arch(monkeypatch, tmp_path):
         outdir=tmp_path,
         no_deps=True,
         install_default=None,
+        force_rebuild=False,
     )
     lpm.cmd_buildpkg(args)
 
@@ -221,6 +224,7 @@ def test_cmd_buildpkg_python_pip_preserves_existing_python_prefix(monkeypatch, t
         outdir=tmp_path,
         no_deps=True,
         install_default=None,
+        force_rebuild=False,
     )
     lpm.cmd_buildpkg(args)
 
@@ -264,6 +268,7 @@ def test_cmd_buildpkg_python_pip_falls_back_to_python_from_which(monkeypatch, tm
         outdir=tmp_path,
         no_deps=True,
         install_default=None,
+        force_rebuild=False,
     )
     lpm.cmd_buildpkg(args)
 

@@ -38,6 +38,7 @@ def test_buildpkg_override_applies_cpu_flags(monkeypatch, tmp_path):
         no_deps=True,
         install_default=None,
         python_pip=None,
+        force_rebuild=False,
     )
 
     lpm.cmd_buildpkg(args)
