@@ -2331,13 +2331,30 @@ def fetch_all(pkgs: List[PkgMeta]) -> Dict[str, object]:
 
 @contextlib.contextmanager
 def transaction(conn: sqlite3.Connection, action: str, dry: bool):
+    from .locking import TransactionLockError, global_transaction_lock
+
     log(f"[tx] {action}{' (dry-run)' if dry else ''}")
+    if dry:
+        try:
+            yield
+        except Exception as e:
+            die(f"[tx] rollback {action}: {e}")
+        return
+
     try:
-        if not dry: conn.execute("BEGIN")
-        yield
-        if not dry: conn.execute("COMMIT"); ok(f"[tx] commit {action}")
+        with global_transaction_lock():
+            conn.execute("BEGIN")
+            try:
+                yield
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            else:
+                conn.execute("COMMIT")
+                ok(f"[tx] commit {action}")
+    except TransactionLockError as exc:
+        die(str(exc))
     except Exception as e:
-        if not dry: conn.execute("ROLLBACK")
         die(f"[tx] rollback {action}: {e}")
 
 _FORCE_BUILD_SENTINEL = object()

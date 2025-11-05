@@ -10,6 +10,8 @@ from typing import Any, Optional, Tuple
 
 from tqdm import tqdm
 
+from .atomic_io import atomic_write_json
+
 
 def read_json(p: Path) -> Any:
     with p.open("r", encoding="utf-8") as f:
@@ -17,10 +19,7 @@ def read_json(p: Path) -> Any:
 
 
 def write_json(p: Path, obj: Any) -> None:
-    tmp = p.with_suffix(".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(obj, f, indent=2, sort_keys=True)
-    tmp.replace(p)
+    atomic_write_json(p, obj)
 
 
 def _content_disposition_filename(header: str | None) -> Optional[str]:
