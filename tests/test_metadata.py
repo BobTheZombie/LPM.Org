@@ -155,4 +155,4 @@ def test_lpm_package_provides_core_alias():
 
     provides_tokens = shlex.split(match.group(1))
     assert "lpm" in provides_tokens, "lpm package should provide itself"
-    assert "lpm-core" in provides_tokens, "lpm package should provide lpm-core for bootstrap goals"
+    assert "lpm-core" in provides_tokens, "lpm package should provide lpm-core for compatibility"
