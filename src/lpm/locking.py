@@ -16,10 +16,9 @@ class TransactionLockError(RuntimeError):
     def __init__(self, lock_path: Path, holder_pid: Optional[int]) -> None:
         self.lock_path = lock_path
         self.holder_pid = holder_pid
-        if holder_pid is None:
-            message = "another LPM transaction is already running"
-        else:
-            message = f"another LPM transaction is already running (pid {holder_pid})"
+        message = "another transaction is running"
+        if holder_pid is not None:
+            message = f"{message} (pid {holder_pid})"
         super().__init__(message)
 
 
@@ -78,7 +77,7 @@ class GlobalTransactionLock:
     """Context manager providing a process-wide transaction lock."""
 
     def __init__(self, path: Optional[Path] = None) -> None:
-        self.path = path or (config.STATE_DIR / "transaction.lock")
+        self.path = path or config.LOCK_PATH
         self._handle: Optional[_LockHandle] = None
 
     def __enter__(self) -> "GlobalTransactionLock":
