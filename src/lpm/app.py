@@ -193,6 +193,7 @@ from ..fs import read_json, write_json, urlread
 from ..installgen import generate_install_script
 from ..first_run_ui import run_first_run_wizard
 from .. import maintainer_mode, config as _config
+from .fs_ops import operation_phase
 from .resolver import CNF, CDCLSolver
 from .hooks import HookTransactionManager, load_hooks
 
@@ -4248,6 +4249,7 @@ def run_lpmbuild(
     return out, duration, phase_count, split_records
 
 # =========================== CLI commands =====================================
+_PRIVILEGED_COMMANDS = {"install", "remove", "upgrade", "rollback"}
 def cmd_repolist(_):
     for r in sorted(list_repos(), key=lambda x:x.priority):
         print(f"{r.name:15} {r.url} (prio {r.priority})")
@@ -5999,17 +6001,22 @@ def build_parser()->argparse.ArgumentParser:
 def main(argv=None):
     parser=build_parser()
     args=parser.parse_args(argv)
+    cmd = getattr(args, "cmd", None)
     if args.sysconfig:
-        if getattr(args, "cmd", None):
+        if cmd:
             parser.error("--sysconfig cannot be combined with subcommands")
         _run_sysconfig(args.sysconfig_root)
         return 0
-    if getattr(args, "cmd", None) is None:
+    if cmd is None:
         parser.error("a subcommand is required")
-    if getattr(args, "cmd", None) != "setup" and not CONF_FILE.exists():
+    if cmd != "setup" and not CONF_FILE.exists():
         run_first_run_wizard()
     try:
-        args.func(args)
+        if cmd in _PRIVILEGED_COMMANDS:
+            with operation_phase(privileged=True):
+                args.func(args)
+        else:
+            args.func(args)
     except ResolutionError as e:
         die(f"dependency resolution failed: {e}")
 
