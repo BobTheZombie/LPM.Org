@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Union
 
 from .atomic_io import BytesLike, enforce_umask, read_bytes, safe_write
+from .privileges import privileged_section
 
 
 @contextmanager
@@ -15,6 +16,7 @@ def operation_phase(privileged: bool = True):
     managers = []
     try:
         if privileged:
+            managers.append(privileged_section())
             managers.append(enforce_umask(0o022))
         for cm in managers:
             cm.__enter__()
