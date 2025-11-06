@@ -3505,9 +3505,27 @@ def run_lpmbuild(
                     if manage_executor and local_executor is not None:
                         local_executor.shutdown(wait=True)
 
-    stagedir = Path(f"/tmp/pkg-{name}")
-    buildroot = Path(f"/tmp/build-{name}")
-    srcroot   = Path(f"/tmp/src-{name}")
+    stagedir_base = Path(f"/tmp/pkg-{name}")
+    buildroot_base = Path(f"/tmp/build-{name}")
+    srcroot_base = Path(f"/tmp/src-{name}")
+
+    def _prepare_directory(base: Path, *, label: str) -> Path:
+        try:
+            if base.exists():
+                shutil.rmtree(base)
+            base.mkdir(parents=True, exist_ok=True)
+            return base
+        except PermissionError as exc:
+            warn(
+                "[lpm] Permission denied while preparing %s (%s); "
+                "falling back to a temporary directory" % (base, exc)
+            )
+            fallback = Path(tempfile.mkdtemp(prefix=f"lpm-{label}-{name}-"))
+            return fallback
+
+    stagedir = _prepare_directory(stagedir_base, label="pkg")
+    buildroot = _prepare_directory(buildroot_base, label="build")
+    srcroot = _prepare_directory(srcroot_base, label="src")
 
     provides_list, provides_by_package = _merge_provides_with_map(
         arr.get("PROVIDES", []), maps.get("META_PROVIDES")
@@ -3555,10 +3573,7 @@ def run_lpmbuild(
         split_record_path = Path(f.name)
         tmp_files.append(split_record_path)
 
-    for d in (stagedir, buildroot, srcroot):
-        if d.exists():
-            shutil.rmtree(d)
-        d.mkdir(parents=True)
+    # Directories have already been prepared above.
 
     helper_name = "lpm-split-package"
     helper_path = buildroot / helper_name
