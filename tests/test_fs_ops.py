@@ -40,6 +40,10 @@ def test_manifest_write_text_and_bytes(tmp_path: Path):
     assert (text_path.stat().st_mode & 0o777) == 0o644
     assert bin_path.read_bytes().startswith(b"\x7fELF")
     assert (bin_path.stat().st_mode & 0o777) == 0o755
+    etc_dir = (root / "etc").resolve()
+    bin_dir = (root / "bin").resolve()
+    assert (etc_dir.stat().st_mode & 0o777) == 0o755
+    assert (bin_dir.stat().st_mode & 0o777) == 0o755
 
 
 def test_journal_ldjson(tmp_path: Path):

@@ -4,7 +4,7 @@ import os
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional, Union
+from typing import Iterable, Iterator, Optional, Union
 
 
 BytesLike = Union[bytes, bytearray, memoryview]
@@ -27,6 +27,26 @@ def _sync_directory(path: Path) -> None:
         pass
     finally:
         os.close(dir_fd)
+
+
+def _ensure_parents(path: Path) -> list[Path]:
+    """Ensure parent directories for *path* exist and return any created ones."""
+
+    created: list[Path] = []
+    parent = path.parent
+    missing: list[Path] = []
+    while True:
+        if parent.exists():
+            break
+        missing.append(parent)
+        parent = parent.parent
+    for directory in reversed(missing):
+        try:
+            directory.mkdir()
+            created.append(directory)
+        except FileExistsError:
+            continue
+    return created
 
 
 @contextmanager
@@ -61,6 +81,7 @@ def _apply_metadata(
     mode: Optional[int],
     owner: Optional[int],
     group: Optional[int],
+    extra_sync: Iterable[Path] = (),
 ) -> None:
     mask = _current_umask()
     requested = mode if mode is not None else 0o666
@@ -90,7 +111,14 @@ def _apply_metadata(
     except OSError:
         pass
 
-    _sync_directory(target.parent)
+    sync_targets = {target.parent}
+    for directory in extra_sync:
+        sync_targets.add(directory)
+        parent = directory.parent
+        if parent != directory:
+            sync_targets.add(parent)
+    for directory in sync_targets:
+        _sync_directory(directory)
 
 
 def safe_write(
@@ -111,7 +139,7 @@ def safe_write(
 
     payload = _coerce_bytes(data, encoding=encoding)
     target = Path(path).resolve()
-    target.parent.mkdir(parents=True, exist_ok=True)
+    created_dirs = _ensure_parents(target)
 
     prefix = f".{target.name}."
     fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=prefix, suffix=".tmp")
@@ -125,7 +153,14 @@ def safe_write(
         finally:
             fh.close()
 
-        _apply_metadata(tmp_path, target, mode=mode, owner=owner, group=group)
+        _apply_metadata(
+            tmp_path,
+            target,
+            mode=mode,
+            owner=owner,
+            group=group,
+            extra_sync=created_dirs,
+        )
     finally:
         try:
             tmp_path.unlink()
@@ -148,7 +183,7 @@ def atomic_replace(
     """Yield a writable handle that atomically replaces *path* on success."""
 
     target = Path(path).resolve()
-    target.parent.mkdir(parents=True, exist_ok=True)
+    created_dirs = _ensure_parents(target)
 
     prefix = f".{target.name}."
     fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=prefix, suffix=".tmp")
@@ -165,7 +200,14 @@ def atomic_replace(
         finally:
             handle.close()
 
-        _apply_metadata(tmp_path, target, mode=mode, owner=owner, group=group)
+        _apply_metadata(
+            tmp_path,
+            target,
+            mode=mode,
+            owner=owner,
+            group=group,
+            extra_sync=created_dirs,
+        )
     except Exception:
         try:
             tmp_path.unlink()
