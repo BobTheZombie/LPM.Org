@@ -23,6 +23,14 @@ if "src.lpm.app" in sys.modules:
 else:
     from src.lpm import app as _app
 
+# Ensure helper modules are always reachable via the ``lpm`` namespace.
+_fs_ops = importlib.import_module("src.lpm.fs_ops")
+_atomic_io = importlib.import_module("src.lpm.atomic_io")
+setattr(_app, "fs_ops", _fs_ops)
+setattr(_app, "atomic_io", _atomic_io)
+sys.modules.setdefault("lpm.fs_ops", _fs_ops)
+sys.modules.setdefault("lpm.atomic_io", _atomic_io)
+
 # Populate the shim namespace for direct execution while keeping the true module alive.
 globals().update(
     {
