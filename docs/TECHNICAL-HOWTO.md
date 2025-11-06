@@ -320,37 +320,9 @@ $ lpm protected list
 }
 ```
 
-## 9. System Bootstrap
+## 9. Building Packages and Repositories
 
-### 9.1 `lpm bootstrap ROOT`
-
-Creates a minimal chroot rooted at `ROOT`. The command ensures essential
-directories exist, resolves the package set `lpm-base` and `lpm-core` (plus any
-`--include` extras), installs them into the new root, and copies
-`/etc/resolv.conf` for network access. Use `--no-verify` if signatures are
-unavailable (not recommended). The bootstrapper operates in two modes:
-
-- **Binary bootstrap (default):** packages are downloaded as signed binaries
-  from configured repositories.
-- **Source bootstrap (`--build`):** packages are built from source inside a full
-  FHS directory tree that LPM prepares within `ROOT`. Each package recipe is
-  pulled from the `lpmbuilds` Git repository at build time, dependencies are
-  resolved against the target chroot instead of the host, and the built
-  artifacts are installed into the new system as soon as they finish building.
-
-You can also supply a `.lpmbuild` path (for example
-`--build system-base/system-base.lpmbuild`) to rebuild a single package locally
-while using binaries for everything else.【F:src/lpm/app.py†L3777-L3854】
-
-```bash
-$ sudo lpm bootstrap /srv/chroot --include openssh vim
-$ sudo lpm bootstrap /srv/chroot --include openssh vim --build
-$ sudo lpm bootstrap /srv/chroot --build system-base/system-base.lpmbuild
-```
-
-## 10. Building Packages and Repositories
-
-### 10.1 `lpm build`
+### 9.1 `lpm build`
 
 Packages a staged filesystem tree (`DESTDIR`) into a `.zst` archive. You must
 supply metadata such as `--name`, `--version`, and optionally dependency lists
@@ -362,7 +334,7 @@ $ lpm build pkgroot --name hello --version 1.0 --arch x86_64 --summary "Hello CL
       --requires glibc --output dist/hello-1.0-1.x86_64.zst
 ```
 
-### 10.2 `lpm buildpkg`
+### 9.2 `lpm buildpkg`
 
 Executes a `.lpmbuild` script inside a sandbox, running the `prepare`, `build`,
 and `install` phases while applying CPU-specific optimisation flags. Dependencies
@@ -389,7 +361,7 @@ cp fortran/* "$splitdir/usr/bin/"
 Each invocation writes the package to the current build output directory and is
 reported alongside the primary package when the build completes.【F:lpm.py†L1833-L1894】【F:lpm.py†L2405-L2445】
 
-### 10.3 `lpm genindex`
+### 9.3 `lpm genindex`
 
 Generates an `index.json` for a repository directory full of `.zst` archives.
 You can set a `--base-url` to embed download URLs and restrict output to a
@@ -399,7 +371,7 @@ specific `--arch`. Useful for publishing custom repositories.【F:lpm.py†L2652
 $ lpm genindex repo/ --base-url https://repo.example.com/custom
 ```
 
-### 10.4 Distribution maintainer mode workflow
+### 9.4 Distribution maintainer mode workflow
 
 Turn on maintainer mode when you want LPM to publish packages automatically.
 Run `lpm setup`, answer **yes** to the maintainer prompt, and provide the
@@ -419,7 +391,7 @@ with a summary derived from the published artifacts, and push to a configured
 remote/branch. Leaving the remote blank keeps the changes local for manual
 review or alternative deployment tools.【F:src/maintainer_mode.py†L214-L274】
 
-## 11. Troubleshooting Tips
+## 10. Troubleshooting Tips
 
 * Use `--dry-run` with install/remove/upgrade to inspect resolver output before
   committing changes.

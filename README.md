@@ -320,38 +320,6 @@ metadata or when the recorded digest matches the resolved file content, LPM
 falls back to hashing the extracted payload so that older packages remain
 compatible.
 
-### System bootstrap
-
-- `lpm bootstrap ROOT [--include PKG ...] [--no-verify] [--build [SCRIPT]]`
-  – create a minimal chroot populated with packages. By default LPM resolves
-  packages to signed binary artifacts. Passing `--build` without a value forces
-  every package in the bootstrap plan to be compiled from source in an isolated
-  FHS root that is prepared automatically inside `ROOT`. Package recipes are
-  fetched from the `lpmbuilds` Git repository at build time, dependencies are
-  resolved strictly inside the new root (not against the host), and artifacts
-  are installed into the target as each build completes. Supplying a `.lpmbuild`
-  `SCRIPT` limits source compilation to that package while the rest of the
-  dependency graph continues to use binaries.
-
-To bootstrap entirely from binaries:
-
-```bash
-$ sudo lpm bootstrap /srv/chroot --include vim openssh
-```
-
-To perform a full source bootstrap:
-
-```bash
-$ sudo lpm bootstrap /srv/chroot --include vim openssh --build
-```
-
-To rebuild a single package from source while consuming binary artifacts for
-its dependencies:
-
-```bash
-$ sudo lpm bootstrap /srv/chroot --build core/gcc.lpmbuild
-```
-
 ## First run configuration
 
 When `/etc/lpm/lpm.conf` does not exist, `lpm` launches an interactive wizard
@@ -406,11 +374,6 @@ By default hardened installations disable the GitLab fallback that fetches
 behaviour globally. You can override the setting per invocation using
 `lpm install ... --allow-fallback` or `--no-fallback`, and the same switches on
 `lpm upgrade`.
-
-## Bootstrap
-
-Run `lpm bootstrap /path/to/root --include vim openssh` to create a
-chroot‑ready filesystem tree with verified packages.
 
 ## Hooks
 

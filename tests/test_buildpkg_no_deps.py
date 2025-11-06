@@ -142,7 +142,7 @@ def test_run_lpmbuild_force_rebuild_builds_installed_dependencies(monkeypatch, t
     scal = {"NAME": "force", "VERSION": "1", "ARCH": "noarch"}
     arr = {"REQUIRES": ["installed-dep"]}
 
-    monkeypatch.setattr(lpm_module, "_capture_lpmbuild_metadata", lambda path: (scal, arr))
+    monkeypatch.setattr(lpm_module, "_capture_lpmbuild_metadata", lambda path: (scal, arr, {}))
 
     class DummyConn:
         def close(self):
