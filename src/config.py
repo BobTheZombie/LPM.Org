@@ -11,6 +11,7 @@ from typing import Dict, Mapping, Tuple
 CONF_FILE = Path("/etc/lpm/lpm.conf")      # KEY=VALUE, e.g. ARCH=znver2
 TEMPLATE_CONF = Path(__file__).resolve().parent.parent / "etc" / "lpm" / "lpm.conf"
 STATE_DIR = Path(os.environ.get("LPM_STATE_DIR", "/var/lib/lpm"))
+LOCK_PATH = Path(os.environ.get("LPM_LOCK_PATH", "/var/lib/lpm/lock"))
 DB_PATH   = STATE_DIR / "state.db"
 CACHE_DIR = STATE_DIR / "cache"
 SOURCE_CACHE_DIR = CACHE_DIR / "sources"

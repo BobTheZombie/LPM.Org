@@ -25,6 +25,7 @@ def _reload_app():
 @pytest.fixture
 def isolated_state(monkeypatch, tmp_path):
     monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("LPM_LOCK_PATH", str(tmp_path / "lock"))
     cfg = _reload_config()
     lock = _reload_locking()
     app = _reload_app()
@@ -32,6 +33,7 @@ def isolated_state(monkeypatch, tmp_path):
         yield cfg, lock, app
     finally:
         monkeypatch.delenv("LPM_STATE_DIR", raising=False)
+        monkeypatch.delenv("LPM_LOCK_PATH", raising=False)
         _reload_config()
         _reload_locking()
         _reload_app()
@@ -45,7 +47,7 @@ def test_transaction_lock_blocks_concurrent_attempts(isolated_state, capsys):
             with locking.global_transaction_lock():
                 pass
 
-    assert "another LPM transaction is already running" in str(exc.value)
+    assert "another transaction is running" in str(exc.value)
     assert str(os.getpid()) in str(exc.value)
 
 
@@ -62,4 +64,4 @@ def test_transaction_context_rejects_when_locked(isolated_state, capsys):
 
     assert exc.value.code == 2
     captured = capsys.readouterr()
-    assert "another LPM transaction is already running" in captured.err
+    assert "another transaction is running" in captured.err

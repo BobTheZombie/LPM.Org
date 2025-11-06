@@ -11,6 +11,8 @@ The Linux Package Manager
   (`OPT_LEVEL` in `/etc/lpm/lpm.conf`).
 - **Filesystem snapshots** stored in `/var/lib/lpm/snapshots` with automatic
   pruning (`MAX_SNAPSHOTS` in `lpm.conf`) and rollback support.
+- **Global transaction locking** via `/var/lib/lpm/lock` so only one package
+  operation runs at a time, complementing snapshot rollbacks.
 - **Bootstrap mode** to build a minimal chroot and populate it with verified
   packages.
 - **Automated maintenance hooks** that run `lpm autoremove`, prune snapshots,
