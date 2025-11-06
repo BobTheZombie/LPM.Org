@@ -54,6 +54,45 @@ def read_bytes(path: Union[str, Path]) -> bytes:
     return Path(path).read_bytes()
 
 
+def _apply_metadata(
+    tmp_path: Path,
+    target: Path,
+    *,
+    mode: Optional[int],
+    owner: Optional[int],
+    group: Optional[int],
+) -> None:
+    mask = _current_umask()
+    requested = mode if mode is not None else 0o666
+    applied_mode = requested & ~mask
+    try:
+        os.chmod(tmp_path, applied_mode)
+    except OSError:
+        pass
+
+    os.replace(tmp_path, target)
+
+    if owner is not None or group is not None:
+        uid = owner if owner is not None else -1
+        gid = group if group is not None else -1
+        try:
+            os.chown(target, uid, gid)
+        except OSError:
+            pass
+
+    try:
+        os.chmod(target, applied_mode)
+    except OSError:
+        pass
+
+    try:
+        os.utime(target, None)
+    except OSError:
+        pass
+
+    _sync_directory(target.parent)
+
+
 def safe_write(
     path: Union[str, Path],
     data: Union[str, BytesLike],
@@ -78,40 +117,15 @@ def safe_write(
     fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=prefix, suffix=".tmp")
     tmp_path = Path(tmp_name)
     try:
-        with os.fdopen(fd, "wb") as fh:
+        fh = os.fdopen(fd, "wb")
+        try:
             fh.write(payload)
             fh.flush()
             os.fsync(fh.fileno())
+        finally:
+            fh.close()
 
-        mask = _current_umask()
-        requested = mode if mode is not None else 0o666
-        applied_mode = requested & ~mask
-        try:
-            os.chmod(tmp_path, applied_mode)
-        except OSError:
-            pass
-
-        os.replace(tmp_path, target)
-
-        if owner is not None or group is not None:
-            uid = owner if owner is not None else -1
-            gid = group if group is not None else -1
-            try:
-                os.chown(target, uid, gid)
-            except OSError:
-                pass
-
-        try:
-            os.chmod(target, applied_mode)
-        except OSError:
-            pass
-
-        try:
-            os.utime(target, None)
-        except OSError:
-            pass
-
-        _sync_directory(target.parent)
+        _apply_metadata(tmp_path, target, mode=mode, owner=owner, group=group)
     finally:
         try:
             tmp_path.unlink()
@@ -121,10 +135,55 @@ def safe_write(
     return target
 
 
+@contextmanager
+def atomic_replace(
+    path: Union[str, Path],
+    *,
+    mode: Optional[int] = None,
+    owner: Optional[int] = None,
+    group: Optional[int] = None,
+    open_mode: str = "wb",
+    encoding: str = "utf-8",
+) -> Iterator[object]:
+    """Yield a writable handle that atomically replaces *path* on success."""
+
+    target = Path(path).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    prefix = f".{target.name}."
+    fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=prefix, suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        open_kwargs = {}
+        if "b" not in open_mode:
+            open_kwargs["encoding"] = encoding
+        handle = os.fdopen(fd, open_mode, **open_kwargs)
+        try:
+            yield handle
+            handle.flush()
+            os.fsync(handle.fileno())
+        finally:
+            handle.close()
+
+        _apply_metadata(tmp_path, target, mode=mode, owner=owner, group=group)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    else:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 __all__ = [
     "BytesLike",
     "enforce_umask",
     "read_bytes",
     "safe_write",
+    "atomic_replace",
     "_current_umask",
 ]

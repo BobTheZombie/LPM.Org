@@ -193,6 +193,7 @@ from ..fs import read_json, write_json, urlread
 from ..installgen import generate_install_script
 from ..first_run_ui import run_first_run_wizard
 from .. import maintainer_mode, config as _config
+from .atomic_io import atomic_replace
 from .fs_ops import operation_phase
 from .resolver import CNF, CDCLSolver
 from .hooks import HookTransactionManager, load_hooks
@@ -204,8 +205,9 @@ def load_protected() -> List[str]:
     default = ["glibc", "zlib", "lpm"]
     if not PROTECTED_FILE.exists():
         try:
-            PROTECTED_FILE.parent.mkdir(parents=True, exist_ok=True)
-            write_json(PROTECTED_FILE, {"protected": default})
+            with operation_phase(privileged=True):
+                PROTECTED_FILE.parent.mkdir(parents=True, exist_ok=True)
+                write_json(PROTECTED_FILE, {"protected": default})
         except Exception:
             return default
     try:
@@ -657,8 +659,9 @@ class Repo:
 def list_repos() -> List[Repo]:
     return [Repo(**r) for r in read_json(REPO_LIST)]
 
-def save_repos(rs: List[Repo]): 
-    write_json(REPO_LIST, [dataclasses.asdict(r) for r in rs])
+def save_repos(rs: List[Repo]):
+    with operation_phase(privileged=True):
+        write_json(REPO_LIST, [dataclasses.asdict(r) for r in rs])
 
 def add_repo(name,url,priority=10,bias=1.0,decay=0.95):
     rs=list_repos()
@@ -772,15 +775,16 @@ def create_snapshot(tag: str, files: Iterable[Path]) -> str:
     safe_tag = re.sub(r"[^A-Za-z0-9._-]", "_", tag)
     archive = SNAPSHOT_DIR / f"{ts}-{safe_tag}.tar.zst"
     cctx = zstd.ZstdCompressor()
-    with archive.open("wb") as f:
-        with cctx.stream_writer(f) as compressor:
-            with tarfile.open(fileobj=compressor, mode="w|") as tf:
-                for p in files:
-                    p = Path(p)
-                    if not p.exists():
-                        continue
-                    arcname = p.as_posix().lstrip("/")
-                    tf.add(str(p), arcname=arcname)
+    with operation_phase(privileged=True):
+        with atomic_replace(archive, mode=0o644, open_mode="wb") as fh:
+            with cctx.stream_writer(fh) as compressor:
+                with tarfile.open(fileobj=compressor, mode="w|") as tf:
+                    for p in files:
+                        p = Path(p)
+                        if not p.exists():
+                            continue
+                        arcname = p.as_posix().lstrip("/")
+                        tf.add(str(p), arcname=arcname)
     conn = db()
     conn.execute("INSERT INTO snapshots(ts, tag, archive) VALUES(?,?,?)", (ts, tag, str(archive)))
     conn.commit()
@@ -2651,7 +2655,8 @@ def gen_index(repo_dir: Path, base_url: Optional[str], arch_filter: Optional[str
 
     index = {"generated": int(time.time()), "packages": packages}
     out = repo_dir / "index.json"
-    write_json(out, index)
+    with operation_phase(privileged=True):
+        write_json(out, index)
     ok(f"Wrote {out} with {len(packages)} packages")
 
 
@@ -4482,18 +4487,24 @@ def cmd_pins(a):
         pins.setdefault("hold",[])
         for n in a.names:
             if n not in pins["hold"]: pins["hold"].append(n)
-        write_json(PIN_FILE, pins); ok("Updated holds")
+        with operation_phase(privileged=True):
+            write_json(PIN_FILE, pins)
+        ok("Updated holds")
     elif a.action=="unhold":
         pins.setdefault("hold",[])
         pins["hold"]=[n for n in pins["hold"] if n not in a.names]
-        write_json(PIN_FILE, pins); ok("Updated holds")
+        with operation_phase(privileged=True):
+            write_json(PIN_FILE, pins)
+        ok("Updated holds")
     elif a.action=="prefer":
         pins.setdefault("prefer",{})
         for s in a.prefs:
             if ":" not in s: die("use name:constraint, e.g. openssl:~=3.3")
             name,cons = s.split(":",1)
             pins["prefer"][name]=cons
-        write_json(PIN_FILE, pins); ok("Updated preferences")
+        with operation_phase(privileged=True):
+            write_json(PIN_FILE, pins)
+        ok("Updated preferences")
 
 def cmd_build(a):
     stagedir=Path(a.stagedir)
@@ -4997,108 +5008,129 @@ def installpkg(
                         f"Hash mismatch for {e['path']}: expected {expected_hash}, got {actual_hash}"
                     )
 
-            # Move into root w/ conflict handling (same as before) ...
-            replace_all = False
-            for e in mani:
-                rel = e["path"].lstrip("/")
-                src = tmp_root / rel
-                dest = root / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
+            with operation_phase(privileged=True):
+                # Move into root w/ conflict handling (same as before) ...
+                replace_all = False
+                for e in mani:
+                    rel = e["path"].lstrip("/")
+                    src = tmp_root / rel
+                    dest = root / rel
+                    dest.parent.mkdir(parents=True, exist_ok=True)
 
-                if src.is_dir():
-                    dest.mkdir(parents=True, exist_ok=True)
-                    continue
-
-                if dest.exists() or dest.is_symlink():
-                    same = False
-                    try:
-                        if dest.is_file() and sha256sum(dest) == e["sha256"]:
-                            same = True
-                    except Exception:
-                        pass
-                    if same:
-                        log(f"[skip] {rel} already up-to-date")
+                    if src.is_dir():
+                        dest.mkdir(parents=True, exist_ok=True)
                         continue
-                    def _remove_dest() -> None:
-                        if dest.is_file() or dest.is_symlink():
-                            dest.unlink()
-                        elif dest.is_dir():
-                            shutil.rmtree(dest)
 
-                    if replace_all:
-                        _remove_dest()
-                    else:
-                        while True:
-                            resp = input(
-                                f"[conflict] {rel} exists. [R]eplace / [RA] Replace All / [S]kip / [A]bort? "
-                            ).strip().lower()
-                            if resp in ("r", "replace"):
-                                _remove_dest()
-                                break
-                            elif resp in ("ra", "all", "replace all"):
-                                replace_all = True
-                                _remove_dest()
-                                break
-                            elif resp in ("s", "skip"):
-                                log(f"[skip] {rel}")
-                                src.unlink(missing_ok=True)
-                                continue
-                            elif resp in ("a", "abort"):
-                                die(f"Aborted install due to conflict at {rel}")
-                            else:
-                                print("Please enter R, RA, S, or A.")
+                    if dest.exists() or dest.is_symlink():
+                        same = False
+                        try:
+                            if dest.is_file() and sha256sum(dest) == e["sha256"]:
+                                same = True
+                        except Exception:
+                            pass
+                        if same:
+                            log(f"[skip] {rel} already up-to-date")
+                            continue
 
-                shutil.move(str(src), str(dest))
+                        def _remove_dest() -> None:
+                            if dest.is_file() or dest.is_symlink():
+                                dest.unlink()
+                            elif dest.is_dir():
+                                shutil.rmtree(dest)
 
-            install_script_rel = "/.lpm-install.sh"
-            staged_script = tmp_root / install_script_rel.lstrip("/")
-            installed_script = root / install_script_rel.lstrip("/")
-            script_entry = next((e for e in mani if e["path"] == install_script_rel), None)
+                        if replace_all:
+                            _remove_dest()
+                        else:
+                            while True:
+                                resp = input(
+                                    f"[conflict] {rel} exists. [R]eplace / [RA] Replace All / [S]kip / [A]bort? "
+                                ).strip().lower()
+                                if resp in ("r", "replace"):
+                                    _remove_dest()
+                                    break
+                                elif resp in ("ra", "all", "replace all"):
+                                    replace_all = True
+                                    _remove_dest()
+                                    break
+                                elif resp in ("s", "skip"):
+                                    log(f"[skip] {rel}")
+                                    src.unlink(missing_ok=True)
+                                    continue
+                                elif resp in ("a", "abort"):
+                                    die(f"Aborted install due to conflict at {rel}")
+                                else:
+                                    print("Please enter R, RA, S, or A.")
 
-            script_to_run = None
-            if installed_script.exists():
-                script_to_run = installed_script
-            elif staged_script.exists():
-                script_to_run = staged_script
+                    if not src.exists() and not src.is_symlink():
+                        continue
 
-            if script_to_run and os.access(script_to_run, os.X_OK):
-                env = os.environ.copy()
-                env.update({
-                    "LPM_ROOT": str(root),
-                    "LPM_PKG": meta.name,
-                    "LPM_VERSION": meta.version,
-                    "LPM_RELEASE": meta.release,
-                })
+                    if src.is_symlink():
+                        target = os.readlink(src)
+                        tmp_link = dest.with_name(f".{dest.name}.link")
+                        try:
+                            if tmp_link.exists() or tmp_link.is_symlink():
+                                tmp_link.unlink()
+                        except FileNotFoundError:
+                            pass
+                        os.symlink(target, tmp_link)
+                        os.replace(tmp_link, dest)
+                        continue
 
-                action = "upgrade" if previous_version is not None else "install"
-                env["LPM_INSTALL_ACTION"] = action
-                if previous_version is not None:
-                    env["LPM_PREVIOUS_VERSION"] = previous_version
-                if previous_release is not None:
-                    env["LPM_PREVIOUS_RELEASE"] = previous_release
+                    st = src.stat()
+                    file_mode = 0o755 if (st.st_mode & 0o111) else 0o644
+                    with src.open("rb") as sf:
+                        with atomic_replace(dest, mode=file_mode, open_mode="wb") as df:
+                            shutil.copyfileobj(sf, df)
 
-                def _format_version(ver: Optional[str], rel: Optional[str]) -> str:
-                    if not ver:
-                        return ""
-                    return f"{ver}-{rel}" if rel else ver
+                install_script_rel = "/.lpm-install.sh"
+                staged_script = tmp_root / install_script_rel.lstrip("/")
+                installed_script = root / install_script_rel.lstrip("/")
+                script_entry = next((e for e in mani if e["path"] == install_script_rel), None)
 
-                new_full = _format_version(meta.version, meta.release)
-                old_full = _format_version(previous_version, previous_release)
+                script_to_run = None
+                if installed_script.exists():
+                    script_to_run = installed_script
+                elif staged_script.exists():
+                    script_to_run = staged_script
 
-                argv = [str(script_to_run), action, new_full]
-                if action == "upgrade":
-                    argv.append(old_full)
+                if script_to_run and os.access(script_to_run, os.X_OK):
+                    env = os.environ.copy()
+                    env.update({
+                        "LPM_ROOT": str(root),
+                        "LPM_PKG": meta.name,
+                        "LPM_VERSION": meta.version,
+                        "LPM_RELEASE": meta.release,
+                    })
 
-                log(f"[lpm] Running embedded install script: {script_to_run}")
-                subprocess.run(argv, check=False, cwd=str(root), env=env)
+                    action = "upgrade" if previous_version is not None else "install"
+                    env["LPM_INSTALL_ACTION"] = action
+                    if previous_version is not None:
+                        env["LPM_PREVIOUS_VERSION"] = previous_version
+                    if previous_release is not None:
+                        env["LPM_PREVIOUS_RELEASE"] = previous_release
 
-            if script_entry and not script_entry.get("keep", False):
-                for candidate in (installed_script, staged_script):
-                    try:
-                        candidate.unlink()
-                    except FileNotFoundError:
-                        pass
-                mani = [e for e in mani if e["path"] != install_script_rel]
+                    def _format_version(ver: Optional[str], rel: Optional[str]) -> str:
+                        if not ver:
+                            return ""
+                        return f"{ver}-{rel}" if rel else ver
+
+                    new_full = _format_version(meta.version, meta.release)
+                    old_full = _format_version(previous_version, previous_release)
+
+                    argv = [str(script_to_run), action, new_full]
+                    if action == "upgrade":
+                        argv.append(old_full)
+
+                    log(f"[lpm] Running embedded install script: {script_to_run}")
+                    subprocess.run(argv, check=False, cwd=str(root), env=env)
+
+                if script_entry and not script_entry.get("keep", False):
+                    for candidate in (installed_script, staged_script):
+                        try:
+                            candidate.unlink()
+                        except FileNotFoundError:
+                            pass
+                    mani = [e for e in mani if e["path"] != install_script_rel]
 
             # Update DB
             conn.execute(
@@ -5137,7 +5169,8 @@ def installpkg(
             run_hook("post_upgrade", dict(hook_env))
         
         # New: init system service integration
-        handle_service_files(meta.name, root, mani)
+        with operation_phase(privileged=True):
+            handle_service_files(meta.name, root, mani)
 
     if txn is not None and owns_txn:
         txn.run_post_transaction()
@@ -5219,14 +5252,16 @@ def cmd_protected(a):
                 current.append(n)
                 changed = True
         if changed:
-            write_json(PROTECTED_FILE, {"protected": sorted(current)})
+            with operation_phase(privileged=True):
+                write_json(PROTECTED_FILE, {"protected": sorted(current)})
             ok("Updated protected list")
         else:
             log("No changes")
     elif a.action == "remove":
         new = [n for n in current if n not in a.names]
         if new != current:
-            write_json(PROTECTED_FILE, {"protected": sorted(new)})
+            with operation_phase(privileged=True):
+                write_json(PROTECTED_FILE, {"protected": sorted(new)})
             ok("Updated protected list")
         else:
             log("No changes")
