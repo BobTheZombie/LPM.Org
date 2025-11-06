@@ -28,7 +28,7 @@ def _target_permissions() -> int:
 
 
 def _write_bytes(path: Path, data: bytes) -> None:
-    path = path.resolve()
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     prefix = f".{path.name}."
