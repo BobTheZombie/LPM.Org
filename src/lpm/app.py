@@ -197,6 +197,7 @@ from .atomic_io import atomic_replace
 from .fs_ops import operation_phase
 from .resolver import CNF, CDCLSolver
 from .hooks import HookTransactionManager, load_hooks
+from .delta import apply_delta, find_cached_by_sha, file_sha256, zstd_version, version_at_least
 
 # =========================== Protected packages ===============================
 PROTECTED_FILE = Path("/etc/lpm/protected.json")
@@ -256,6 +257,27 @@ def warn(msg: str):
     if override is not None and override is not warn:
         return override(msg)
     print(f"{CYAN}[WARN]{RESET} {msg}", file=sys.stderr)
+
+
+_DELTA_MODE = _config.USE_DELTAS
+
+
+@contextlib.contextmanager
+def _delta_mode(mode: str):
+    global _DELTA_MODE
+    previous = _DELTA_MODE
+    _DELTA_MODE = mode
+    try:
+        yield
+    finally:
+        _DELTA_MODE = previous
+
+
+def _current_delta_mode() -> str:
+    mode = (_DELTA_MODE or "auto").lower()
+    if mode not in {"auto", "always", "never"}:
+        return "auto"
+    return mode
 
 def print_build_summary(meta: PkgMeta, out: Path, duration: float, deps: int, phases: int):
     """Print a Meson-like build summary table."""
@@ -636,6 +658,7 @@ class PkgMeta:
     decay: float = 0.95
     kernel: bool = False
     mkinitcpio_preset: Optional[str] = None
+    deltas: List[Dict[str, Any]] = field(default_factory=list)
     @staticmethod
     def from_dict(d: dict, repo_name="(local)", prio=0, bias: float = 1.0, decay: float = 0.95) -> "PkgMeta":
         return PkgMeta(
@@ -645,7 +668,7 @@ class PkgMeta:
             obsoletes=d.get("obsoletes",[]), provides=d.get("provides",[]), provides_by_package=d.get("provides_by_package", {}), symbols=d.get("symbols",[]), recommends=d.get("recommends",[]),
             suggests=d.get("suggests",[]), size=d.get("size",0), sha256=d.get("sha256"), blob=d.get("blob"),
             repo=repo_name, prio=prio, bias=bias, decay=decay, kernel=d.get("kernel", False),
-            mkinitcpio_preset=d.get("mkinitcpio_preset"))
+            mkinitcpio_preset=d.get("mkinitcpio_preset"), deltas=d.get("deltas", []))
 
 # =========================== Repos ============================================
 @dataclass
@@ -2266,34 +2289,168 @@ def _cache_path_for(url: str) -> Path:
     name = os.path.basename(urllib.parse.urlparse(url).path) or f"lpm{EXT}"
     return CACHE_DIR / name
 
+
+def _resolve_delta_location(pkg: PkgMeta, rel: str) -> Optional[str]:
+    if not rel:
+        return None
+    parsed = urllib.parse.urlparse(rel)
+    if parsed.scheme in {"http", "https", "file"}:
+        return rel
+    blob = pkg.blob or ""
+    base = urllib.parse.urlparse(blob)
+    if base.scheme in {"http", "https"}:
+        base_url = blob.rsplit("/", 1)[0] + "/"
+        return urllib.parse.urljoin(base_url, rel)
+    if base.scheme == "file":
+        return str(Path(base.path).parent / rel)
+    if blob.startswith("/") or not base.scheme:
+        path = base.path or blob
+        return str(Path(path).parent / rel)
+    return rel
+
+
+def _download_to(location: str, dest: Path) -> None:
+    parsed = urllib.parse.urlparse(location)
+    if parsed.scheme == "file":
+        src = Path(parsed.path)
+        if not src.exists():
+            raise FileNotFoundError(src)
+        shutil.copy2(src, dest)
+        return
+    if location.startswith("/"):
+        src = Path(location)
+        if not src.exists():
+            raise FileNotFoundError(src)
+        shutil.copy2(src, dest)
+        return
+    data, _ = _resolve_lpm_attr("urlread", urlread)(location)
+    dest.write_bytes(data)
+
+
+def _ensure_signature(url: str, sig_dst: Path) -> Optional[Path]:
+    try:
+        if url.startswith("file://"):
+            src = Path(url[7:]).with_suffix(Path(url[7:]).suffix + ".sig")
+            if src.exists():
+                shutil.copy2(src, sig_dst)
+                return sig_dst
+        elif url.startswith("/") and Path(url).exists():
+            src = Path(url).with_suffix(Path(url).suffix + ".sig")
+            if src.exists():
+                shutil.copy2(src, sig_dst)
+                return sig_dst
+        else:
+            sig_url = url + ".sig"
+            data, _ = _resolve_lpm_attr("urlread", urlread)(sig_url)
+            sig_dst.write_bytes(data)
+            return sig_dst
+    except Exception:
+        return sig_dst if sig_dst.exists() else None
+    return sig_dst if sig_dst.exists() else None
+
+
+def _attempt_delta(pkg: PkgMeta, dst: Path) -> bool:
+    mode = _current_delta_mode()
+    if mode == "never":
+        return False
+    if not pkg.deltas:
+        if mode == "always":
+            raise RuntimeError(f"delta required for {pkg.name} but repository does not provide one")
+        return False
+    if not pkg.sha256:
+        if mode == "always":
+            raise RuntimeError(f"delta required for {pkg.name} but sha256 checksum is missing")
+        return False
+
+    version = zstd_version()
+    if not version_at_least(version, _config.ZSTD_MIN_VERSION):
+        if mode == "always":
+            raise RuntimeError(
+                f"delta required for {pkg.name} but zstd>={_config.ZSTD_MIN_VERSION} is unavailable"
+            )
+        return False
+
+    candidates = sorted(pkg.deltas, key=lambda d: d.get("base_version", ""))
+    for entry in reversed(candidates):
+        base_sha = entry.get("base_sha256")
+        if not base_sha:
+            continue
+        base_path = find_cached_by_sha([CACHE_DIR], str(base_sha))
+        if base_path is None:
+            if mode == "always":
+                raise RuntimeError(
+                    f"delta required for {pkg.name} but base package with sha256 {base_sha} not cached"
+                )
+            continue
+
+        location = _resolve_delta_location(pkg, entry.get("url", ""))
+        if not location:
+            continue
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="lpm-delta-") as tmpdir:
+                patch_path = Path(tmpdir) / "delta.zstpatch"
+                _download_to(location, patch_path)
+                out_path = Path(tmpdir) / "reconstructed.zst"
+                apply_delta(base_path, patch_path, out_path)
+                if file_sha256(out_path) != pkg.sha256:
+                    raise RuntimeError("delta checksum mismatch")
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                if dst.exists():
+                    dst.unlink()
+                shutil.move(str(out_path), dst)
+            log(
+                f"[delta] Applied {entry.get('algorithm', 'delta')} for {pkg.name}-{pkg.version} "
+                f"using base {entry.get('base_version', '?')}"
+            )
+            return True
+        except Exception as exc:
+            warn(f"delta application failed for {pkg.name}: {exc}")
+            if mode == "always":
+                raise
+    if mode == "always":
+        raise RuntimeError(f"delta required for {pkg.name} but no candidate succeeded")
+    return False
+
 def fetch_blob(p: PkgMeta) -> Tuple[Path, Optional[Path]]:
     if not p.blob: die(f"{p.name}-{p.version} missing blob")
-    url=p.blob
+    url = p.blob
     dst = _cache_path_for(url)
     sig_dst = dst.with_suffix(dst.suffix + ".sig")
-    # local file:// or absolute
-    if url.startswith("file://"):
-        src = Path(url[7:])
-        if not src.exists(): die(f"blob not found {src}")
-        if not dst.exists() or src.stat().st_mtime > dst.stat().st_mtime: shutil.copy2(src, dst)
-        sig_src = src.with_suffix(src.suffix + ".sig")
-        if sig_src.exists(): shutil.copy2(sig_src, sig_dst)
-    elif url.startswith("/") and Path(url).exists():
-        src = Path(url)
-        if not dst.exists() or src.stat().st_mtime > dst.stat().st_mtime: shutil.copy2(src, dst)
-        sig_src = src.with_suffix(src.suffix + ".sig")
-        if sig_src.exists(): shutil.copy2(sig_src, sig_dst)
-    else:
-        for _ in progress_bar(range(1), desc=f"Downloading {p.name}"):
-            data, _ = _resolve_lpm_attr("urlread", urlread)(url)
-            dst.write_bytes(data)
+
+    if dst.exists() and p.sha256:
         try:
-            sig_url = url + ".sig"
-            sig_data, _ = _resolve_lpm_attr("urlread", urlread)(sig_url)
-            sig_dst.write_bytes(sig_data)
+            if file_sha256(dst) == p.sha256:
+                sig_path = _ensure_signature(url, sig_dst)
+                return dst, sig_path
         except Exception:
             pass
-    return dst, (sig_dst if sig_dst.exists() else None)
+
+    used_delta = False
+    try:
+        used_delta = _attempt_delta(p, dst)
+    except Exception:
+        if _current_delta_mode() == "always":
+            raise
+
+    if not used_delta:
+        if url.startswith("file://"):
+            src = Path(url[7:])
+            if not src.exists():
+                die(f"blob not found {src}")
+            if not dst.exists() or src.stat().st_mtime > dst.stat().st_mtime:
+                shutil.copy2(src, dst)
+        elif url.startswith("/") and Path(url).exists():
+            src = Path(url)
+            if not dst.exists() or src.stat().st_mtime > dst.stat().st_mtime:
+                shutil.copy2(src, dst)
+        else:
+            for _ in progress_bar(range(1), desc=f"Downloading {p.name}"):
+                data, _ = _resolve_lpm_attr("urlread", urlread)(url)
+                dst.write_bytes(data)
+
+    sig_path = _ensure_signature(url, sig_dst)
+    return dst, sig_path
 
 
 def fetch_all(pkgs: List[PkgMeta]) -> Dict[str, object]:
@@ -4135,58 +4292,60 @@ def cmd_info(a):
         print(f"Blob:       {p.blob or '-'}")
 
 def cmd_install(a):
-    root = Path(a.root or DEFAULT_ROOT)
-    u = build_universe()
-    goals = a.names
-    try:
-        plan = solve(goals, u)
-    except ResolutionError as e:
-        die(f"dependency resolution failed: {e}")
-    log("[plan] install order:")
-    for p in plan:
-        log(f"  - {p.name}-{p.version}")
-    if a.dry_run:
-        return
-    noverify = a.no_verify or os.environ.get("LPM_NO_VERIFY") == "1"
-    allow_fallback = ALLOW_LPMBUILD_FALLBACK if a.allow_fallback is None else a.allow_fallback
-
-    snapshot_id = None
-    snapshot_archive = None
-    try:
-        affected: Set[Path] = set()
+    mode = "never" if getattr(a, "no_delta", False) else _config.USE_DELTAS
+    with _delta_mode(mode):
+        root = Path(a.root or DEFAULT_ROOT)
+        u = build_universe()
+        goals = a.names
+        try:
+            plan = solve(goals, u)
+        except ResolutionError as e:
+            die(f"dependency resolution failed: {e}")
+        log("[plan] install order:")
         for p in plan:
-            try:
-                blob, _ = fetch_blob(p)
-                _, mani = read_package_meta(blob)
-                for e in mani:
-                    path = e["path"] if isinstance(e, dict) else e
-                    affected.add(root / path.lstrip("/"))
-            except Exception as e:
-                warn(f"could not prepare snapshot for {p.name}: {e}")
-        tag = "install-" + "-".join([p.name for p in plan])
-        snapshot_archive = create_snapshot(tag, affected)
-        conn = db()
-        row = conn.execute("SELECT id FROM snapshots WHERE archive=?", (snapshot_archive,)).fetchone()
-        conn.close()
-        if row:
-            snapshot_id = row[0]
-    except Exception as e:
-        warn(f"snapshot failed: {e}")
+            log(f"  - {p.name}-{p.version}")
+        if a.dry_run:
+            return
+        noverify = a.no_verify or os.environ.get("LPM_NO_VERIFY") == "1"
+        allow_fallback = ALLOW_LPMBUILD_FALLBACK if a.allow_fallback is None else a.allow_fallback
 
-    try:
-        do_install(
-            plan,
-            root,
-            a.dry_run,
-            verify=(not noverify),
-            force=a.force,
-            explicit=set(a.names),
-            allow_fallback=allow_fallback,
-        )
-    except SystemExit:
-        if snapshot_id is not None:
-            warn(f"Snapshot {snapshot_id} created at {snapshot_archive} for rollback.")
-        raise
+        snapshot_id = None
+        snapshot_archive = None
+        try:
+            affected: Set[Path] = set()
+            for p in plan:
+                try:
+                    blob, _ = fetch_blob(p)
+                    _, mani = read_package_meta(blob)
+                    for e in mani:
+                        path = e["path"] if isinstance(e, dict) else e
+                        affected.add(root / path.lstrip("/"))
+                except Exception as e:
+                    warn(f"could not prepare snapshot for {p.name}: {e}")
+            tag = "install-" + "-".join([p.name for p in plan])
+            snapshot_archive = create_snapshot(tag, affected)
+            conn = db()
+            row = conn.execute("SELECT id FROM snapshots WHERE archive=?", (snapshot_archive,)).fetchone()
+            conn.close()
+            if row:
+                snapshot_id = row[0]
+        except Exception as e:
+            warn(f"snapshot failed: {e}")
+
+        try:
+            do_install(
+                plan,
+                root,
+                a.dry_run,
+                verify=(not noverify),
+                force=a.force,
+                explicit=set(a.names),
+                allow_fallback=allow_fallback,
+            )
+        except SystemExit:
+            if snapshot_id is not None:
+                warn(f"Snapshot {snapshot_id} created at {snapshot_archive} for rollback.")
+            raise
 
 
 def cmd_remove(a):
@@ -4224,106 +4383,109 @@ def cmd_autoremove(a):
     autoremove(root, a.dry_run)
 
 def cmd_upgrade(a):
-    root = Path(a.root or DEFAULT_ROOT)
-    noverify = a.no_verify or os.environ.get("LPM_NO_VERIFY") == "1"
-    dry = a.dry_run
-    force = a.force
-    allow_fallback = ALLOW_LPMBUILD_FALLBACK if a.allow_fallback is None else a.allow_fallback
+    mode = "never" if getattr(a, "no_delta", False) else _config.USE_DELTAS
+    with _delta_mode(mode):
+        root = Path(a.root or DEFAULT_ROOT)
+        noverify = a.no_verify or os.environ.get("LPM_NO_VERIFY") == "1"
+        dry = a.dry_run
+        force = a.force
+        allow_fallback = ALLOW_LPMBUILD_FALLBACK if a.allow_fallback is None else a.allow_fallback
 
-    u = build_universe()
-    goals: List[str] = []
-    if not a.names:
-        for n, meta in u.installed.items():
-            goals.append(f"{n} ~= {meta['version']}")
-    else:
-        goals += a.names
+        u = build_universe()
+        goals: List[str] = []
+        if not a.names:
+            for n, meta in u.installed.items():
+                goals.append(f"{n} ~= {meta['version']}")
+        else:
+            goals += a.names
 
-    try:
-        plan = solve(goals, u)
-    except ResolutionError:
-        if not allow_fallback:
-            die(
-                "SAT solver could not find an upgrade set and GitLab fallback is disabled. "
-                "Re-run with --allow-fallback or enable ALLOW_LPMBUILD_FALLBACK in lpm.conf"
-            )
-        warn("SAT solver failed to find upgrade set, falling back to GitLab fetch...")
-        for dep in a.names:
-            built = build_from_gitlab(dep)
-            installpkg(
-                built,
-                root=root,
-                dry_run=dry,
+        try:
+            plan = solve(goals, u)
+        except ResolutionError:
+            if not allow_fallback:
+                die(
+                    "SAT solver could not find an upgrade set and GitLab fallback is disabled. "
+                    "Re-run with --allow-fallback or enable ALLOW_LPMBUILD_FALLBACK in lpm.conf"
+                )
+            warn("SAT solver failed to find upgrade set, falling back to GitLab fetch...")
+            for dep in a.names:
+                built = build_from_gitlab(dep)
+                installpkg(
+                    built,
+                    root=root,
+                    dry_run=dry,
+                    verify=(not noverify),
+                    force=force,
+                    explicit=True,
+                    allow_fallback=allow_fallback,
+                )
+            return
+
+        upgrades: List[PkgMeta] = []
+        for p in plan:
+            cur = u.installed.get(p.name)
+            if not cur or cmp_semver(p.version, cur["version"]) > 0:
+                upgrades.append(p)
+
+        if not upgrades:
+            ok("Nothing to do.")
+            return
+
+        snapshot_id = None
+        snapshot_archive = None
+        if not dry:
+            affected: Set[Path] = set()
+            conn = db()
+            for p in upgrades:
+                row = conn.execute("SELECT manifest FROM installed WHERE name=?", (p.name,)).fetchone()
+                if row:
+                    mani = json.loads(row[0])
+                    for e in mani:
+                        path = e["path"] if isinstance(e, dict) else e
+                        affected.add(root / path.lstrip("/"))
+            conn.close()
+            for p in upgrades:
+                try:
+                    blob, _ = fetch_blob(p)
+                    _, mani = read_package_meta(blob)
+                    for e in mani:
+                        path = e["path"] if isinstance(e, dict) else e
+                        affected.add(root / path.lstrip("/"))
+                except Exception as e:
+                    warn(f"could not prepare snapshot for {p.name}: {e}")
+            tag = "upgrade-" + "-".join([p.name for p in upgrades])
+            snapshot_archive = create_snapshot(tag, affected)
+            conn = db()
+            row = conn.execute("SELECT id FROM snapshots WHERE archive=?", (snapshot_archive,)).fetchone()
+            conn.close()
+            if row:
+                snapshot_id = row[0]
+
+            def svc_worker(p: PkgMeta):
+                cur = u.installed.get(p.name)
+                if cur:
+                    remove_service_files(p.name, Path(DEFAULT_ROOT), cur.get("manifest"))
+
+            max_workers = min(8, len(upgrades))
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                list(ex.map(svc_worker, upgrades))
+
+        explicit_names = {n for n, m in u.installed.items() if m.get("explicit")}
+        explicit_names |= set(a.names)
+        try:
+            do_install(
+                upgrades,
+                root,
+                dry,
                 verify=(not noverify),
                 force=force,
-                explicit=True,
+                explicit=explicit_names,
                 allow_fallback=allow_fallback,
             )
-        return
-
-    upgrades: List[PkgMeta] = []
-    for p in plan:
-        cur = u.installed.get(p.name)
-        if not cur or cmp_semver(p.version, cur["version"]) > 0:
-            upgrades.append(p)
-
-    if not upgrades:
-        ok("Nothing to do.")
-        return
-
-    snapshot_id = None
-    snapshot_archive = None
-    if not dry:
-        affected: Set[Path] = set()
-        conn = db()
-        for p in upgrades:
-            row = conn.execute("SELECT manifest FROM installed WHERE name=?", (p.name,)).fetchone()
-            if row:
-                mani = json.loads(row[0])
-                for e in mani:
-                    path = e["path"] if isinstance(e, dict) else e
-                    affected.add(root / path.lstrip("/"))
-        conn.close()
-        for p in upgrades:
-            try:
-                blob, _ = fetch_blob(p)
-                _, mani = read_package_meta(blob)
-                for e in mani:
-                    path = e["path"] if isinstance(e, dict) else e
-                    affected.add(root / path.lstrip("/"))
-            except Exception as e:
-                warn(f"could not prepare snapshot for {p.name}: {e}")
-        tag = "upgrade-" + "-".join([p.name for p in upgrades])
-        snapshot_archive = create_snapshot(tag, affected)
-        conn = db()
-        row = conn.execute("SELECT id FROM snapshots WHERE archive=?", (snapshot_archive,)).fetchone()
-        conn.close()
-        if row:
-            snapshot_id = row[0]
-
-        def svc_worker(p: PkgMeta):
-            cur = u.installed.get(p.name)
-            if cur:
-                remove_service_files(p.name, Path(DEFAULT_ROOT), cur.get("manifest"))
-        max_workers = min(8, len(upgrades))
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            list(ex.map(svc_worker, upgrades))
-
-    explicit_names = {n for n, m in u.installed.items() if m.get("explicit")}
-    explicit_names |= set(a.names)
-    try:
-        do_install(
-            upgrades,
-            root,
-            dry,
-            verify=(not noverify),
-            force=force,
-            explicit=explicit_names,
-            allow_fallback=allow_fallback,
-        )
-    except SystemExit:
-        if snapshot_id is not None:
-            warn(f"Snapshot {snapshot_id} created at {snapshot_archive} for rollback.")
-        raise
+        except SystemExit:
+            if snapshot_id is not None:
+                warn(f"Snapshot {snapshot_id} created at {snapshot_archive} for rollback.")
+            raise
 
 def cmd_files(a):
     conn = db()
@@ -5477,6 +5639,11 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--no-verify", action="store_true", help="skip signature verification (DANGEROUS)")
     sp.add_argument(
+        "--no-delta",
+        action="store_true",
+        help="disable use of delta packages (overrides configuration)",
+    )
+    sp.add_argument(
         "--allow-fallback",
         dest="allow_fallback",
         action="store_true",
@@ -5507,6 +5674,11 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--root")
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--no-verify", action="store_true", help="skip signature verification (DANGEROUS)")
+    sp.add_argument(
+        "--no-delta",
+        action="store_true",
+        help="disable use of delta packages (overrides configuration)",
+    )
     sp.add_argument(
         "--allow-fallback",
         dest="allow_fallback",

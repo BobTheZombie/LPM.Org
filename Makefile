@@ -314,7 +314,19 @@ clean:
 	rm -f $(STATIC_PYTHON_BUILD_STAMP) $(STATIC_PYTHON_MODULES_STAMP)
 
 distclean: clean
-	rm -rf $(DIST_DIR)
-	rm -rf $(NUITKA_SOURCE_DIR)
-	rm -rf $(STATIC_PYTHON_BASE)
-	rm -f $(NUITKA_STAMP_FILE)
+        rm -rf $(DIST_DIR)
+        rm -rf $(NUITKA_SOURCE_DIR)
+        rm -rf $(STATIC_PYTHON_BASE)
+        rm -f $(NUITKA_STAMP_FILE)
+
+DELTA_REPO_ROOT ?=
+DELTA_INDEX ?= $(DELTA_REPO_ROOT)/index.json
+DELTA_CONFIG ?= /etc/lpm/lpm.conf
+
+.PHONY: deltas
+deltas:
+	@if [ -z "$(DELTA_REPO_ROOT)" ]; then \
+		echo "Set DELTA_REPO_ROOT to the repository root containing packages" >&2; \
+		exit 1; \
+	fi
+	tools/delta_publish.py --repo-root $(DELTA_REPO_ROOT) --index $(DELTA_INDEX) --config $(DELTA_CONFIG)

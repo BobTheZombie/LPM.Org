@@ -56,6 +56,8 @@ CPU_VENDOR = ""
 CPU_FAMILY = ""
 FETCH_MAX_WORKERS = 8
 IO_BUFFER_SIZE = 1 << 20
+USE_DELTAS = "auto"
+ZSTD_MIN_VERSION = "1.5.5"
 
 
 def initialize_state() -> None:
@@ -181,6 +183,7 @@ def _apply_conf(conf: Mapping[str, str]) -> None:
     global DISTRO_REPO_BASE_URL, DISTRO_SOURCE_ROOT, DISTRO_LPMBUILD_ROOT
     global DISTRO_GIT_ENABLED, DISTRO_GIT_REMOTE, DISTRO_GIT_BRANCH, DISTRO_GIT_ROOT
     global DISTRO_LPMSPEC_PATH
+    global USE_DELTAS, ZSTD_MIN_VERSION
 
     CONF = dict(conf)
     ARCH = CONF.get("ARCH", os.uname().machine if hasattr(os, "uname") else "x86_64")
@@ -198,6 +201,13 @@ def _apply_conf(conf: Mapping[str, str]) -> None:
         MAX_LEARNT_CLAUSES = max(1, int(CONF.get("MAX_LEARNT_CLAUSES", "200")))
     except ValueError:
         MAX_LEARNT_CLAUSES = 200
+
+    mode = CONF.get("USE_DELTAS", "auto").strip().lower()
+    if mode not in {"auto", "always", "never"}:
+        mode = "auto"
+    USE_DELTAS = mode
+
+    ZSTD_MIN_VERSION = CONF.get("ZSTD_MIN_VERSION", "1.5.5").strip() or "1.5.5"
 
     INSTALL_PROMPT_DEFAULT = CONF.get("INSTALL_PROMPT_DEFAULT", "n").lower()
     if INSTALL_PROMPT_DEFAULT not in ("y", "n"):
