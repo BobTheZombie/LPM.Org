@@ -130,16 +130,16 @@ STATIC_MODULES := \
 	sys \
 	tarfile \
 	tempfile \
-        time \
-        tqdm \
-        typing \
-        urllib \
-        zstandard \
-        PySide6 \
-        PySide6.QtCore \
-        PySide6.QtGui \
-        PySide6.QtWidgets \
-        shiboken6
+    time \
+    tqdm \
+    typing \
+    urllib \
+    zstandard \
+    PySide6 \
+    PySide6.QtCore \
+    PySide6.QtGui \
+    PySide6.QtWidgets \
+    shiboken6
 
 STATIC_MODULE_FLAGS := $(addprefix --include-module=,$(STATIC_MODULES))
 
