@@ -7,27 +7,24 @@ import importlib.util
 import sys
 
 
-def _tkinter_available() -> bool:
-    """Return ``True`` when the Tk runtime is importable."""
+def _qt_available() -> bool:
+    """Return ``True`` when the PySide6 runtime is importable."""
 
-    return (
-        importlib.util.find_spec("tkinter") is not None
-        and importlib.util.find_spec("_tkinter") is not None
-    )
+    return importlib.util.find_spec("PySide6") is not None
 
 
 def main() -> None:
     """Launch the graphical frontend."""
 
-    if not _tkinter_available():
+    if not _qt_available():
         sys.stderr.write(
-            "The LPM graphical interface requires the Tk runtime.\n"
-            "Install the `python3-tk` (or equivalent) package to enable it, "
+            "The LPM graphical interface requires PySide6.\n"
+            "Install the dependencies listed in requirements-ui.txt, "
             "or use the command line client via `python -m lpm`.\n"
         )
         raise SystemExit(1)
 
-    from src.ui.app import main as app_main
+    from src.ui.qt_app import main as app_main
 
     app_main()
 
