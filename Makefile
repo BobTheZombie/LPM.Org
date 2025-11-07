@@ -34,6 +34,11 @@ NUITKA_FLAGS ?= \
         --jobs=$(shell nproc) \
         --python-flag=-O
 
+# The graphical launcher depends on PySide6 and requires the corresponding
+# Nuitka plugin to correctly bundle Qt resources.  Make this flag configurable
+# so callers can extend or override it if necessary.
+NUITKA_UI_FLAGS ?= --enable-plugin=pyside6
+
 STATIC_LIBPYTHON ?= no
 
 STATIC_LIBPYTHON_FLAG = $(firstword $(filter --static-libpython=%,$(MAKEFLAGS)))
@@ -227,8 +232,8 @@ $(BIN_TARGET): lpm.py $(SRC_FILES) | nuitka-install
 	$(NUITKA) $(NUITKA_FLAGS) --output-dir=$(BUILD_DIR) --output-filename=$(APP).bin $(ENTRY)
 
 $(UI_BIN_TARGET): lpm_ui.py $(SRC_FILES) | nuitka-install
-	@mkdir -p $(BUILD_DIR)
-	$(NUITKA) $(NUITKA_FLAGS) --output-dir=$(BUILD_DIR) --output-filename=$(UI_APP_NAME).bin $(UI_ENTRY)
+        @mkdir -p $(BUILD_DIR)
+        $(NUITKA) $(NUITKA_FLAGS) $(NUITKA_UI_FLAGS) --output-dir=$(BUILD_DIR) --output-filename=$(UI_APP_NAME).bin $(UI_ENTRY)
 
 $(STAGING_DIR): $(ALL_BIN_TARGETS) README.md LICENSE etc/lpm/lpm.conf $(BUILD_INFO_JSON)
 	@mkdir -p $(DIST_DIR)
