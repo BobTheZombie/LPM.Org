@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Mapping, Sequence
 
-from src.lpm.app import PkgMeta, db, load_universe
+from src import config as lpm_config
+from src.lpm.app import PkgMeta, Repo, db, list_repos, load_universe, save_repos
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,17 @@ class InstalledPackage:
     @property
     def display_version(self) -> str:
         return f"{self.version}-{self.release}.{self.arch}"
+
+
+@dataclass(frozen=True)
+class Repository:
+    """Representation of a configured binary repository."""
+
+    name: str
+    url: str
+    priority: int
+    bias: float
+    decay: float
 
 
 class LPMBackend:
@@ -140,6 +152,107 @@ class LPMBackend:
         return self.search("*")
 
     # ------------------------------------------------------------------
+    # Repository helpers
+    def list_repositories(self) -> List[Repository]:
+        """Return configured repositories."""
+
+        repos = list_repos()
+        return [
+            Repository(
+                name=r.name,
+                url=r.url,
+                priority=r.priority,
+                bias=r.bias,
+                decay=r.decay,
+            )
+            for r in repos
+        ]
+
+    def add_repository(self, repo: Repository) -> None:
+        """Persist a new repository configuration."""
+
+        repos = list_repos()
+        if any(existing.name == repo.name for existing in repos):
+            raise ValueError(f"Repository '{repo.name}' already exists")
+        repos.append(
+            Repo(
+                name=repo.name,
+                url=repo.url,
+                priority=repo.priority,
+                bias=repo.bias,
+                decay=repo.decay,
+            )
+        )
+        save_repos(repos)
+        self._refresh_universe(force=True)
+
+    def update_repository(self, repo: Repository) -> None:
+        """Update an existing repository entry."""
+
+        repos = list_repos()
+        for idx, existing in enumerate(repos):
+            if existing.name == repo.name:
+                repos[idx] = Repo(
+                    name=repo.name,
+                    url=repo.url,
+                    priority=repo.priority,
+                    bias=repo.bias,
+                    decay=repo.decay,
+                )
+                save_repos(repos)
+                self._refresh_universe(force=True)
+                return
+        raise KeyError(repo.name)
+
+    def remove_repository(self, name: str) -> None:
+        existing = list_repos()
+        repos = [repo for repo in existing if repo.name != name]
+        if len(repos) == len(existing):
+            raise KeyError(name)
+        save_repos(repos)
+        self._refresh_universe(force=True)
+
+    def ensure_lpmbuild_repository(self) -> Repository:
+        """Ensure the default lpmbuild repository is present."""
+
+        default_url = (
+            lpm_config.CONF.get(
+                "LPMBUILD_REPO",
+                "https://gitlab.com/lpm-org/packages/-/raw/main/repo",
+            )
+            or "https://gitlab.com/lpm-org/packages/-/raw/main/repo"
+        )
+        repos = list_repos()
+        for repo in repos:
+            if repo.name == "lpmbuild":
+                return Repository(
+                    name=repo.name,
+                    url=repo.url,
+                    priority=repo.priority,
+                    bias=repo.bias,
+                    decay=repo.decay,
+                )
+        lpmbuild_repo = Repository(
+            name="lpmbuild",
+            url=default_url.rstrip("/"),
+            priority=10,
+            bias=1.0,
+            decay=0.95,
+        )
+        repos.append(
+            Repo(
+                name=lpmbuild_repo.name,
+                url=lpmbuild_repo.url,
+                priority=lpmbuild_repo.priority,
+                bias=lpmbuild_repo.bias,
+                decay=lpmbuild_repo.decay,
+            )
+        )
+        save_repos(repos)
+        self._refresh_universe(force=True)
+        return lpmbuild_repo
+
+    # ------------------------------------------------------------------
     # Local system helpers
     def list_installed(self) -> List[InstalledPackage]:
         conn = db()
@@ -188,6 +301,29 @@ class LPMBackend:
         args = ["upgrade"]
         if names:
             args.extend(names)
+        return self.run_cli(args)
+
+    def build_package(
+        self,
+        script_path: str,
+        *,
+        outdir: str | None = None,
+        no_deps: bool = False,
+        force_rebuild: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        args: list[str] = ["buildpkg", script_path]
+        if outdir:
+            args.extend(["--outdir", outdir])
+        if no_deps:
+            args.append("--no-deps")
+        if force_rebuild:
+            args.append("--force-rebuild")
+        return self.run_cli(args)
+
+    def install_local_packages(self, files: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        if not files:
+            raise ValueError("No package files provided")
+        args = ["installpkg", *files]
         return self.run_cli(args)
 
 

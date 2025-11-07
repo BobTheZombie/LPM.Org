@@ -9,23 +9,30 @@ threads so the interface remains responsive.
 
 from __future__ import annotations
 
+import re
 import sys
 import traceback
+from pathlib import Path
 from subprocess import CompletedProcess
 from typing import Callable, Optional, Sequence
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
+    QCheckBox,
     QApplication,
+    QDoubleSpinBox,
+    QFileDialog,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QSizePolicy,
     QSplitter,
     QStatusBar,
@@ -37,7 +44,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .backend import InstalledPackage, LPMBackend, PackageDetails, PackageSummary
+from .backend import (
+    InstalledPackage,
+    LPMBackend,
+    PackageDetails,
+    PackageSummary,
+    Repository,
+)
 
 
 class _WorkerSignals(QObject):
@@ -81,6 +94,8 @@ class LPMWindow(QMainWindow):
 
         self._search_items: dict[str, PackageSummary] = {}
         self._installed_items: dict[str, InstalledPackage] = {}
+        self._repositories: dict[str, Repository] = {}
+        self._pending_repo_selection: Optional[str] = None
 
         self.setWindowTitle("LPM Control Center")
         self.resize(1280, 768)
@@ -88,10 +103,12 @@ class LPMWindow(QMainWindow):
 
         self._build_ui()
         self._bind_events()
+        self._apply_styles()
 
         # Populate UI with data.
         self._perform_search()
         self._refresh_installed()
+        self._refresh_repositories()
 
     # ------------------------------------------------------------------
     # UI construction helpers
@@ -114,20 +131,99 @@ class LPMWindow(QMainWindow):
 
         self.search_group = QGroupBox("Repository packages")
         self.installed_group = QGroupBox("Installed packages")
-        top_layout.addWidget(self.search_group)
-        top_layout.addWidget(self.installed_group)
+        self.repository_group = QGroupBox("Repositories")
+        top_layout.addWidget(self.search_group, 3)
+        top_layout.addWidget(self.installed_group, 2)
+        top_layout.addWidget(self.repository_group, 2)
         splitter.addWidget(top_panel)
 
         self.log_group = QGroupBox("Command log")
-        splitter.addWidget(self.log_group)
-        splitter.setSizes([600, 200])
+        self.build_group = QGroupBox("Build & install packages")
+
+        bottom_panel = QWidget()
+        bottom_layout = QVBoxLayout(bottom_panel)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(10)
+        bottom_layout.addWidget(self.build_group)
+        bottom_layout.addWidget(self.log_group)
+        splitter.addWidget(bottom_panel)
+        splitter.setSizes([650, 280])
 
         self._build_search_panel()
         self._build_installed_panel()
+        self._build_repository_panel()
+        self._build_build_panel()
         self._build_log_panel()
 
         self.setCentralWidget(central)
         self._build_toolbar()
+
+    def _apply_styles(self) -> None:
+        self.setStyleSheet(
+            """
+            QMainWindow {
+                background-color: #0f172a;
+            }
+            QToolBar {
+                background-color: #1e293b;
+                spacing: 6px;
+            }
+            QStatusBar {
+                background-color: #1e293b;
+                color: #e2e8f0;
+            }
+            QGroupBox {
+                border: 1px solid #334155;
+                border-radius: 6px;
+                margin-top: 8px;
+                padding-top: 14px;
+                background-color: #16213e;
+                color: #e2e8f0;
+            }
+            QLabel {
+                color: #e2e8f0;
+            }
+            QLineEdit,
+            QSpinBox,
+            QDoubleSpinBox,
+            QTextEdit {
+                background-color: #0f172a;
+                border: 1px solid #334155;
+                border-radius: 4px;
+                padding: 4px;
+                color: #e2e8f0;
+            }
+            QTableWidget {
+                background-color: #0f172a;
+                alternate-background-color: #111c2d;
+                gridline-color: #334155;
+                color: #e2e8f0;
+                selection-background-color: #2563eb;
+                selection-color: #f8fafc;
+            }
+            QPushButton {
+                background-color: #2563eb;
+                color: #f8fafc;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 14px;
+            }
+            QPushButton:hover {
+                background-color: #1d4ed8;
+            }
+            QPushButton:disabled {
+                background-color: #475569;
+                color: #cbd5f5;
+            }
+            QCheckBox {
+                color: #e2e8f0;
+            }
+            QTextEdit {
+                selection-background-color: #2563eb;
+                selection-color: #f8fafc;
+            }
+            """
+        )
 
     def _build_toolbar(self) -> None:
         toolbar = QToolBar("Main toolbar")
@@ -230,6 +326,125 @@ class LPMWindow(QMainWindow):
 
         layout.addWidget(self.installed_table, 1, 0)
 
+    def _build_repository_panel(self) -> None:
+        layout = QGridLayout(self.repository_group)
+        layout.setContentsMargins(10, 15, 10, 10)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(8)
+        layout.setColumnStretch(1, 1)
+        layout.setColumnStretch(3, 1)
+
+        self.repo_table = QTableWidget(0, 3)
+        self.repo_table.setHorizontalHeaderLabels(["Name", "URL", "Priority"])
+        header = self.repo_table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.repo_table.verticalHeader().setVisible(False)
+        self.repo_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.repo_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.repo_table.setAlternatingRowColors(True)
+        self.repo_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        layout.addWidget(self.repo_table, 0, 0, 1, 4)
+
+        name_label = QLabel("Name:")
+        self.repo_name_input = QLineEdit()
+        url_label = QLabel("URL:")
+        self.repo_url_input = QLineEdit()
+
+        priority_label = QLabel("Priority:")
+        self.repo_priority_input = QSpinBox()
+        self.repo_priority_input.setRange(0, 100)
+        self.repo_priority_input.setValue(10)
+
+        bias_label = QLabel("Bias:")
+        self.repo_bias_input = QDoubleSpinBox()
+        self.repo_bias_input.setDecimals(2)
+        self.repo_bias_input.setRange(0.1, 10.0)
+        self.repo_bias_input.setSingleStep(0.1)
+        self.repo_bias_input.setValue(1.0)
+
+        decay_label = QLabel("Decay:")
+        self.repo_decay_input = QDoubleSpinBox()
+        self.repo_decay_input.setDecimals(2)
+        self.repo_decay_input.setRange(0.1, 1.0)
+        self.repo_decay_input.setSingleStep(0.01)
+        self.repo_decay_input.setValue(0.95)
+
+        layout.addWidget(name_label, 1, 0)
+        layout.addWidget(self.repo_name_input, 1, 1)
+        layout.addWidget(url_label, 1, 2)
+        layout.addWidget(self.repo_url_input, 1, 3)
+        layout.addWidget(priority_label, 2, 0)
+        layout.addWidget(self.repo_priority_input, 2, 1)
+        layout.addWidget(bias_label, 2, 2)
+        layout.addWidget(self.repo_bias_input, 2, 3)
+        layout.addWidget(decay_label, 3, 2)
+        layout.addWidget(self.repo_decay_input, 3, 3)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(8)
+
+        self.repo_new_button = QPushButton("New")
+        self.repo_save_button = QPushButton("Save")
+        self.repo_delete_button = QPushButton("Delete")
+        self.repo_add_lpmbuild_button = QPushButton("Add LPMBuild repo")
+
+        button_row.addWidget(self.repo_new_button)
+        button_row.addWidget(self.repo_save_button)
+        button_row.addWidget(self.repo_delete_button)
+        button_row.addWidget(self.repo_add_lpmbuild_button)
+        button_row.addStretch()
+
+        layout.addLayout(button_row, 4, 0, 1, 4)
+
+        self._clear_repository_form()
+
+    def _build_build_panel(self) -> None:
+        layout = QGridLayout(self.build_group)
+        layout.setContentsMargins(10, 15, 10, 10)
+        layout.setHorizontalSpacing(10)
+        layout.setVerticalSpacing(8)
+
+        script_label = QLabel(".lpmbuild script:")
+        self.build_script_input = QLineEdit()
+        self.build_browse_script_button = QPushButton("Browse…")
+
+        outdir_label = QLabel("Output directory (optional):")
+        self.build_outdir_input = QLineEdit()
+        self.build_outdir_button = QPushButton("Select…")
+
+        options_row = QHBoxLayout()
+        options_row.setSpacing(12)
+        self.build_no_deps_check = QCheckBox("Skip dependency builds")
+        self.build_force_check = QCheckBox("Force rebuild")
+        options_row.addWidget(self.build_no_deps_check)
+        options_row.addWidget(self.build_force_check)
+        options_row.addStretch()
+
+        self.buildpkg_button = QPushButton("Run buildpkg")
+
+        pkg_label = QLabel("Local package file(s):")
+        self.package_file_input = QLineEdit()
+        self.package_file_button = QPushButton("Browse…")
+        self.installpkg_button = QPushButton("Run installpkg")
+
+        layout.addWidget(script_label, 0, 0)
+        layout.addWidget(self.build_script_input, 0, 1)
+        layout.addWidget(self.build_browse_script_button, 0, 2)
+        layout.addWidget(outdir_label, 1, 0)
+        layout.addWidget(self.build_outdir_input, 1, 1)
+        layout.addWidget(self.build_outdir_button, 1, 2)
+        layout.addLayout(options_row, 2, 0, 1, 3)
+        layout.addWidget(self.buildpkg_button, 3, 0, 1, 3)
+
+        layout.addWidget(pkg_label, 4, 0)
+        layout.addWidget(self.package_file_input, 4, 1)
+        layout.addWidget(self.package_file_button, 4, 2)
+        layout.addWidget(self.installpkg_button, 5, 0, 1, 3)
+
     def _build_log_panel(self) -> None:
         layout = QVBoxLayout(self.log_group)
         layout.setContentsMargins(10, 15, 10, 10)
@@ -240,6 +455,155 @@ class LPMWindow(QMainWindow):
         self.log_text.setPlaceholderText("Command output will appear here…")
 
         layout.addWidget(self.log_text)
+
+    # ------------------------------------------------------------------
+    # Repository helpers
+    def _clear_repository_form(self) -> None:
+        self.repo_name_input.clear()
+        self.repo_url_input.clear()
+        self.repo_priority_input.setValue(10)
+        self.repo_bias_input.setValue(1.0)
+        self.repo_decay_input.setValue(0.95)
+
+    def _set_repository_form(self, repo: Repository) -> None:
+        self.repo_name_input.setText(repo.name)
+        self.repo_url_input.setText(repo.url)
+        self.repo_priority_input.setValue(int(repo.priority))
+        self.repo_bias_input.setValue(float(repo.bias))
+        self.repo_decay_input.setValue(float(repo.decay))
+
+    def _refresh_repositories(self) -> None:
+        self._run_task(
+            self.backend.list_repositories,
+            on_result=self._populate_repositories,
+            status="Loading repositories…",
+        )
+
+    def _populate_repositories(self, repos: Sequence[Repository]) -> None:
+        ordered = sorted(repos, key=lambda item: (item.priority, item.name.lower()))
+        self.repo_table.setRowCount(len(ordered))
+        self._repositories = {repo.name: repo for repo in ordered}
+
+        for row, repo in enumerate(ordered):
+            name_item = QTableWidgetItem(repo.name)
+            url_item = QTableWidgetItem(repo.url)
+            url_item.setToolTip(repo.url)
+            priority_item = QTableWidgetItem(str(repo.priority))
+            priority_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+
+            self.repo_table.setItem(row, 0, name_item)
+            self.repo_table.setItem(row, 1, url_item)
+            self.repo_table.setItem(row, 2, priority_item)
+
+        self.repo_table.resizeRowsToContents()
+
+        if not ordered:
+            self.repo_table.clearSelection()
+            self._clear_repository_form()
+        else:
+            target = self._pending_repo_selection
+            if target and target in self._repositories:
+                for row, repo in enumerate(ordered):
+                    if repo.name == target:
+                        self.repo_table.selectRow(row)
+                        break
+                else:
+                    self.repo_table.selectRow(0)
+            else:
+                self.repo_table.selectRow(0)
+        self._pending_repo_selection = None
+
+    def _current_repository(self) -> Optional[Repository]:
+        current_row = self.repo_table.currentRow()
+        if current_row < 0:
+            return None
+        name_item = self.repo_table.item(current_row, 0)
+        if not name_item:
+            return None
+        return self._repositories.get(name_item.text())
+
+    def _handle_repo_selection(self) -> None:
+        repo = self._current_repository()
+        if repo:
+            self._set_repository_form(repo)
+
+    def _gather_repository_from_form(self) -> Optional[Repository]:
+        name = self.repo_name_input.text().strip()
+        url = self.repo_url_input.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Repository", "Enter a repository name.")
+            return None
+        if not url:
+            QMessageBox.warning(self, "Repository", "Enter a repository URL.")
+            return None
+        return Repository(
+            name=name,
+            url=url,
+            priority=int(self.repo_priority_input.value()),
+            bias=float(self.repo_bias_input.value()),
+            decay=float(self.repo_decay_input.value()),
+        )
+
+    def _new_repository(self) -> None:
+        self.repo_table.clearSelection()
+        self._clear_repository_form()
+
+    def _save_repository(self) -> None:
+        repo = self._gather_repository_from_form()
+        if not repo:
+            return
+
+        is_update = repo.name in self._repositories
+        status = "Updating repository…" if is_update else "Adding repository…"
+        action_text = "Updated" if is_update else "Added"
+
+        def _after(_result: object) -> None:
+            self._pending_repo_selection = repo.name
+            self._append_log(f"{action_text} repository '{repo.name}'.")
+            self._refresh_repositories()
+
+        handler = self.backend.update_repository if is_update else self.backend.add_repository
+        self._run_task(handler, repo, on_result=_after, status=status)
+
+    def _delete_repository(self) -> None:
+        repo = self._current_repository()
+        if not repo:
+            QMessageBox.information(self, "Repositories", "Select a repository first.")
+            return
+        confirmation = QMessageBox.question(
+            self,
+            "Remove repository",
+            f"Remove repository '{repo.name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+
+        def _after(_result: object) -> None:
+            self._append_log(f"Removed repository '{repo.name}'.")
+            self._pending_repo_selection = None
+            self._clear_repository_form()
+            self._refresh_repositories()
+
+        self._run_task(
+            self.backend.remove_repository,
+            repo.name,
+            on_result=_after,
+            status=f"Removing repository {repo.name}…",
+        )
+
+    def _add_lpmbuild_repository(self) -> None:
+        self._run_task(
+            self.backend.ensure_lpmbuild_repository,
+            on_result=self._handle_lpmbuild_added,
+            status="Ensuring lpmbuild repository…",
+        )
+
+    def _handle_lpmbuild_added(self, repo: Repository) -> None:
+        self._append_log(f"Ensured lpmbuild repository at {repo.url}.")
+        self._pending_repo_selection = repo.name
+        self._set_repository_form(repo)
+        self._refresh_repositories()
 
     # ------------------------------------------------------------------
     # Event handling
@@ -256,6 +620,17 @@ class LPMWindow(QMainWindow):
 
         self.search_input.returnPressed.connect(self._perform_search)
         self.search_table.itemSelectionChanged.connect(self._handle_search_selection)
+        self.repo_table.itemSelectionChanged.connect(self._handle_repo_selection)
+        self.repo_new_button.clicked.connect(self._new_repository)
+        self.repo_save_button.clicked.connect(self._save_repository)
+        self.repo_delete_button.clicked.connect(self._delete_repository)
+        self.repo_add_lpmbuild_button.clicked.connect(self._add_lpmbuild_repository)
+
+        self.build_browse_script_button.clicked.connect(self._browse_lpmbuild_script)
+        self.build_outdir_button.clicked.connect(self._browse_output_directory)
+        self.buildpkg_button.clicked.connect(self._run_buildpkg)
+        self.package_file_button.clicked.connect(self._browse_package_files)
+        self.installpkg_button.clicked.connect(self._run_installpkg)
 
     # ------------------------------------------------------------------
     # Worker helpers
@@ -266,8 +641,9 @@ class LPMWindow(QMainWindow):
         on_result: Optional[Callable[[object], None]] = None,
         on_finished: Optional[Callable[[], None]] = None,
         status: Optional[str] = None,
+        **worker_kwargs,
     ) -> None:
-        worker = _Worker(func, *args)
+        worker = _Worker(func, *args, **worker_kwargs)
         if status:
             self._set_status(status)
         if on_result:
@@ -507,6 +883,67 @@ class LPMWindow(QMainWindow):
 
     def _clear_log(self) -> None:
         self.log_text.clear()
+
+    # ------------------------------------------------------------------
+    # Build helpers
+    def _browse_lpmbuild_script(self) -> None:
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select .lpmbuild script",
+            "",
+            "lpmbuild scripts (*.lpmbuild);;All files (*)",
+        )
+        if filename:
+            self.build_script_input.setText(filename)
+
+    def _browse_output_directory(self) -> None:
+        directory = QFileDialog.getExistingDirectory(self, "Select output directory")
+        if directory:
+            self.build_outdir_input.setText(directory)
+
+    def _browse_package_files(self) -> None:
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select package file(s)",
+            "",
+            "LPM packages (*.lpm);;All files (*)",
+        )
+        if files:
+            self.package_file_input.setText("; ".join(files))
+
+    def _run_buildpkg(self) -> None:
+        script = self.build_script_input.text().strip()
+        if not script:
+            QMessageBox.information(self, "buildpkg", "Select a .lpmbuild script to run.")
+            return
+        outdir = self.build_outdir_input.text().strip() or None
+        status = f"Building {Path(script).name}…"
+        self._run_task(
+            self.backend.build_package,
+            script,
+            on_result=self._handle_cli_result,
+            status=status,
+            outdir=outdir,
+            no_deps=self.build_no_deps_check.isChecked(),
+            force_rebuild=self.build_force_check.isChecked(),
+        )
+
+    def _run_installpkg(self) -> None:
+        entries = self.package_file_input.text().strip()
+        if not entries:
+            QMessageBox.information(self, "installpkg", "Select one or more package files.")
+            return
+        files = [part.strip() for part in re.split(r"[;\n,]+", entries) if part.strip()]
+        if not files:
+            QMessageBox.information(self, "installpkg", "Select one or more package files.")
+            return
+        self._run_task(
+            self.backend.install_local_packages,
+            files,
+            on_result=self._handle_cli_result,
+            on_finished=self._refresh_installed,
+            status="Installing local packages…",
+        )
 
 
 def main() -> None:
