@@ -314,10 +314,10 @@ clean:
 	rm -f $(STATIC_PYTHON_BUILD_STAMP) $(STATIC_PYTHON_MODULES_STAMP)
 
 distclean: clean
-        rm -rf $(DIST_DIR)
-        rm -rf $(NUITKA_SOURCE_DIR)
-        rm -rf $(STATIC_PYTHON_BASE)
-        rm -f $(NUITKA_STAMP_FILE)
+	rm -rf $(DIST_DIR)
+	rm -rf $(NUITKA_SOURCE_DIR)
+	rm -rf $(STATIC_PYTHON_BASE)
+	rm -f $(NUITKA_STAMP_FILE)
 
 DELTA_REPO_ROOT ?=
 DELTA_INDEX ?= $(DELTA_REPO_ROOT)/index.json
