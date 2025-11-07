@@ -162,65 +162,102 @@ class LPMWindow(QMainWindow):
         self.setStyleSheet(
             """
             QMainWindow {
-                background-color: #0f172a;
+                background-color: #ffffff;
+            }
+            QWidget {
+                color: #1f2933;
             }
             QToolBar {
-                background-color: #1e293b;
+                background-color: #f3f0ff;
                 spacing: 6px;
+                border-bottom: 1px solid #d8b4fe;
+            }
+            QToolBar QToolButton {
+                color: #4c1d95;
             }
             QStatusBar {
-                background-color: #1e293b;
-                color: #e2e8f0;
+                background-color: #f3f0ff;
+                color: #4c1d95;
+                border-top: 1px solid #d8b4fe;
             }
             QGroupBox {
-                border: 1px solid #334155;
+                border: 1px solid #d8b4fe;
                 border-radius: 6px;
                 margin-top: 8px;
-                padding-top: 14px;
-                background-color: #16213e;
-                color: #e2e8f0;
+                padding-top: 16px;
+                background-color: #ffffff;
+                color: #1f2933;
+            }
+            QGroupBox::title {
+                color: #4c1d95;
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 4px;
+                background-color: transparent;
             }
             QLabel {
-                color: #e2e8f0;
+                color: #1f2933;
             }
             QLineEdit,
             QSpinBox,
             QDoubleSpinBox,
             QTextEdit {
-                background-color: #0f172a;
-                border: 1px solid #334155;
+                background-color: #ffffff;
+                border: 1px solid #cbd5f5;
                 border-radius: 4px;
-                padding: 4px;
-                color: #e2e8f0;
+                padding: 6px;
+                color: #1f2933;
+                selection-background-color: #7c3aed;
+                selection-color: #ffffff;
+            }
+            QLineEdit:focus,
+            QSpinBox:focus,
+            QDoubleSpinBox:focus,
+            QTextEdit:focus {
+                border: 1px solid #7c3aed;
             }
             QTableWidget {
-                background-color: #0f172a;
-                alternate-background-color: #111c2d;
-                gridline-color: #334155;
-                color: #e2e8f0;
-                selection-background-color: #2563eb;
-                selection-color: #f8fafc;
+                background-color: #ffffff;
+                alternate-background-color: #f5f3ff;
+                gridline-color: #d8b4fe;
+                color: #1f2933;
+                selection-background-color: #7c3aed;
+                selection-color: #ffffff;
+            }
+            QHeaderView::section {
+                background-color: #ede9fe;
+                color: #4c1d95;
+                border: 1px solid #d8b4fe;
+                padding: 4px;
             }
             QPushButton {
-                background-color: #2563eb;
-                color: #f8fafc;
+                background-color: #7c3aed;
+                color: #ffffff;
                 border: none;
                 border-radius: 4px;
                 padding: 6px 14px;
+                font-weight: 600;
             }
             QPushButton:hover {
-                background-color: #1d4ed8;
+                background-color: #6d28d9;
+            }
+            QPushButton:pressed {
+                background-color: #5b21b6;
             }
             QPushButton:disabled {
-                background-color: #475569;
-                color: #cbd5f5;
+                background-color: #ede9fe;
+                color: #a78bfa;
             }
             QCheckBox {
-                color: #e2e8f0;
+                color: #1f2933;
+                spacing: 6px;
+            }
+            QSplitter::handle {
+                background-color: #ede9fe;
             }
             QTextEdit {
-                selection-background-color: #2563eb;
-                selection-color: #f8fafc;
+                selection-background-color: #7c3aed;
+                selection-color: #ffffff;
             }
             """
         )

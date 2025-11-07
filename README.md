@@ -32,7 +32,7 @@ it whenever you need detailed examples or flag reference material.
 ## Building LPM and the graphical UI
 
 The project ships with a `Makefile` that invokes Nuitka to produce stand-alone
-executables for both the command-line client and the Tk-based graphical
+executables for both the command-line client and the Qt-based graphical
 frontend.
 
 1. Install build dependencies for Nuitka, including `patchelf` on Linux (see
@@ -127,10 +127,9 @@ The PySide6 front-end is a thin wrapper over the CLI, so installing or
 removing packages still requires the same privileges you would normally grant
 `lpm` on the command line.
 
-### Legacy Tk interface
-
-`python -m src.ui.app` launches the original Tkinter UI. It remains available
-for environments where Qt is unavailable but does not receive new features.
+The `lpm_ui.py` launcher performs the same dependency check and boots the
+PySide6 interface; run it with `python lpm_ui.py` if you prefer to execute the
+top-level entry point directly.
 
 ## Command line interface
 

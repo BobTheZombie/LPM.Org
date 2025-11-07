@@ -1,4 +1,4 @@
-"""High level helpers for the Tk based LPM UI."""
+"""High level helpers for the PySide6-based LPM UI."""
 from __future__ import annotations
 
 import fnmatch
