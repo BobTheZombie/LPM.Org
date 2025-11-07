@@ -2191,13 +2191,32 @@ def build_package(stagedir: Path, meta: PkgMeta, out: Path, sign=True):
         )
 
     # Sign package if signing key exists
-    if sign and SIGN_KEY.exists():
-        sig = out.with_suffix(out.suffix + ".sig")
-        subprocess.run(
-            ["openssl", "dgst", "-sha256", "-sign", str(SIGN_KEY),
-             "-out", str(sig), str(out)],
-            check=True
-        )
+    if sign:
+        if not SIGN_KEY.exists():
+            warn(f"Signing requested but key not found: {SIGN_KEY}")
+        elif not os.access(SIGN_KEY, os.R_OK):
+            warn(f"Signing key not readable ({SIGN_KEY}); skipping signature")
+        else:
+            sig = out.with_suffix(out.suffix + ".sig")
+            try:
+                subprocess.run(
+                    [
+                        "openssl",
+                        "dgst",
+                        "-sha256",
+                        "-sign",
+                        str(SIGN_KEY),
+                        "-out",
+                        str(sig),
+                        str(out),
+                    ],
+                    check=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                warn(
+                    "openssl failed to sign package; package will remain unsigned. "
+                    f"(exit status {exc.returncode})"
+                )
 
     ok(f"Built {out}")
 
