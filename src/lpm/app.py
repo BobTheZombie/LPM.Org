@@ -22,7 +22,7 @@ from email.parser import Parser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Iterable, Callable, BinaryIO, Mapping
+from typing import Any, Dict, List, Optional, Set, Tuple, Iterable, Callable, BinaryIO, Mapping, Union
 from collections import deque
 try:
     import zstandard as zstd
@@ -724,6 +724,12 @@ CREATE TABLE IF NOT EXISTS snapshots(
 _DB_PATH_OVERRIDE: Optional[Path] = None
 
 
+def _state_db_path() -> Path:
+    """Return the effective path to the package state database."""
+
+    return _DB_PATH_OVERRIDE or DB_PATH
+
+
 def _open_state_db(path: Path) -> sqlite3.Connection:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -809,6 +815,30 @@ def restore_snapshot(archive: Path) -> None:
                             dest.unlink()
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     tf.extract(m, path="/", filter="data")
+
+
+def _restore_snapshot_on_failure(
+    snapshot_id: Optional[int], snapshot_archive: Optional[Union[str, Path]]
+) -> None:
+    """Attempt to restore *snapshot_archive* after a failed transaction."""
+
+    if not snapshot_archive:
+        return
+
+    archive_path = Path(snapshot_archive)
+    desc: str
+    if snapshot_id is not None:
+        desc = f"{snapshot_id} ({archive_path})"
+    else:
+        desc = str(archive_path)
+
+    warn(f"Restoring snapshot {desc} due to failed package operation.")
+    try:
+        restore_snapshot(archive_path)
+    except Exception as exc:  # pragma: no cover - restoration best-effort
+        warn(f"Failed to restore snapshot {desc}: {exc}")
+    else:
+        warn(f"Snapshot {desc} restored; filesystem state rolled back.")
 
 def prune_snapshots(limit: int = MAX_SNAPSHOTS) -> None:
     if limit <= 0:
@@ -2456,9 +2486,11 @@ def do_install(
     if hook_txn is not None:
         hook_txn.ensure_pre_transaction()
 
+    failures: list[str] = []
+
     for pkg, blob_path in progress_bar(jobs, desc="Installing", unit="pkg"):
         try:
-            meta = installpkg(
+            installpkg(
                 blob_path,
                 root=root,
                 dry_run=dry,
@@ -2471,10 +2503,18 @@ def do_install(
             )
         except Exception as e:
             warn(f"install {pkg.name}: {e}")
-            continue
+            failures.append(pkg.name)
+            break
 
-    if hook_txn is not None:
+    if hook_txn is not None and not failures:
         hook_txn.run_post_transaction()
+
+    if failures:
+        die(
+            "Failed to install package(s): "
+            + ", ".join(sorted(set(failures)))
+            + "; transaction aborted"
+        )
 
 
 def _remove_installed_package(meta: dict, root: Path, dry_run: bool, conn):
@@ -4151,7 +4191,7 @@ def cmd_install(a):
     allow_fallback = ALLOW_LPMBUILD_FALLBACK if a.allow_fallback is None else a.allow_fallback
 
     snapshot_id = None
-    snapshot_archive = None
+    snapshot_archive: Optional[str] = None
     try:
         affected: Set[Path] = set()
         for p in plan:
@@ -4163,6 +4203,7 @@ def cmd_install(a):
                     affected.add(root / path.lstrip("/"))
             except Exception as e:
                 warn(f"could not prepare snapshot for {p.name}: {e}")
+        affected.add(_state_db_path())
         tag = "install-" + "-".join([p.name for p in plan])
         snapshot_archive = create_snapshot(tag, affected)
         conn = db()
@@ -4183,16 +4224,15 @@ def cmd_install(a):
             explicit=set(a.names),
             allow_fallback=allow_fallback,
         )
-    except SystemExit:
-        if snapshot_id is not None:
-            warn(f"Snapshot {snapshot_id} created at {snapshot_archive} for rollback.")
+    except BaseException:
+        _restore_snapshot_on_failure(snapshot_id, snapshot_archive)
         raise
 
 
 def cmd_remove(a):
     root = Path(a.root or DEFAULT_ROOT)
     snapshot_id = None
-    snapshot_archive = None
+    snapshot_archive: Optional[str] = None
     if not a.dry_run:
         conn = db()
         affected: Set[Path] = set()
@@ -4203,6 +4243,7 @@ def cmd_remove(a):
                 for e in mani:
                     path = e["path"] if isinstance(e, dict) else e
                     affected.add(root / path.lstrip("/"))
+        affected.add(_state_db_path())
         conn.close()
         tag = "remove-" + "-".join(a.names)
         snapshot_archive = create_snapshot(tag, affected)
@@ -4213,9 +4254,8 @@ def cmd_remove(a):
             snapshot_id = row[0]
     try:
         do_remove(a.names, root, a.dry_run, force=a.force)
-    except SystemExit:
-        if snapshot_id is not None:
-            warn(f"Snapshot {snapshot_id} created at {snapshot_archive} for rollback.")
+    except BaseException:
+        _restore_snapshot_on_failure(snapshot_id, snapshot_archive)
         raise
 
 
@@ -4271,7 +4311,7 @@ def cmd_upgrade(a):
         return
 
     snapshot_id = None
-    snapshot_archive = None
+    snapshot_archive: Optional[str] = None
     if not dry:
         affected: Set[Path] = set()
         conn = db()
@@ -4292,6 +4332,7 @@ def cmd_upgrade(a):
                     affected.add(root / path.lstrip("/"))
             except Exception as e:
                 warn(f"could not prepare snapshot for {p.name}: {e}")
+        affected.add(_state_db_path())
         tag = "upgrade-" + "-".join([p.name for p in upgrades])
         snapshot_archive = create_snapshot(tag, affected)
         conn = db()
@@ -4320,9 +4361,8 @@ def cmd_upgrade(a):
             explicit=explicit_names,
             allow_fallback=allow_fallback,
         )
-    except SystemExit:
-        if snapshot_id is not None:
-            warn(f"Snapshot {snapshot_id} created at {snapshot_archive} for rollback.")
+    except BaseException:
+        _restore_snapshot_on_failure(snapshot_id, snapshot_archive)
         raise
 
 def cmd_files(a):
@@ -4939,163 +4979,164 @@ def installpkg(
     if txn is not None:
         txn.ensure_pre_transaction()
 
-    with transaction(conn, f"install {meta.name}", dry_run):
+    try:
+        with transaction(conn, f"install {meta.name}", dry_run):
 
-        hook_env = {
-            "LPM_PKG": meta.name,
-            "LPM_VERSION": meta.version,
-            "LPM_RELEASE": meta.release,
-            "LPM_ROOT": str(root),
-        }
-        if previous_version is not None:
-            hook_env["LPM_PREVIOUS_VERSION"] = previous_version
-        if previous_release is not None:
-            hook_env["LPM_PREVIOUS_RELEASE"] = previous_release
+            hook_env = {
+                "LPM_PKG": meta.name,
+                "LPM_VERSION": meta.version,
+                "LPM_RELEASE": meta.release,
+                "LPM_ROOT": str(root),
+            }
+            if previous_version is not None:
+                hook_env["LPM_PREVIOUS_VERSION"] = previous_version
+            if previous_release is not None:
+                hook_env["LPM_PREVIOUS_RELEASE"] = previous_release
 
-        run_hook("pre_install", dict(hook_env))
+            run_hook("pre_install", dict(hook_env))
 
-        tmp_root = Path(tempfile.mkdtemp(prefix=f"lpm-{meta.name}-", dir="/tmp"))
-        try:
-            manifest = extract_tar(file, tmp_root)
+            tmp_root = Path(tempfile.mkdtemp(prefix=f"lpm-{meta.name}-", dir="/tmp"))
+            try:
+                manifest = extract_tar(file, tmp_root)
 
-            # Validate manifest files
-            for e in mani:
-                f = tmp_root / e["path"].lstrip("/")
-                if not f.exists() and not f.is_symlink():
-                    die(f"Manifest missing file: {e['path']}")
-
-                expected_hash = e.get("sha256")
-                if f.is_symlink() or "link" in e:
-                    try:
-                        target = os.readlink(f)
-                    except OSError:
+                # Validate manifest files
+                for e in mani:
+                    f = tmp_root / e["path"].lstrip("/")
+                    if not f.exists() and not f.is_symlink():
                         die(f"Manifest missing file: {e['path']}")
 
-                    expected_target = e.get("link")
-                    if expected_target is not None and target != expected_target:
-                        die(f"Link mismatch for {e['path']}: expected {expected_target}, got {target}")
+                    expected_hash = e.get("sha256")
+                    if f.is_symlink() or "link" in e:
+                        try:
+                            target = os.readlink(f)
+                        except OSError:
+                            die(f"Manifest missing file: {e['path']}")
 
-                    link_hash = hashlib.sha256(target.encode()).hexdigest()
-                    payload_hash = None
+                        expected_target = e.get("link")
+                        if expected_target is not None and target != expected_target:
+                            die(f"Link mismatch for {e['path']}: expected {expected_target}, got {target}")
 
-                    payload_candidate: Optional[Path]
-                    if target.startswith("/"):
-                        payload_candidate = tmp_root / target.lstrip("/")
+                        link_hash = hashlib.sha256(target.encode()).hexdigest()
+                        payload_hash = None
+
+                        payload_candidate: Optional[Path]
+                        if target.startswith("/"):
+                            payload_candidate = tmp_root / target.lstrip("/")
+                        else:
+                            payload_candidate = f.parent / target
+
+                        resolved_payload: Optional[Path] = None
+                        if payload_candidate is not None:
+                            try:
+                                resolved_payload = payload_candidate.resolve()
+                            except (FileNotFoundError, RuntimeError, OSError):
+                                resolved_payload = None
+
+                        if resolved_payload is not None:
+                            try:
+                                resolved_payload.relative_to(tmp_root)
+                            except ValueError:
+                                resolved_payload = None
+
+                        if (
+                            resolved_payload is not None
+                            and resolved_payload.exists()
+                            and resolved_payload.is_file()
+                        ):
+                            payload_hash = sha256sum(resolved_payload)
+
+                        actual_hash: Optional[str] = None
+                        if payload_hash is not None and (
+                            expected_hash is None or expected_hash == payload_hash
+                        ):
+                            actual_hash = payload_hash
+                        elif expected_hash == link_hash:
+                            actual_hash = link_hash
+                        elif payload_hash is not None:
+                            actual_hash = payload_hash
+                        else:
+                            actual_hash = link_hash
                     else:
-                        payload_candidate = f.parent / target
+                        actual_hash = sha256sum(f)
 
-                    resolved_payload: Optional[Path] = None
-                    if payload_candidate is not None:
-                        try:
-                            resolved_payload = payload_candidate.resolve()
-                        except (FileNotFoundError, RuntimeError, OSError):
-                            resolved_payload = None
+                    if expected_hash is not None and actual_hash != expected_hash:
+                        die(
+                            f"Hash mismatch for {e['path']}: expected {expected_hash}, got {actual_hash}"
+                        )
 
-                    if resolved_payload is not None:
-                        try:
-                            resolved_payload.relative_to(tmp_root)
-                        except ValueError:
-                            resolved_payload = None
+                with operation_phase(privileged=True):
+                    # Move into root w/ conflict handling (same as before) ...
+                    replace_all = False
+                    for e in mani:
+                        rel = e["path"].lstrip("/")
+                        src = tmp_root / rel
+                        dest = root / rel
+                        dest.parent.mkdir(parents=True, exist_ok=True)
 
-                    if (
-                        resolved_payload is not None
-                        and resolved_payload.exists()
-                        and resolved_payload.is_file()
-                    ):
-                        payload_hash = sha256sum(resolved_payload)
-
-                    actual_hash: Optional[str] = None
-                    if payload_hash is not None and (
-                        expected_hash is None or expected_hash == payload_hash
-                    ):
-                        actual_hash = payload_hash
-                    elif expected_hash == link_hash:
-                        actual_hash = link_hash
-                    elif payload_hash is not None:
-                        actual_hash = payload_hash
-                    else:
-                        actual_hash = link_hash
-                else:
-                    actual_hash = sha256sum(f)
-
-                if expected_hash is not None and actual_hash != expected_hash:
-                    die(
-                        f"Hash mismatch for {e['path']}: expected {expected_hash}, got {actual_hash}"
-                    )
-
-            with operation_phase(privileged=True):
-                # Move into root w/ conflict handling (same as before) ...
-                replace_all = False
-                for e in mani:
-                    rel = e["path"].lstrip("/")
-                    src = tmp_root / rel
-                    dest = root / rel
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-
-                    if src.is_dir():
-                        dest.mkdir(parents=True, exist_ok=True)
-                        continue
-
-                    if dest.exists() or dest.is_symlink():
-                        same = False
-                        try:
-                            if dest.is_file() and sha256sum(dest) == e["sha256"]:
-                                same = True
-                        except Exception:
-                            pass
-                        if same:
-                            log(f"[skip] {rel} already up-to-date")
+                        if src.is_dir():
+                            dest.mkdir(parents=True, exist_ok=True)
                             continue
 
-                        def _remove_dest() -> None:
-                            if dest.is_file() or dest.is_symlink():
-                                dest.unlink()
-                            elif dest.is_dir():
-                                shutil.rmtree(dest)
+                        if dest.exists() or dest.is_symlink():
+                            same = False
+                            try:
+                                if dest.is_file() and sha256sum(dest) == e["sha256"]:
+                                    same = True
+                            except Exception:
+                                pass
+                            if same:
+                                log(f"[skip] {rel} already up-to-date")
+                                continue
 
-                        if replace_all:
-                            _remove_dest()
-                        else:
-                            while True:
-                                resp = input(
-                                    f"[conflict] {rel} exists. [R]eplace / [RA] Replace All / [S]kip / [A]bort? "
-                                ).strip().lower()
-                                if resp in ("r", "replace"):
-                                    _remove_dest()
-                                    break
-                                elif resp in ("ra", "all", "replace all"):
-                                    replace_all = True
-                                    _remove_dest()
-                                    break
-                                elif resp in ("s", "skip"):
-                                    log(f"[skip] {rel}")
-                                    src.unlink(missing_ok=True)
-                                    continue
-                                elif resp in ("a", "abort"):
-                                    die(f"Aborted install due to conflict at {rel}")
-                                else:
-                                    print("Please enter R, RA, S, or A.")
+                            def _remove_dest() -> None:
+                                if dest.is_file() or dest.is_symlink():
+                                    dest.unlink()
+                                elif dest.is_dir():
+                                    shutil.rmtree(dest)
 
-                    if not src.exists() and not src.is_symlink():
-                        continue
+                            if replace_all:
+                                _remove_dest()
+                            else:
+                                while True:
+                                    resp = input(
+                                        f"[conflict] {rel} exists. [R]eplace / [RA] Replace All / [S]kip / [A]bort? "
+                                    ).strip().lower()
+                                    if resp in ("r", "replace"):
+                                        _remove_dest()
+                                        break
+                                    elif resp in ("ra", "all", "replace all"):
+                                        replace_all = True
+                                        _remove_dest()
+                                        break
+                                    elif resp in ("s", "skip"):
+                                        log(f"[skip] {rel}")
+                                        src.unlink(missing_ok=True)
+                                        continue
+                                    elif resp in ("a", "abort"):
+                                        die(f"Aborted install due to conflict at {rel}")
+                                    else:
+                                        print("Please enter R, RA, S, or A.")
 
-                    if src.is_symlink():
-                        target = os.readlink(src)
-                        tmp_link = dest.with_name(f".{dest.name}.link")
-                        try:
-                            if tmp_link.exists() or tmp_link.is_symlink():
-                                tmp_link.unlink()
-                        except FileNotFoundError:
-                            pass
-                        os.symlink(target, tmp_link)
-                        os.replace(tmp_link, dest)
-                        continue
+                        if not src.exists() and not src.is_symlink():
+                            continue
 
-                    st = src.stat()
-                    file_mode = 0o755 if (st.st_mode & 0o111) else 0o644
-                    with src.open("rb") as sf:
-                        with atomic_replace(dest, mode=file_mode, open_mode="wb") as df:
-                            shutil.copyfileobj(sf, df)
+                        if src.is_symlink():
+                            target = os.readlink(src)
+                            tmp_link = dest.with_name(f".{dest.name}.link")
+                            try:
+                                if tmp_link.exists() or tmp_link.is_symlink():
+                                    tmp_link.unlink()
+                            except FileNotFoundError:
+                                pass
+                            os.symlink(target, tmp_link)
+                            os.replace(tmp_link, dest)
+                            continue
+
+                        st = src.stat()
+                        file_mode = 0o755 if (st.st_mode & 0o111) else 0o644
+                        with src.open("rb") as sf:
+                            with atomic_replace(dest, mode=file_mode, open_mode="wb") as df:
+                                shutil.copyfileobj(sf, df)
 
                 install_script_rel = "/.lpm-install.sh"
                 staged_script = tmp_root / install_script_rel.lstrip("/")
@@ -5147,45 +5188,51 @@ def installpkg(
                             pass
                     mani = [e for e in mani if e["path"] != install_script_rel]
 
-            # Update DB
-            conn.execute(
-                "REPLACE INTO installed(name,version,release,arch,provides,symbols,requires,manifest,explicit,install_time) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (
-                    meta.name,
-                    meta.version,
-                    meta.release,
-                    meta.arch,
-                    json.dumps([meta.name] + meta.provides),
-                    json.dumps(meta.symbols),
-                    json.dumps(meta.requires),
-                    json.dumps(mani),
-                    1 if explicit else 0,
-                    int(time.time()),
-                ),
-            )
-            action = "upgrade" if previous_version is not None else "install"
-            conn.execute(
-                "INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
-                (
-                    int(time.time()),
-                    action,
-                    meta.name,
-                    previous_version,
-                    meta.version,
-                    json.dumps(dataclasses.asdict(meta)),
-                ),
-            )
-        finally:
-            shutil.rmtree(tmp_root, ignore_errors=True)
+                # Update DB
+                conn.execute(
+                    "REPLACE INTO installed(name,version,release,arch,provides,symbols,requires,manifest,explicit,install_time) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        meta.name,
+                        meta.version,
+                        meta.release,
+                        meta.arch,
+                        json.dumps([meta.name] + meta.provides),
+                        json.dumps(meta.symbols),
+                        json.dumps(meta.requires),
+                        json.dumps(mani),
+                        1 if explicit else 0,
+                        int(time.time()),
+                    ),
+                )
+                action = "upgrade" if previous_version is not None else "install"
+                conn.execute(
+                    "INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
+                    (
+                        int(time.time()),
+                        action,
+                        meta.name,
+                        previous_version,
+                        meta.version,
+                        json.dumps(dataclasses.asdict(meta)),
+                    ),
+                )
+            finally:
+                shutil.rmtree(tmp_root, ignore_errors=True)
 
-        run_hook("post_install", dict(hook_env))
+            run_hook("post_install", dict(hook_env))
 
-        if previous_version is not None:
-            run_hook("post_upgrade", dict(hook_env))
-        
-        # New: init system service integration
-        with operation_phase(privileged=True):
-            handle_service_files(meta.name, root, mani)
+            if previous_version is not None:
+                run_hook("post_upgrade", dict(hook_env))
+
+            # New: init system service integration
+            with operation_phase(privileged=True):
+                handle_service_files(meta.name, root, mani)
+
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     if txn is not None and owns_txn:
         txn.run_post_transaction()
