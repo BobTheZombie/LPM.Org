@@ -5401,12 +5401,7 @@ def installpkg(
             # New: init system service integration
             with operation_phase(privileged=True):
                 handle_service_files(meta.name, root, mani)
-    
-    if txn is not None and owns_txn:
-        txn.run_post_transaction()
 
-    ok(f"Installed {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
-    return meta
     except (PermissionError, OSError) as exc:
         if _is_permission_error(exc):
             _handle_permission_denied(
@@ -5415,6 +5410,12 @@ def installpkg(
                 "Installing packages requires root privileges.",
             )
         raise
+
+    if txn is not None and owns_txn:
+        txn.run_post_transaction()
+
+    ok(f"Installed {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
+    return meta
 
 
 def removepkg(
