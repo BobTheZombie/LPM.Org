@@ -5129,31 +5129,30 @@ def installpkg(
         return meta
 
     # --- Step 5: Transaction (unchanged below) ---
-    conn = db()
-    row = conn.execute(
-        "SELECT version, release FROM installed WHERE name=?",
-        (meta.name,),
-    ).fetchone()
-    previous_version = row[0] if row else None
-    previous_release = row[1] if row else None
-
-    if txn is not None and register_event:
-        operation = "Upgrade" if row else "Install"
-        txn.add_package_event(
-            name=meta.name,
-            operation=operation,
-            version=meta.version,
-            release=meta.release,
-            paths=manifest_paths,
-        )
-
-    if not dry_run:
-        ensure_root_or_escalate("install packages")
-
-    if txn is not None:
-        txn.ensure_pre_transaction()
-
     try:
+        with operation_phase(privileged=True):
+            conn = db()
+            row = conn.execute(
+                "SELECT version, release FROM installed WHERE name=?",
+                (meta.name,),
+            ).fetchone()
+
+        previous_version = row[0] if row else None
+        previous_release = row[1] if row else None
+
+        if txn is not None and register_event:
+            operation = "Upgrade" if row else "Install"
+            txn.add_package_event(
+                name=meta.name,
+                operation=operation,
+                version=meta.version,
+                release=meta.release,
+                paths=manifest_paths,
+            )
+
+        if txn is not None:
+            txn.ensure_pre_transaction()
+
         with transaction(conn, f"install {meta.name}", dry_run):
 
             hook_env = {
