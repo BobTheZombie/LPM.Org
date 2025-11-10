@@ -92,6 +92,47 @@ def test_ensure_root_onefile_uses_module(monkeypatch):
     assert argv[2:] == ["/usr/bin/python3", "-m", "lpm", "install", "pkg"]
 
 
+def test_ensure_root_onefile_via_executable(monkeypatch):
+    monkeypatch.setattr(priv.os, "geteuid", lambda: 1000)
+    fake_stdin = type("_S", (), {"isatty": lambda self=None: True})()
+    monkeypatch.setattr(priv.sys, "stdin", fake_stdin)
+
+    def fake_which(name):
+        if name == "sudo":
+            return "/usr/bin/sudo"
+        if name == "python3":
+            return "/usr/bin/python3"
+        return None
+
+    monkeypatch.setattr(priv.shutil, "which", fake_which)
+    monkeypatch.setattr(priv.os, "access", lambda path, mode: True)
+
+    calls = []
+
+    def fake_execvp(prog, argv):
+        calls.append((prog, list(argv)))
+        raise RuntimeError("execvp invoked")
+
+    monkeypatch.setattr(priv.os, "execvp", fake_execvp)
+
+    def fake_execvpe(*_args, **_kwargs):
+        raise AssertionError("pkexec should not be used")
+
+    monkeypatch.setattr(priv.os, "execvpe", fake_execvpe)
+    monkeypatch.setattr(priv.sys, "argv", ["lpm", "install", "pkg"])
+    monkeypatch.setattr(priv.sys, "executable", "/tmp/onefile_456/python3")
+    monkeypatch.setattr(builtins, "input", lambda prompt="": "y")
+
+    with pytest.raises(RuntimeError):
+        priv.ensure_root_or_escalate("install packages")
+
+    assert calls
+    prog, argv = calls[0]
+    assert prog == "sudo"
+    assert argv[:2] == ["sudo", "-E"]
+    assert argv[2:] == ["/usr/bin/python3", "-m", "lpm", "install", "pkg"]
+
+
 def test_ensure_root_disabled_exits(monkeypatch):
     monkeypatch.setattr(priv.os, "geteuid", lambda: 1000)
     priv.set_escalation_disabled(True)
