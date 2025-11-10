@@ -71,16 +71,24 @@ def _normalize_argv_for_privileged_exec(argv: List[str]) -> List[str]:
     if not argv:
         return argv
 
-    argv0 = argv[0]
-    try:
-        path = Path(argv0)
-    except (TypeError, ValueError):
-        return argv
+    def _needs_module_fallback(path: Path) -> bool:
+        return path.is_absolute() and any(part.startswith("onefile_") for part in path.parts)
 
-    # Nuitka onefile builds extract to a private directory (e.g. /tmp/onefile_*)
-    # that is not accessible to ``sudo`` re-executions. In that situation fall
-    # back to invoking ``python -m lpm`` using a system interpreter.
-    if path.is_absolute() and any(part.startswith("onefile_") for part in path.parts):
+    potential_paths = []
+
+    try:
+        potential_paths.append(Path(argv[0]))
+    except (TypeError, ValueError):
+        pass
+
+    exec_candidate = getattr(sys, "executable", None)
+    if exec_candidate:
+        try:
+            potential_paths.append(Path(exec_candidate))
+        except (TypeError, ValueError):
+            pass
+
+    if any(_needs_module_fallback(path) for path in potential_paths if path is not None):
         for candidate in ("python3", "python", "pypy3", "pypy"):
             resolved = shutil.which(candidate)
             if resolved and os.access(resolved, os.X_OK):
