@@ -4,6 +4,7 @@ import os
 import shlex
 import shutil
 import sys
+from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 __all__ = [
@@ -64,19 +65,45 @@ def _hint_and_exit() -> None:
     raise SystemExit(77)
 
 
+def _normalize_argv_for_privileged_exec(argv: List[str]) -> List[str]:
+    """Return an argv suitable for re-execing under elevated privileges."""
+
+    if not argv:
+        return argv
+
+    argv0 = argv[0]
+    try:
+        path = Path(argv0)
+    except (TypeError, ValueError):
+        return argv
+
+    # Nuitka onefile builds extract to a private directory (e.g. /tmp/onefile_*)
+    # that is not accessible to ``sudo`` re-executions. In that situation fall
+    # back to invoking ``python -m lpm`` using a system interpreter.
+    if path.is_absolute() and any(part.startswith("onefile_") for part in path.parts):
+        for candidate in ("python3", "python", "pypy3", "pypy"):
+            resolved = shutil.which(candidate)
+            if resolved and os.access(resolved, os.X_OK):
+                return [resolved, "-m", "lpm", *argv[1:]]
+
+    return argv
+
+
 def _exec_sudo(argv: Iterable[str]) -> None:
     _log_escalation("[escalate] using sudo")
-    os.execvp("sudo", ["sudo", "-E", *argv])
+    normalized = _normalize_argv_for_privileged_exec(list(argv))
+    os.execvp("sudo", ["sudo", "-E", *normalized])
 
 
 def _exec_pkexec(argv: Iterable[str]) -> None:
     _log_escalation("[escalate] using pkexec")
+    normalized = _normalize_argv_for_privileged_exec(list(argv))
     env: Dict[str, str] = {
         key: value
         for key, value in os.environ.items()
         if key in _PKEXEC_ENV_ALLOWLIST
     }
-    os.execvpe("pkexec", ["pkexec", *argv], env)
+    os.execvpe("pkexec", ["pkexec", *normalized], env)
 
 
 def ensure_root_or_escalate(intent: str) -> None:
