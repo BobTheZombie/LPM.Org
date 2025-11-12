@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import os
 import shlex
 import shutil
@@ -78,6 +79,76 @@ sys.exit(main(sys.argv[1:]))
 """.strip()
 
 
+def _maybe_prepend_pythonpath(module_name: str = "lpm") -> None:
+    """Ensure *module_name* can be imported after privilege escalation.
+
+    When running from a onefile bundle the temporary extraction directory is
+    used as the import root for :mod:`lpm`.  Once the current process exits that
+    directory may be removed, so re-executing via ``sudo python -c`` would fail
+    to import :mod:`lpm`.  To make the module importable we explicitly prepend
+    its import root to ``PYTHONPATH`` so the privileged process can resolve it
+    before the temporary directory disappears.
+    """
+
+    try:
+        module = importlib.import_module(module_name)
+    except Exception:  # pragma: no cover - defensive fallback
+        return
+
+    candidates: List[Path] = []
+
+    spec = getattr(module, "__spec__", None)
+    search_locations = getattr(spec, "submodule_search_locations", None)
+    if search_locations:
+        for location in search_locations:
+            try:
+                path = Path(location)
+            except (TypeError, ValueError):
+                continue
+            parent = path.parent if path.name == module_name.split(".")[-1] else path
+            candidates.append(parent)
+
+    module_file = getattr(module, "__file__", None)
+    if module_file:
+        try:
+            resolved = Path(module_file).resolve()
+        except (OSError, RuntimeError, ValueError):
+            pass
+        else:
+            parent = resolved.parent
+            if parent.name == module_name.split(".")[-1]:
+                parent = parent.parent
+            candidates.append(parent)
+
+    if not candidates:
+        return
+
+    existing_env = os.environ.get("PYTHONPATH")
+    existing_parts = [part for part in (existing_env or "").split(os.pathsep) if part]
+    seen = set(existing_parts)
+
+    new_parts: List[str] = []
+    for candidate in candidates:
+        try:
+            candidate_str = os.fspath(candidate)
+        except TypeError:
+            continue
+        if not candidate_str:
+            continue
+        if candidate_str in seen:
+            continue
+        seen.add(candidate_str)
+        new_parts.append(candidate_str)
+
+    if not new_parts:
+        return
+
+    if existing_parts:
+        os.environ["PYTHONPATH"] = os.pathsep.join(new_parts + existing_parts)
+    else:
+        os.environ["PYTHONPATH"] = os.pathsep.join(new_parts)
+
+
 def _normalize_argv_for_privileged_exec(argv: List[str]) -> List[str]:
     """Return an argv suitable for re-execing under elevated privileges."""
 
@@ -105,6 +176,7 @@ def _normalize_argv_for_privileged_exec(argv: List[str]) -> List[str]:
         for candidate in ("python3", "python", "pypy3", "pypy"):
             resolved = shutil.which(candidate)
             if resolved and os.access(resolved, os.X_OK):
+                _maybe_prepend_pythonpath()
                 return [resolved, "-c", _FALLBACK_SCRIPT, *argv[1:]]
 
     return argv
