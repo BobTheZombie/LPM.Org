@@ -65,6 +65,19 @@ def _hint_and_exit() -> None:
     raise SystemExit(77)
 
 
+_FALLBACK_SCRIPT = """
+import importlib
+import sys
+
+module = importlib.import_module('lpm')
+main = getattr(module, 'main', None)
+if main is None:
+    raise SystemExit('lpm.main is unavailable; cannot re-exec with privileges')
+
+sys.exit(main(sys.argv[1:]))
+""".strip()
+
+
 def _normalize_argv_for_privileged_exec(argv: List[str]) -> List[str]:
     """Return an argv suitable for re-execing under elevated privileges."""
 
@@ -92,7 +105,7 @@ def _normalize_argv_for_privileged_exec(argv: List[str]) -> List[str]:
         for candidate in ("python3", "python", "pypy3", "pypy"):
             resolved = shutil.which(candidate)
             if resolved and os.access(resolved, os.X_OK):
-                return [resolved, "-m", "lpm", *argv[1:]]
+                return [resolved, "-c", _FALLBACK_SCRIPT, *argv[1:]]
 
     return argv
 
