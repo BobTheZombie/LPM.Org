@@ -89,7 +89,10 @@ def test_ensure_root_onefile_uses_module(monkeypatch):
     prog, argv = calls[0]
     assert prog == "sudo"
     assert argv[:2] == ["sudo", "-E"]
-    assert argv[2:] == ["/usr/bin/python3", "-m", "lpm", "install", "pkg"]
+    assert argv[2] == "/usr/bin/python3"
+    assert argv[3] == "-c"
+    assert argv[4] == priv._FALLBACK_SCRIPT
+    assert argv[5:] == ["install", "pkg"]
 
 
 def test_ensure_root_onefile_via_executable(monkeypatch):
@@ -130,7 +133,10 @@ def test_ensure_root_onefile_via_executable(monkeypatch):
     prog, argv = calls[0]
     assert prog == "sudo"
     assert argv[:2] == ["sudo", "-E"]
-    assert argv[2:] == ["/usr/bin/python3", "-m", "lpm", "install", "pkg"]
+    assert argv[2] == "/usr/bin/python3"
+    assert argv[3] == "-c"
+    assert argv[4] == priv._FALLBACK_SCRIPT
+    assert argv[5:] == ["install", "pkg"]
 
 
 def test_ensure_root_disabled_exits(monkeypatch):
