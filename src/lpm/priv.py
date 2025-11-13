@@ -79,7 +79,7 @@ sys.exit(main(sys.argv[1:]))
 """.strip()
 
 
-def _maybe_prepend_pythonpath(module_name: str = "lpm") -> None:
+def _maybe_prepend_pythonpath(module_name: str = "lpm") -> str | None:
     """Ensure *module_name* can be imported after privilege escalation.
 
     When running from a onefile bundle the temporary extraction directory is
@@ -121,7 +121,7 @@ def _maybe_prepend_pythonpath(module_name: str = "lpm") -> None:
             candidates.append(parent)
 
     if not candidates:
-        return
+        return os.environ.get("PYTHONPATH") or None
 
     existing_env = os.environ.get("PYTHONPATH")
     existing_parts = [part for part in (existing_env or "").split(os.pathsep) if part]
@@ -141,12 +141,14 @@ def _maybe_prepend_pythonpath(module_name: str = "lpm") -> None:
         new_parts.append(candidate_str)
 
     if not new_parts:
-        return
+        return existing_env or None
 
     if existing_parts:
         os.environ["PYTHONPATH"] = os.pathsep.join(new_parts + existing_parts)
     else:
         os.environ["PYTHONPATH"] = os.pathsep.join(new_parts)
+
+    return os.environ.get("PYTHONPATH") or None
 
 
 def _normalize_argv_for_privileged_exec(argv: List[str]) -> List[str]:
@@ -176,8 +178,11 @@ def _normalize_argv_for_privileged_exec(argv: List[str]) -> List[str]:
         for candidate in ("python3", "python", "pypy3", "pypy"):
             resolved = shutil.which(candidate)
             if resolved and os.access(resolved, os.X_OK):
-                _maybe_prepend_pythonpath()
-                return [resolved, "-c", _FALLBACK_SCRIPT, *argv[1:]]
+                pythonpath = _maybe_prepend_pythonpath()
+                fallback_argv = [resolved, "-c", _FALLBACK_SCRIPT, *argv[1:]]
+                if pythonpath:
+                    return ["env", f"PYTHONPATH={pythonpath}", *fallback_argv]
+                return fallback_argv
 
     return argv
 

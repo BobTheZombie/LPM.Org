@@ -92,10 +92,12 @@ def test_ensure_root_onefile_uses_module(monkeypatch):
     prog, argv = calls[0]
     assert prog == "sudo"
     assert argv[:2] == ["sudo", "-E"]
-    assert argv[2] == "/usr/bin/python3"
-    assert argv[3] == "-c"
-    assert argv[4] == priv._FALLBACK_SCRIPT
-    assert argv[5:] == ["install", "pkg"]
+    assert argv[2] == "env"
+    assert argv[3].startswith("PYTHONPATH=")
+    assert argv[4] == "/usr/bin/python3"
+    assert argv[5] == "-c"
+    assert argv[6] == priv._FALLBACK_SCRIPT
+    assert argv[7:] == ["install", "pkg"]
 
 
 def test_ensure_root_onefile_via_executable(monkeypatch):
@@ -136,10 +138,12 @@ def test_ensure_root_onefile_via_executable(monkeypatch):
     prog, argv = calls[0]
     assert prog == "sudo"
     assert argv[:2] == ["sudo", "-E"]
-    assert argv[2] == "/usr/bin/python3"
-    assert argv[3] == "-c"
-    assert argv[4] == priv._FALLBACK_SCRIPT
-    assert argv[5:] == ["install", "pkg"]
+    assert argv[2] == "env"
+    assert argv[3].startswith("PYTHONPATH=")
+    assert argv[4] == "/usr/bin/python3"
+    assert argv[5] == "-c"
+    assert argv[6] == priv._FALLBACK_SCRIPT
+    assert argv[7:] == ["install", "pkg"]
 
 
 def test_ensure_root_disabled_exits(monkeypatch):
@@ -172,6 +176,7 @@ def test_onefile_fallback_sets_pythonpath(monkeypatch):
 
     def fake_execvp(_prog, _argv):
         captured["pythonpath"] = os.environ.get("PYTHONPATH")
+        captured["argv"] = list(_argv)
         raise RuntimeError("execvp invoked")
 
     monkeypatch.setattr(priv.os, "execvp", fake_execvp)
@@ -196,3 +201,8 @@ def test_onefile_fallback_sets_pythonpath(monkeypatch):
         expected_root = package_dir
 
     assert str(expected_root) in pythonpath.split(os.pathsep)
+
+    argv = captured.get("argv")
+    assert argv
+    assert argv[2] == "env"
+    assert argv[3] == f"PYTHONPATH={pythonpath}"
