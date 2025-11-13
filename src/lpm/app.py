@@ -208,6 +208,8 @@ from .priv import (
 )
 from .resolver import CNF, CDCLSolver
 from .hooks import HookTransactionManager, load_hooks
+from .buildpkg import cmd_buildpkg
+from .removepkg import removepkg
 from .delta import apply_delta, find_cached_by_sha, file_sha256, zstd_version, version_at_least
 
 # =========================== Protected packages ===============================
@@ -4946,71 +4948,6 @@ def cmd_splitpkg(a):
 
     ok(f"Built split package {out}")
 
-def cmd_buildpkg(a):
-    def _get_buildpkg_worker_count() -> int:
-        value = CONF.get("BUILDPKG_WORKERS")
-        if value is not None:
-            try:
-                workers = int(value)
-            except (TypeError, ValueError):
-                workers = 0
-            else:
-                if workers > 0:
-                    return workers
-        cpu_workers = os.cpu_count() or 1
-        return max(2, min(8, cpu_workers))
-
-    worker_count = _get_buildpkg_worker_count()
-    cpu_override = _parse_cpu_overrides(getattr(a, "overrides", []))
-
-    if a.python_pip:
-        if a.script:
-            die("Cannot specify both a .lpmbuild script and --python-pip")
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            future = executor.submit(
-                _resolve_lpm_attr("build_python_package_from_pip", build_python_package_from_pip),
-                a.python_pip,
-                a.outdir,
-                include_deps=not a.no_deps,
-                cpu_overrides=cpu_override,
-            )
-            out, meta, duration = future.result()
-        _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(out, default=a.install_default)
-        print_build_summary(meta, out, duration, len(meta.requires), 1)
-        ok(f"Built {out}")
-        return
-
-    if not a.script:
-        die("buildpkg requires a .lpmbuild script or --python-pip")
-
-    script_path = Path(a.script)
-    if not script_path.exists():
-        die(f".lpmbuild script not found: {script_path}")
-
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        future = executor.submit(
-            run_lpmbuild,
-            script_path,
-            a.outdir,
-            build_deps=not a.no_deps,
-            force_rebuild=a.force_rebuild,
-            prompt_default=a.install_default,
-            executor=executor if worker_count > 1 else None,
-            cpu_overrides=cpu_override,
-        )
-        out, duration, phases, splits = future.result()
-
-    if out and out.exists():
-        meta, _ = read_package_meta(out)
-        print_build_summary(meta, out, duration, len(meta.requires), phases)
-        if splits:
-            for spath, smeta in splits:
-                ok(f"Split: {spath} ({smeta.name})")
-        ok(f"Built {out}")
-    else:
-        die(f"Build failed for {a.script}")
-
-
 def cmd_genindex(a):
     repo_dir = Path(a.repo_dir)
     gen_index(repo_dir, a.base_url, arch_filter=a.arch)
@@ -5101,80 +5038,6 @@ def installpkg(
         register_event=register_event,
     )
 
-def removepkg(
-    name: str,
-    root: Path = Path(DEFAULT_ROOT),
-    dry_run: bool = False,
-    force: bool = False,
-    hook_transaction: Optional[HookTransactionManager] = None,
-    register_event: bool = True,
-):
-    global PROTECTED
-    PROTECTED = load_protected()
-
-    root = Path(root)
-    txn = hook_transaction
-    owns_txn = False
-    if txn is None and not dry_run:
-        txn = HookTransactionManager(
-            hooks=load_hooks(LIBLPM_HOOK_DIRS),
-            root=root,
-            base_env={"LPM_ROOT": str(root)},
-        )
-        owns_txn = True
-
-    if name in PROTECTED and not force:
-        warn(f"{name} is protected (from {PROTECTED_FILE}) and cannot be removed without --force")
-        return
-
-    conn = db()
-    cur = conn.execute("SELECT version, release, manifest FROM installed WHERE name=?", (name,))
-    row = cur.fetchone()
-    if not row:
-        warn(f"{name} not installed")
-        return
-
-    version, release, manifest_json = row
-    manifest = json.loads(manifest_json) if manifest_json else []
-    meta = {"name": name, "version": version, "release": release, "manifest": manifest}
-
-    manifest_paths = _normalize_manifest_paths(manifest)
-
-    if txn is not None and register_event and not dry_run:
-        txn.add_package_event(
-            name=name,
-            operation="Remove",
-            version=version,
-            release=release,
-            paths=manifest_paths,
-        )
-
-    if not dry_run:
-        ensure_root_or_escalate("remove packages")
-
-    if txn is not None and not dry_run:
-        txn.ensure_pre_transaction()
-
-    try:
-        with transaction(conn, f"remove {name}", dry_run):
-            run_hook("pre_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)})
-            _remove_installed_package(meta, root, dry_run, conn)
-            run_hook("post_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)})
-    except (PermissionError, OSError) as exc:
-        if _is_permission_error(exc):
-            _handle_permission_denied(
-                "remove packages",
-                "remove transaction",
-                "Removing packages requires root privileges.",
-            )
-        raise
-
-    if txn is not None and owns_txn and not dry_run:
-        txn.run_post_transaction()
-
-    ok(f"Removed {name}-{version}")
-
-    
 def cmd_protected(a):
     current = load_protected()
     if a.action == "list":
