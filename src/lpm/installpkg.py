@@ -73,13 +73,7 @@ def installpkg(
 
     root_path = Path(root)
     if not dry_run:
-        try:
-            normalized_root = root_path.resolve()
-        except OSError:
-            normalized_root = root_path
-        default_root = Path(_app.DEFAULT_ROOT)
-        if normalized_root in {default_root, Path("/")}:
-            ensure_root_or_escalate("install packages")
+        ensure_root_or_escalate("install packages")
 
     _app.PROTECTED = _app.load_protected()
 

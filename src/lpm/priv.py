@@ -1,17 +1,20 @@
 """Compatibility shims for privilege handling.
 
 The previous implementation provided interactive prompts and multiple
-escalation backends.  The new CLI performs a single ``sudo`` re-exec when the
-``--as-root`` trigger is present, so the helpers in this module simply validate
-that the current process already has the necessary privileges.
+escalation backends.  The helpers in this module now provide a lightweight
+confirmation flow that re-executes the running command via ``sudo`` when root
+privileges are required but not currently available.
 """
 
 from __future__ import annotations
 
+import getpass
 import os
 import shlex
+import shutil
+import subprocess
 import sys
-from typing import Iterable
+from typing import Iterable, Sequence
 
 from .cli import as_root
 
@@ -69,8 +72,54 @@ def require_root(intent: str | None = None) -> None:
     raise RootPrivilegesRequired(intent)
 
 
-def ensure_root_or_escalate(intent: str) -> None:
-    """Compatibility wrapper for legacy callers."""
+def _prompt_confirmation(intent: str) -> bool:
+    try:
+        response = input(
+            f"Root privileges are required to {intent}. Continue with sudo? [y/N]: "
+        )
+    except EOFError:
+        return False
+    return response.strip().lower() in {"y", "yes"}
 
-    require_root(intent)
+
+def _prompt_password() -> str | None:
+    try:
+        return getpass.getpass("sudo password: ")
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+
+def _sudo_command(argv: Sequence[str]) -> list[str] | None:
+    sudo = shutil.which("sudo")
+    if not sudo:
+        return None
+    return [sudo, "-S", "-E", *argv]
+
+
+def ensure_root_or_escalate(intent: str) -> None:
+    """Ensure the current process has root privileges, escalating via sudo if needed."""
+
+    if _is_root():
+        return
+
+    if not _prompt_confirmation(intent):
+        raise RootPrivilegesRequired(intent)
+
+    password = _prompt_password()
+    if not password:
+        raise RootPrivilegesRequired(intent)
+
+    command = _sudo_command(sys.argv)
+    if command is None:
+        raise RootPrivilegesRequired(intent)
+
+    result = subprocess.run(
+        command,
+        input=f"{password}\n".encode(),
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RootPrivilegesRequired(intent)
+
+    sys.exit(result.returncode)
 
