@@ -1,10 +1,11 @@
 """Core LPM package exposing the primary APIs used by the CLI and tests."""
 
 from importlib import import_module
-from typing import Any
+from typing import Any, Iterable
 
-from .resolver import CDCLSolver, CNF, Implication, SATResult
+from .cli import main as _cli_main
 from .hooks import Hook, HookAction, HookError, HookTransactionManager, HookTrigger, load_hooks
+from .resolver import CDCLSolver, CNF, Implication, SATResult
 
 __all__ = [
     "main",
@@ -27,8 +28,10 @@ def _load_app():
     return import_module("src.lpm.app")
 
 
-def main(argv=None):
-    return _load_app().main(argv)
+def main(argv: Iterable[str] | None = None) -> int:
+    if argv is None:
+        return _cli_main()
+    return _cli_main(list(argv))
 
 
 def get_runtime_metadata():
