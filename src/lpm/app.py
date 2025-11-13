@@ -5393,20 +5393,20 @@ def installpkg(
             finally:
                 shutil.rmtree(tmp_root, ignore_errors=True)
     
-            run_hook("post_install", dict(hook_env))
-    
-            if previous_version is not None:
-                run_hook("post_upgrade", dict(hook_env))
-    
-            # New: init system service integration
-            with operation_phase(privileged=True):
-                handle_service_files(meta.name, root, mani)
-    
-    if txn is not None and owns_txn:
-        txn.run_post_transaction()
+        run_hook("post_install", dict(hook_env))
 
-    ok(f"Installed {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
-    return meta
+        if previous_version is not None:
+            run_hook("post_upgrade", dict(hook_env))
+
+        # New: init system service integration
+        with operation_phase(privileged=True):
+            handle_service_files(meta.name, root, mani)
+    
+        if txn is not None and owns_txn:
+            txn.run_post_transaction()
+
+        ok(f"Installed {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
+        return meta
     except (PermissionError, OSError) as exc:
         if _is_permission_error(exc):
             _handle_permission_denied(
