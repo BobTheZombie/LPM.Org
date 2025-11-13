@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import hashlib
 import json
@@ -17,7 +18,7 @@ from .fs_ops import operation_phase
 from .hooks import HookTransactionManager, load_hooks
 from .priv import ensure_root_or_escalate
 
-__all__ = ["installpkg"]
+__all__ = ["installpkg", "main"]
 
 PkgMeta = _app.PkgMeta
 ResolutionError = _app.ResolutionError
@@ -444,3 +445,51 @@ def installpkg(
         f"Installed {meta.name}-{meta.version}-{meta.release}.{meta.arch}"
     )
     return meta
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    """Minimal CLI entry point for privileged re-execution."""
+
+    parser = argparse.ArgumentParser(
+        prog="lpm installpkg",
+        description="Install local package files produced by lpm.",
+    )
+    parser.add_argument("files", nargs="+", help=".zst package file(s) to install")
+    parser.add_argument("--root", help="installation root (defaults to system root)")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="show actions without modifying the system"
+    )
+    parser.add_argument(
+        "--verify", action="store_true", help="verify signatures before installing"
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="override the protected package list for install/upgrade",
+    )
+
+    args = parser.parse_args(argv)
+
+    root = Path(args.root or _app.DEFAULT_ROOT)
+
+    files = []
+    for fn in args.files:
+        try:
+            path = Path(fn).resolve()
+        except OSError:
+            path = Path(fn)
+        if not path.exists():
+            _app.die(f"Package file not found: {path}")
+        files.append(path)
+
+    for file in files:
+        installpkg(
+            file=file,
+            root=root,
+            dry_run=args.dry_run,
+            verify=args.verify,
+            force=args.force,
+            explicit=True,
+        )
+
+    return 0
