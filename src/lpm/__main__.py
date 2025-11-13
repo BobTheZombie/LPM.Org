@@ -1,9 +1,9 @@
 """Module entry point for running ``python -m lpm``."""
 
-from .app import main as _main
+from .cli import main as _main
 
 
-def main() -> int | None:
+def main() -> int:
     """Execute :mod:`lpm`'s CLI entry point."""
 
     return _main()

@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -18,7 +19,34 @@ from .fs_ops import operation_phase
 from .hooks import HookTransactionManager, load_hooks
 from .priv import ensure_root_or_escalate
 
-__all__ = ["installpkg", "main"]
+__all__ = ["installpkg", "main", "apply_install_plan"]
+
+
+def apply_install_plan(plan: dict) -> int:
+    """Apply a previously constructed install *plan* with elevated privileges.
+
+    This placeholder implementation expects ``plan`` to contain a ``packages``
+    entry listing package identifiers selected by the unprivileged CLI.  The
+    actual installation logic lives in the legacy :mod:`lpm.app` module and will
+    be integrated in a future revision.  For now we simply acknowledge the
+    request to demonstrate the privilege hand-off path.
+    """
+
+    packages = plan.get("packages", [])
+    if not isinstance(packages, list):
+        print("lpm: invalid install plan: 'packages' must be a list", file=sys.stderr)
+        return 1
+
+    for pkg in packages:
+        if not isinstance(pkg, str):
+            print(
+                "lpm: invalid install plan: package entries must be strings",
+                file=sys.stderr,
+            )
+            return 1
+
+    # Placeholder behaviour: nothing to do yet.
+    return 0
 
 PkgMeta = _app.PkgMeta
 ResolutionError = _app.ResolutionError
