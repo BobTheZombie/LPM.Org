@@ -80,6 +80,48 @@ def _make_install_script_pkg(lpm, tmp_path):
     return out
 
 
+def test_installpkg_main_invokes_installer(tmp_path, monkeypatch):
+    _import_lpm(tmp_path, monkeypatch)
+    installpkg_module = importlib.import_module("lpm.installpkg")
+    pkg = tmp_path / "demo-1.0-1.x86_64.zst"
+    pkg.write_bytes(b"")
+
+    captured = {}
+
+    def fake_installpkg(*, file, root, dry_run, verify, force, explicit, **_kwargs):
+        captured.update(
+            file=file,
+            root=root,
+            dry_run=dry_run,
+            verify=verify,
+            force=force,
+            explicit=explicit,
+        )
+        return object()
+
+    monkeypatch.setattr(installpkg_module, "installpkg", fake_installpkg)
+
+    dest_root = tmp_path / "dest"
+    exit_code = installpkg_module.main(
+        [
+            str(pkg),
+            "--root",
+            str(dest_root),
+            "--dry-run",
+            "--verify",
+            "--force",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["file"] == pkg.resolve()
+    assert captured["root"] == dest_root
+    assert captured["dry_run"] is True
+    assert captured["verify"] is True
+    assert captured["force"] is True
+    assert captured["explicit"] is True
+
+
 def _make_simple_pkg(lpm, tmp_path, *, name="scripted", version="1", release="1", payload="from package\n"):
     staged = tmp_path / f"stage-{name}-{version}-{release}"
     staged.mkdir()

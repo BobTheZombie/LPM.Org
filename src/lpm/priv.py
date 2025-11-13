@@ -70,12 +70,21 @@ _FALLBACK_SCRIPT = """
 import importlib
 import sys
 
+argv = sys.argv[1:]
+
+if argv and argv[0] == 'installpkg':
+    module = importlib.import_module('lpm.installpkg')
+    main = getattr(module, 'main', None)
+    if main is None:
+        raise SystemExit('lpm.installpkg.main is unavailable; cannot re-exec with privileges')
+    sys.exit(main(argv[1:]))
+
 module = importlib.import_module('lpm')
 main = getattr(module, 'main', None)
 if main is None:
     raise SystemExit('lpm.main is unavailable; cannot re-exec with privileges')
 
-sys.exit(main(sys.argv[1:]))
+sys.exit(main(argv))
 """.strip()
 
 
