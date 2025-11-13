@@ -86,8 +86,14 @@ def _load_build_metadata() -> Dict[str, str]:
     candidates.append(module_path.with_name("_build_info.json"))
 
     parents = module_path.parents
+    if len(parents) >= 2:
+        package_root = parents[1]
+        candidates.append(package_root / "usr" / "share" / "lpm" / "build-info.json")
+
     if len(parents) >= 3:
-        candidates.append(parents[2] / "build" / "build-info.json")
+        repo_root = parents[2]
+        candidates.append(repo_root / "build" / "build-info.json")
+        candidates.append(repo_root / "usr" / "share" / "lpm" / "build-info.json")
 
     try:
         exe_path = Path(sys.argv[0]).resolve()

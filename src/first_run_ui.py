@@ -406,6 +406,10 @@ def _load_build_info() -> Dict[str, str]:
     candidates.append(module_path.with_name("_build_info.json"))
 
     parents = module_path.parents
+    if len(parents) >= 1:
+        package_root = parents[0]
+        candidates.append(package_root / "usr" / "share" / "lpm" / "build-info.json")
+
     if len(parents) >= 2:
         project_root = parents[1]
         candidates.append(project_root / "build" / "build-info.json")
