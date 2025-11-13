@@ -3801,7 +3801,14 @@ def run_lpmbuild(
 
     module_path = Path(__file__).resolve()
     is_frozen = bool(getattr(sys, "frozen", False))
-    use_argv0 = is_frozen or exec_path is None or not exec_path.exists()
+    if exec_path is None:
+        exec_path_missing = True
+    else:
+        try:
+            exec_path_missing = not exec_path.exists()
+        except OSError:
+            exec_path_missing = True
+    use_argv0 = is_frozen or exec_path_missing
 
     if use_argv0:
         argv0 = sys.argv[0] if sys.argv else None
