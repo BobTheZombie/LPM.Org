@@ -287,6 +287,72 @@ def test_split_package_helper_falls_back_to_argv0(tmp_path, monkeypatch, lpm_mod
     original_unlink(helper_path)
 
 
+def test_split_package_helper_handles_permission_error(tmp_path, monkeypatch, lpm_module):
+    script = tmp_path / "split.lpmbuild"
+    script.write_text(
+        "\n".join(
+            [
+                "NAME=foo",
+                "VERSION=1.0.0",
+                "RELEASE=1",
+                "ARCH=noarch",
+                "SUMMARY=\"Base package\"",
+                "prepare(){ :; }",
+                "build(){ :; }",
+                "staging(){",
+                "  mkdir -p \"$pkgdir/usr/bin\"",
+                "  echo base > \"$pkgdir/usr/bin/foo\"",
+                "}",
+            ]
+        )
+    )
+
+    restricted_executable = tmp_path / "restricted-python"
+    restricted_executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    restricted_executable.chmod(0o755)
+
+    fallback_binary = tmp_path / "fake-lpm"
+    fallback_binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fallback_binary.chmod(0o755)
+
+    monkeypatch.setattr(sys, "executable", str(restricted_executable))
+    monkeypatch.setattr(sys, "argv", [str(fallback_binary)] + sys.argv[1:])
+
+    helper_path = Path("/tmp/build-foo/lpm-split-package")
+    original_unlink = Path.unlink
+    with contextlib.suppress(FileNotFoundError):
+        original_unlink(helper_path)
+
+    def fake_unlink(self, *args, **kwargs):
+        if self == helper_path:
+            return None
+        return original_unlink(self, *args, **kwargs)
+
+    original_exists = Path.exists
+
+    def fake_exists(self, *args, **kwargs):
+        if self == restricted_executable:
+            raise PermissionError("denied")
+        return original_exists(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fake_unlink)
+    monkeypatch.setattr(Path, "exists", fake_exists)
+
+    lpm_module.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    helper_contents = helper_path.read_text(encoding="utf-8")
+    expected = shlex.quote(str(fallback_binary.resolve()))
+    assert expected in helper_contents
+    assert str(restricted_executable) not in helper_contents
+
+    original_unlink(helper_path)
+
+
 def test_split_package_helper_for_frozen_executable(tmp_path, monkeypatch, lpm_module):
     script = tmp_path / "split.lpmbuild"
     script.write_text(
