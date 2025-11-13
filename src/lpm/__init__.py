@@ -3,7 +3,7 @@
 from importlib import import_module
 from typing import Any, Iterable
 
-from .cli import main as _cli_main
+from .app import main as _app_main
 from .hooks import Hook, HookAction, HookError, HookTransactionManager, HookTrigger, load_hooks
 from .resolver import CDCLSolver, CNF, Implication, SATResult
 
@@ -30,8 +30,8 @@ def _load_app():
 
 def main(argv: Iterable[str] | None = None) -> int:
     if argv is None:
-        return _cli_main()
-    return _cli_main(list(argv))
+        return _app_main()
+    return _app_main(list(argv))
 
 
 def get_runtime_metadata():

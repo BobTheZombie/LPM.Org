@@ -69,7 +69,7 @@ def _run_root_helper(plan_path: str) -> int:
     if _is_root():
         return _root_install_main([plan_path])
 
-    cmd = ["sudo", sys.executable, ROOT_HELPER_FLAG, plan_path]
+    cmd = ["sudo", sys.executable, "-m", "lpm.cli", ROOT_HELPER_FLAG, plan_path]
     result = subprocess.run(cmd, check=False)
     return result.returncode
 
