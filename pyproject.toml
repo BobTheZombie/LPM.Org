@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lpm"
+version = "0.0.0"
+description = "The Linux Package Manager"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "LPM Developers" }]
+dependencies = [
+    "tqdm>=4.66",
+]
+
+[project.urls]
+Homepage = "https://gitlab.com/lpm-org/lpm"
+Repository = "https://gitlab.com/lpm-org/lpm"
+
+[project.scripts]
+lpm = "lpm:main"
+lpm-ui = "lpm_ui:main"
+
+[tool.setuptools]
+include-package-data = true
+py-modules = ["lpm", "lpm_ui"]
+
+[tool.setuptools.packages.find]
+include = ["src", "src.*"]
+
+[tool.setuptools.package-data]
+"src" = [
+    "etc/lpm/lpm.conf",
+    "packages/**/*",
+    "usr/**/*",
+]
