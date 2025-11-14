@@ -7,6 +7,7 @@ import importlib
 import importlib.util
 import os
 import sys
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 from types import ModuleType
 
@@ -17,6 +18,23 @@ _CANDIDATE_ROOTS = [
 _PRESERVED_ATTRS = ("ResolutionError",)
 
 
+def _load_from_spec(spec: ModuleSpec) -> ModuleType | None:
+    if not spec.loader:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.modules.get(__name__)
+    try:
+        sys.modules[__name__] = module
+        spec.loader.exec_module(module)
+    finally:
+        if previous is None:
+            sys.modules.pop(__name__, None)
+        else:
+            sys.modules[__name__] = previous
+    module.__file__ = __file__
+    return module
+
+
 def _load_package() -> ModuleType:
     for root in _CANDIDATE_ROOTS:
         init = root / "__init__.py"
@@ -25,19 +43,31 @@ def _load_package() -> ModuleType:
         spec = importlib.util.spec_from_file_location(
             __name__, init, submodule_search_locations=[str(root)]
         )
-        if spec and spec.loader:
-            module = importlib.util.module_from_spec(spec)
-            previous = sys.modules.get(__name__)
-            try:
-                sys.modules[__name__] = module
-                spec.loader.exec_module(module)
-            finally:
-                if previous is None:
-                    sys.modules.pop(__name__, None)
-                else:
-                    sys.modules[__name__] = previous
-            module.__file__ = __file__
-            return module
+        if spec:
+            module = _load_from_spec(spec)
+            if module is not None:
+                return module
+
+    def _spec_for(name: str) -> ModuleSpec | None:
+        spec = importlib.util.find_spec(name)
+        if not spec:
+            return None
+        origin = getattr(spec, "origin", None)
+        if origin and Path(origin) == Path(__file__).resolve():
+            return None
+        return spec
+
+    for candidate in ("lpm", "src.lpm"):
+        spec = _spec_for(candidate)
+        if not spec:
+            continue
+        module = _load_from_spec(spec)
+        if module is None:
+            continue
+        if candidate != __name__:
+            sys.modules.setdefault(__name__, module)
+        return module
+
     raise ImportError("Unable to locate the LPM package")
 
 
