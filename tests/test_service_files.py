@@ -87,9 +87,14 @@ def test_handle_service_files_systemd_multiple_dirs(root, monkeypatch, capsys):
     assert err.count("[ Systemd Service Handler ] detected units") == 1
 
     assert calls == [
-        ["systemctl", "enable", "--now", "foo.service"],
-        ["systemctl", "enable", "--now", "bar.service"],
-        ["systemctl", "enable", "--now", "baz.timer"],
+        [
+            "systemctl",
+            "enable",
+            "--now",
+            "foo.service",
+            "bar.service",
+            "baz.timer",
+        ]
     ]
 
 
@@ -131,9 +136,14 @@ def test_remove_service_files_systemd_multiple_dirs(root, monkeypatch, capsys):
     assert err.count("baz.timer") == 1
 
     assert calls == [
-        ["systemctl", "disable", "--now", "foo.service"],
-        ["systemctl", "disable", "--now", "bar.service"],
-        ["systemctl", "disable", "--now", "baz.timer"],
+        [
+            "systemctl",
+            "disable",
+            "--now",
+            "foo.service",
+            "bar.service",
+            "baz.timer",
+        ]
     ]
 
 
@@ -187,9 +197,14 @@ def test_remove_installed_package_only_disables_units_once(root, monkeypatch):
 
     assert remove_calls == [[entry["path"] for entry in manifest]]
     assert disable_calls == [
-        ["systemctl", "disable", "--now", "foo.service"],
-        ["systemctl", "disable", "--now", "bar.service"],
-        ["systemctl", "disable", "--now", "baz.timer"],
+        [
+            "systemctl",
+            "disable",
+            "--now",
+            "foo.service",
+            "bar.service",
+            "baz.timer",
+        ]
     ]
 
 

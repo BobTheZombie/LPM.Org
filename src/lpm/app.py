@@ -16,7 +16,7 @@ License: MIT
 """
 
 from __future__ import annotations
-import argparse, contextlib, dataclasses, errno, fnmatch, hashlib, io, json, os, re, shlex, shutil, sqlite3, stat, subprocess, sys, tarfile, tempfile, threading, time, urllib.parse
+import argparse, contextlib, dataclasses, errno, fnmatch, hashlib, io, itertools, json, os, re, shlex, shutil, sqlite3, stat, subprocess, sys, tarfile, tempfile, threading, time, urllib.parse
 from datetime import datetime, timezone
 from email.parser import Parser
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1477,19 +1477,31 @@ def _iter_systemd_units_from_manifest(paths: Iterable[str]) -> Iterable[Tuple[st
                 break
 
 
+_SYSTEMCTL_BATCH_SIZE = 32
+
+
+def _batched(iterable: Iterable[str], size: int = _SYSTEMCTL_BATCH_SIZE) -> Iterable[List[str]]:
+    iterator = iter(iterable)
+    while True:
+        batch = list(itertools.islice(iterator, size))
+        if not batch:
+            break
+        yield batch
+
+
 def handle_service_files(pkg_name: str, root: Path, manifest_entries: Optional[List[object]] = None):
     """
     Detect service files from installed package and register them
     according to the active init system.
     """
-    init = detect_init_system()
+    init = _resolve_lpm_attr("detect_init_system", detect_init_system)()
     policy = CONF.get("INIT_POLICY", "manual").lower()  # auto/manual/none
 
     if policy == "none":
         return
 
     if init == "systemd":
-        manage_systemd = _is_default_root(root)
+        manage_systemd = _resolve_lpm_attr("_is_default_root", _is_default_root)(root)
         manifest_paths = _normalize_manifest_paths(manifest_entries)
         unique_units: Dict[str, Path] = {}
 
@@ -1513,12 +1525,16 @@ def handle_service_files(pkg_name: str, root: Path, manifest_entries: Optional[L
 
         if policy == "auto":
             if manage_systemd:
-                if unique_units:
+                unit_names = list(unique_units)
+                if unit_names:
                     log(
                         "[ Systemd Service Handler ] activating detected units via systemctl enable --now"
                     )
-                for unit_name in unique_units:
-                    subprocess.run(["systemctl", "enable", "--now", unit_name], check=False)
+                    for batch in _batched(unit_names):
+                        subprocess.run(
+                            ["systemctl", "enable", "--now", *batch],
+                            check=False,
+                        )
             elif unique_units:
                 log(
                     f"[systemd] Skipping systemctl enable for non-default root {root}; "
@@ -1583,14 +1599,14 @@ def remove_service_files(pkg_name: str, root: Path, manifest_entries: Optional[L
     """
     Handle service cleanup on package removal.
     """
-    init = detect_init_system()
+    init = _resolve_lpm_attr("detect_init_system", detect_init_system)()
     policy = CONF.get("INIT_POLICY", "manual").lower()
 
     if policy == "none":
         return
 
     if init == "systemd":
-        manage_systemd = _is_default_root(root)
+        manage_systemd = _resolve_lpm_attr("_is_default_root", _is_default_root)(root)
         if manifest_entries is None:
             manifest_entries = _load_manifest_for_package(pkg_name)
         manifest_paths = _normalize_manifest_paths(manifest_entries)
@@ -1602,8 +1618,12 @@ def remove_service_files(pkg_name: str, root: Path, manifest_entries: Optional[L
 
         if policy == "auto":
             if manage_systemd:
-                for unit_name in unique_units:
-                    subprocess.run(["systemctl", "disable", "--now", unit_name], check=False)
+                unit_names = list(unique_units)
+                for batch in _batched(unit_names):
+                    subprocess.run(
+                        ["systemctl", "disable", "--now", *batch],
+                        check=False,
+                    )
             elif unique_units:
                 log(
                     f"[systemd] Skipping systemctl disable for non-default root {root}; "
@@ -2754,7 +2774,8 @@ def _remove_installed_package(meta: dict, root: Path, dry_run: bool, conn):
 
     # Stop/disable/init cleanup for services once all files are handled
     if manifest_entries:
-        remove_service_files(name, root, manifest_entries)
+        remove_fn = _resolve_lpm_attr("remove_service_files", remove_service_files)
+        remove_fn(name, root, manifest_entries)
  
 
     conn.execute("DELETE FROM installed WHERE name=?", (name,))
