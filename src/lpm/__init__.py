@@ -1,6 +1,8 @@
 """Core LPM package exposing the primary APIs used by the CLI and tests."""
 
+from functools import lru_cache
 from importlib import import_module
+from types import ModuleType
 from typing import Any, Iterable
 
 from .cli import main as _cli_main
@@ -24,8 +26,11 @@ __all__ = [
 ]
 
 
-def _load_app():
-    return import_module("src.lpm.app")
+@lru_cache(maxsize=1)
+def _load_app() -> ModuleType:
+    """Import and cache the heavyweight :mod:`lpm.app` module."""
+
+    return import_module(f"{__name__}.app")
 
 
 def main(argv: Iterable[str] | None = None) -> int:
