@@ -11,7 +11,29 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Mapping, Sequence
 
-import lpm.config as lpm_config
+from importlib import import_module
+
+try:
+    import lpm.config as lpm_config
+except ModuleNotFoundError:  # pragma: no cover - fallback for bundled entry points
+    parts = [p for p in (__package__ or "").split(".") if p]
+    if "lpm" in parts:
+        idx = parts.index("lpm") + 1
+        candidates = [".".join(parts[:idx])]
+    elif parts:
+        candidates = [parts[0]]
+    else:
+        candidates = []
+    candidates.append("lpm")
+    lpm_config = None
+    for base in dict.fromkeys(candidates):
+        try:
+            lpm_config = import_module(f"{base}.config")
+            break
+        except ModuleNotFoundError:
+            continue
+    if lpm_config is None:
+        raise
 from lpm.app import PkgMeta, Repo, db, list_repos, load_universe, save_repos
 
 
