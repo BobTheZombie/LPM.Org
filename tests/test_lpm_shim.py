@@ -68,3 +68,37 @@ def test_shim_falls_back_to_find_spec(monkeypatch):
             "lpm.installpkg",
         ]:
             sys.modules.pop(name, None)
+
+
+def test_shim_loads_app_from_package_when_import_fails(monkeypatch):
+    shim_name = "lpm_shim_fallback"
+    shim_path = Path(__file__).resolve().parents[1] / "lpm.py"
+    loader = importlib.machinery.SourceFileLoader(shim_name, str(shim_path))
+    spec = importlib.util.spec_from_loader(shim_name, loader)
+    module = importlib.util.module_from_spec(spec)
+
+    real_import_module = importlib.import_module
+
+    def fake_import_module(name: str, package: str | None = None):
+        if name == "lpm.app":
+            raise ModuleNotFoundError(name)
+        return real_import_module(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
+    monkeypatch.delenv("LPM_SHIM_DISABLE_RELOAD", raising=False)
+
+    try:
+        loader.exec_module(module)
+        assert module._APP_MODULE.__name__ == "lpm.app"
+        assert "lpm.app" in sys.modules
+    finally:
+        for name in [
+            shim_name,
+            "src.lpm",
+            "lpm.app",
+            "lpm.fs_ops",
+            "lpm.atomic_io",
+            "lpm.privileges",
+            "lpm.installpkg",
+        ]:
+            sys.modules.pop(name, None)
