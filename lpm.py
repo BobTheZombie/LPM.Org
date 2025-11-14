@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+from importlib import resources as importlib_resources
 import os
 import sys
 from importlib.machinery import ModuleSpec
@@ -83,6 +84,54 @@ globals().update(
     }
 )
 
+
+def _load_module_from_path(fullname: str, path: Path) -> ModuleType | None:
+    if not path.is_file():
+        return None
+
+    spec = importlib.util.spec_from_file_location(fullname, path)
+    if not spec or not spec.loader:
+        return None
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[fullname] = module
+    spec.loader.exec_module(module)
+    module.__file__ = str(path)
+    return module
+
+
+def _load_app_from_package(package: ModuleType) -> ModuleType | None:
+    qualified_name = f"{package.__name__}.app"
+
+    try:
+        package_files = importlib_resources.files(package)
+    except (AttributeError, TypeError):  # pragma: no cover - package without resources
+        package_files = None
+
+    if package_files is not None:
+        candidate = package_files / "app.py"
+        try:
+            with importlib_resources.as_file(candidate) as path:
+                module = _load_module_from_path(qualified_name, Path(path))
+            if module is not None:
+                return module
+        except FileNotFoundError:
+            pass
+
+    package_file = getattr(package, "__file__", None)
+    if package_file:
+        package_path = Path(package_file)
+        if package_path.name == "__init__.py":
+            candidate_path = package_path.parent / "app.py"
+        else:
+            candidate_path = package_path.with_name("app.py")
+        module = _load_module_from_path(qualified_name, candidate_path)
+        if module is not None:
+            return module
+
+    return None
+
+
 if "lpm.app" in sys.modules:
     previous = sys.modules["lpm.app"]
     preserved = {
@@ -97,7 +146,12 @@ if "lpm.app" in sys.modules:
         for name, value in preserved.items():
             setattr(_app, name, value)
 else:
-    _app = importlib.import_module("lpm.app")
+    try:
+        _app = importlib.import_module("lpm.app")
+    except ModuleNotFoundError:
+        _app = _load_app_from_package(_PACKAGE)
+        if _app is None:
+            raise
 
 _APP_MODULE = _app
 
