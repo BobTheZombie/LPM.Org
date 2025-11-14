@@ -159,8 +159,10 @@ UI_BIN_TARGET = $(BUILD_DIR)/$(UI_APP_NAME).bin
 ALL_BIN_TARGETS = $(BIN_TARGET) $(UI_BIN_TARGET)
 STAGING_DIR = $(DIST_DIR)/$(APP)-$(SAFE_VERSION)
 TARBALL = $(DIST_DIR)/$(APP)-$(SAFE_VERSION).tar.gz
-HOOK_SRC = usr/share/lpm/hooks
-LIBLPM_HOOK_SRC = usr/libexec/lpm/hooks
+DATA_DIR := src/lpm/data
+HOOK_SRC = $(DATA_DIR)/usr/share/lpm/hooks
+LIBLPM_HOOK_SRC = $(DATA_DIR)/usr/libexec/lpm/hooks
+LIBLPM_SHARE_SRC = $(DATA_DIR)/usr/share/liblpm/hooks
 NUITKA_SOURCE_DIR ?= build/nuitka-src
 NUITKA_STAMP_FILE := $(abspath $(NUITKA_SOURCE_DIR)/.installed-commit)
 
@@ -235,7 +237,7 @@ $(UI_BIN_TARGET): lpm_ui.py $(SRC_FILES) | nuitka-install
 	@mkdir -p $(BUILD_DIR)
 	$(NUITKA) $(NUITKA_FLAGS) $(NUITKA_UI_FLAGS) --output-dir=$(BUILD_DIR) --output-filename=$(UI_APP_NAME).bin $(UI_ENTRY)
 
-$(STAGING_DIR): $(ALL_BIN_TARGETS) README.md LICENSE etc/lpm/lpm.conf $(BUILD_INFO_JSON)
+$(STAGING_DIR): $(ALL_BIN_TARGETS) README.md LICENSE $(DATA_DIR)/etc/lpm/lpm.conf $(BUILD_INFO_JSON)
 	@mkdir -p $(DIST_DIR)
 	@rm -rf $@
 	mkdir -p $@/bin
@@ -245,11 +247,11 @@ $(STAGING_DIR): $(ALL_BIN_TARGETS) README.md LICENSE etc/lpm/lpm.conf $(BUILD_IN
 	cp $(BUILD_INFO_JSON) $@/usr/share/lpm/build-info.json
 	cp -R $(HOOK_SRC) $@/usr/share/lpm/
 	mkdir -p $@/usr/share/liblpm
-	cp -R usr/share/liblpm/hooks $@/usr/share/liblpm/
+	cp -R $(LIBLPM_SHARE_SRC) $@/usr/share/liblpm/
 	mkdir -p $@/usr/libexec/lpm
 	cp -R $(LIBLPM_HOOK_SRC) $@/usr/libexec/lpm/
 	mkdir -p $@/etc/lpm
-	cp etc/lpm/lpm.conf $@/etc/lpm/lpm.conf
+	cp $(DATA_DIR)/etc/lpm/lpm.conf $@/etc/lpm/lpm.conf
 	cp README.md LICENSE $@
 	cat <<-'INSTALL_SH' > $@/install.sh
 	#!/bin/sh
@@ -270,12 +272,12 @@ $(STAGING_DIR): $(ALL_BIN_TARGETS) README.md LICENSE etc/lpm/lpm.conf $(BUILD_IN
 	if [ -f "$${BUILD_INFO_SRC}" ]; then
 	    install -m 0644 "$${BUILD_INFO_SRC}" "$${HOOK_DEST}/build-info.json"
 	fi
-
+	
 	LIBLPM_HOOK_DEST="$${DESTDIR}/usr/share/liblpm"
 	rm -rf "$${LIBLPM_HOOK_DEST}/hooks"
 	mkdir -p "$${LIBLPM_HOOK_DEST}"
 	cp -R "$${ROOT}/usr/share/liblpm/hooks" "$${LIBLPM_HOOK_DEST}/"
-
+	
 	EXEC_HOOK_DEST="$${DESTDIR}/usr/libexec/lpm"
 	rm -rf "$${EXEC_HOOK_DEST}/hooks"
 	mkdir -p "$${EXEC_HOOK_DEST}"
@@ -301,11 +303,38 @@ $(STAGING_DIR): $(ALL_BIN_TARGETS) README.md LICENSE etc/lpm/lpm.conf $(BUILD_IN
 	CONF_DEST="$${CONF_DIR}/lpm.conf"
 	if [ ! -f "$${CONF_DEST}" ]; then
 	    install -m 0644 "$${CONF_SRC}" "$${CONF_DEST}"
-	else
-	    printf 'Keeping existing configuration: %s\n' "$${CONF_DEST}"
-	fi
+	        else
+	            printf 'Keeping existing configuration: %s\n' "$${CONF_DEST}"
+	        fi
+	
 	INSTALL_SH
 	chmod +x $@/install.sh
+
+	cat <<-'UNINSTALL_SH' > $@/uninstall.sh
+	#!/bin/sh
+	set -eu
+	PREFIX="$${PREFIX:-/usr/local}"
+	DESTDIR="$${DESTDIR:-}"
+	
+	BIN_DIR="$${DESTDIR}$${PREFIX}/bin"
+	rm -f "$${BIN_DIR}/lpm"
+	rm -f "$${BIN_DIR}/$(UI_APP_NAME)"
+	rmdir "$${BIN_DIR}" 2>/dev/null || true
+	
+	HOOK_DEST="$${DESTDIR}/usr/share/lpm"
+	rm -rf "$${HOOK_DEST}/hooks"
+	rm -f "$${HOOK_DEST}/build-info.json"
+	rmdir "$${HOOK_DEST}" 2>/dev/null || true
+	
+	LIBLPM_HOOK_DEST="$${DESTDIR}/usr/share/liblpm"
+	rm -rf "$${LIBLPM_HOOK_DEST}/hooks"
+	rmdir "$${LIBLPM_HOOK_DEST}" 2>/dev/null || true
+	
+	EXEC_HOOK_DEST="$${DESTDIR}/usr/libexec/lpm"
+	rm -rf "$${EXEC_HOOK_DEST}/hooks"
+	rmdir "$${EXEC_HOOK_DEST}" 2>/dev/null || true
+	UNINSTALL_SH
+	chmod +x $@/uninstall.sh
 
 $(TARBALL): $(STAGING_DIR)
 	mkdir -p $(DIST_DIR)
@@ -317,6 +346,26 @@ tarball: $(TARBALL)
 
 install: $(STAGING_DIR)
 	PREFIX="$(PREFIX)" DESTDIR="$(DESTDIR)" $</install.sh
+
+.PHONY: uninstall
+uninstall:
+	@set -eu; \
+	PREFIX="$(PREFIX)"; \
+	DESTDIR="$(DESTDIR)"; \
+	BIN_DIR="$$DESTDIR$$PREFIX/bin"; \
+	rm -f "$$BIN_DIR/$(APP)"; \
+	rm -f "$$BIN_DIR/$(UI_APP_NAME)"; \
+	rmdir "$$BIN_DIR" 2>/dev/null || true; \
+	HOOK_DEST="$$DESTDIR/usr/share/lpm"; \
+	rm -rf "$$HOOK_DEST/hooks"; \
+	rm -f "$$HOOK_DEST/build-info.json"; \
+	rmdir "$$HOOK_DEST" 2>/dev/null || true; \
+	LIBLPM_HOOK_DEST="$$DESTDIR/usr/share/liblpm"; \
+	rm -rf "$$LIBLPM_HOOK_DEST/hooks"; \
+	rmdir "$$LIBLPM_HOOK_DEST" 2>/dev/null || true; \
+	EXEC_HOOK_DEST="$$DESTDIR/usr/libexec/lpm"; \
+	rm -rf "$$EXEC_HOOK_DEST/hooks"; \
+	rmdir "$$EXEC_HOOK_DEST" 2>/dev/null || true
 
 clean:
 	rm -rf $(BUILD_DIR)
