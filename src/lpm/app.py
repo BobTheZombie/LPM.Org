@@ -16,7 +16,7 @@ License: MIT
 """
 
 from __future__ import annotations
-import argparse, contextlib, dataclasses, errno, fnmatch, hashlib, io, json, os, re, shlex, shutil, sqlite3, stat, subprocess, sys, tarfile, tempfile, time, urllib.parse
+import argparse, contextlib, dataclasses, errno, fnmatch, hashlib, io, json, os, re, shlex, shutil, sqlite3, stat, subprocess, sys, tarfile, tempfile, threading, time, urllib.parse
 from datetime import datetime, timezone
 from email.parser import Parser
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -715,12 +715,41 @@ class Repo:
     bias: float=1.0
     decay: float=0.95
 
+_repo_index_cache_lock = threading.Lock()
+_repo_index_cache: Dict[Tuple[str, str, int, float, float], Tuple["PkgMeta", ...]] = {}
+
+def _repo_cache_key(repo: Repo) -> Tuple[str, str, int, float, float]:
+    return (
+        repo.name,
+        repo.url.rstrip("/"),
+        repo.priority,
+        repo.bias,
+        repo.decay,
+    )
+
+def invalidate_repo_index_cache(repo: Optional[Repo] = None) -> None:
+    with _repo_index_cache_lock:
+        if repo is None:
+            _repo_index_cache.clear()
+        else:
+            _repo_index_cache.pop(_repo_cache_key(repo), None)
+
+def _load_repo_index(repo: Repo) -> Tuple["PkgMeta", ...]:
+    idx_url = repo.url.rstrip("/") + "/index.json"
+    raw, _ = _resolve_lpm_attr("urlread", urlread)(idx_url)
+    j = json.loads(raw.decode("utf-8"))
+    return tuple(
+        PkgMeta.from_dict(p, repo.name, repo.priority, repo.bias, repo.decay)
+        for p in j.get("packages", [])
+    )
+
 def list_repos() -> List[Repo]:
     return [Repo(**r) for r in read_json(REPO_LIST)]
 
 def save_repos(rs: List[Repo]):
     with operation_phase(privileged=True):
         write_json(REPO_LIST, [dataclasses.asdict(r) for r in rs])
+    invalidate_repo_index_cache()
 
 def add_repo(name,url,priority=10,bias=1.0,decay=0.95):
     rs=list_repos()
@@ -731,10 +760,14 @@ def del_repo(name):
     save_repos([r for r in list_repos() if r.name!=name]); ok(f"Removed repo {name}")
 
 def fetch_repo_index(repo: Repo) -> List[PkgMeta]:
-    idx_url = repo.url.rstrip("/") + "/index.json"
-    raw, _ = _resolve_lpm_attr("urlread", urlread)(idx_url)
-    j = json.loads(raw.decode("utf-8"))
-    return [PkgMeta.from_dict(p, repo.name, repo.priority, repo.bias, repo.decay) for p in j.get("packages",[])]
+    key = _repo_cache_key(repo)
+    with _repo_index_cache_lock:
+        cached = _repo_index_cache.get(key)
+    if cached is None:
+        cached = _load_repo_index(repo)
+        with _repo_index_cache_lock:
+            _repo_index_cache[key] = cached
+    return [dataclasses.replace(pkg) for pkg in cached]
 
 def load_universe() -> Dict[str, List[PkgMeta]]:
     out: Dict[str,List[PkgMeta]] = {}
@@ -2871,6 +2904,7 @@ def gen_index(repo_dir: Path, base_url: Optional[str], arch_filter: Optional[str
     out = repo_dir / "index.json"
     with operation_phase(privileged=True):
         write_json(out, index)
+    invalidate_repo_index_cache()
     ok(f"Wrote {out} with {len(packages)} packages")
 
 
