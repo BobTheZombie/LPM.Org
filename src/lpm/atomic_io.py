@@ -7,7 +7,29 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator, Optional, Union
 
-import lpm.config as config
+from importlib import import_module
+
+try:
+    import lpm.config as config
+except ModuleNotFoundError:  # pragma: no cover - fallback for bundled entry points
+    parts = [p for p in (__package__ or "").split(".") if p]
+    if "lpm" in parts:
+        idx = parts.index("lpm") + 1
+        candidates = [".".join(parts[:idx])]
+    elif parts:
+        candidates = [parts[0]]
+    else:
+        candidates = []
+    candidates.append("lpm")
+    config = None
+    for base in dict.fromkeys(candidates):
+        try:
+            config = import_module(f"{base}.config")
+            break
+        except ModuleNotFoundError:
+            continue
+    if config is None:
+        raise
 
 
 BytesLike = Union[bytes, bytearray, memoryview]
