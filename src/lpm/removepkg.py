@@ -33,7 +33,7 @@ def removepkg(
         warn,
     )
     from .hooks import HookTransactionManager, load_hooks
-    import lpm.app as app_module
+    from . import app as app_module
 
     app_module.PROTECTED = load_protected()
 

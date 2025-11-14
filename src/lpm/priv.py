@@ -73,11 +73,21 @@ def require_root(intent: str | None = None) -> None:
 
 
 def _prompt_confirmation(intent: str) -> bool:
+    stream = getattr(sys, "stdin", None)
+    is_tty = False
+    if stream is not None:
+        try:
+            is_tty = stream.isatty()
+        except Exception:
+            is_tty = False
+    if not is_tty:
+        return False
+
     try:
         response = input(
             f"Root privileges are required to {intent}. Continue with sudo? [y/N]: "
         )
-    except EOFError:
+    except (EOFError, OSError):
         return False
     return response.strip().lower() in {"y", "yes"}
 
