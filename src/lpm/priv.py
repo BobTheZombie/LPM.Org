@@ -1,20 +1,12 @@
-"""Compatibility shims for privilege handling.
-
-The previous implementation provided interactive prompts and multiple
-escalation backends.  The helpers in this module now provide a lightweight
-confirmation flow that re-executes the running command via ``sudo`` when root
-privileges are required but not currently available.
-"""
+"""Compatibility shims for privilege handling."""
 
 from __future__ import annotations
 
-import getpass
 import os
 import shlex
 import shutil
-import subprocess
 import sys
-from typing import Iterable, Sequence
+from typing import Iterable
 
 from .cli import as_root
 
@@ -35,7 +27,9 @@ class RootPrivilegesRequired(PermissionError):
         message = "Root privileges are required"
         if intent:
             message += f" to {intent}"
-        message += f". Re-run with 'sudo {format_command_for_hint()} {as_root.AS_ROOT_FLAG}'."
+        message += (
+            f". Re-run with 'sudo {format_command_for_hint()} {as_root.AS_ROOT_FLAG}'."
+        )
         super().__init__(message)
         self.intent = intent
 
@@ -51,85 +45,71 @@ def _is_root() -> bool:
 
 
 def set_escalation_disabled(_value: bool) -> None:
-    """Retained for compatibility; the new CLI always opts-in explicitly."""
+    """Retained for compatibility with legacy callers."""
 
 
 def set_prompt_context(_context: str) -> None:
-    """Retained for compatibility; prompts are no longer interactive."""
+    """Retained for compatibility with legacy callers."""
+
+
+def _filtered_argv(argv: Iterable[str]) -> list[str]:
+    args = list(argv)
+    try:
+        flag_index = args.index(as_root.AS_ROOT_FLAG)
+    except ValueError:
+        return args
+    # Remove the first occurrence so hints don't duplicate the flag.
+    return args[:flag_index] + args[flag_index + 1 :]
 
 
 def format_command_for_hint(argv: Iterable[str] | None = None) -> str:
-    argv = list(argv if argv is not None else sys.argv)
-    if not argv:
+    args = list(argv if argv is not None else sys.argv)
+    if not args:
         executable = getattr(sys, "executable", None) or "python3"
-        argv = [executable, "-m", "lpm"]
-    return shlex.join(argv)
+        args = [executable, "-m", "lpm"]
+    else:
+        args = _filtered_argv(args)
+    return shlex.join(args)
 
 
 def require_root(intent: str | None = None) -> None:
-    if _is_root():
+    if _is_root() or as_root.triggered():
         return
     raise RootPrivilegesRequired(intent)
 
 
-def _prompt_confirmation(intent: str) -> bool:
+def _stdin_is_tty() -> bool:
     stream = getattr(sys, "stdin", None)
-    is_tty = False
-    if stream is not None:
-        try:
-            is_tty = stream.isatty()
-        except Exception:
-            is_tty = False
-    if not is_tty:
+    if stream is None:
         return False
+    try:
+        return bool(stream.isatty())
+    except Exception:
+        return False
+
+
+def ensure_root_or_escalate(intent: str) -> None:
+    """Ensure the current process has root privileges, escalating via sudo."""
+
+    if _is_root() or as_root.triggered():
+        return
+
+    if not _stdin_is_tty():
+        raise RootPrivilegesRequired(intent)
+
+    if shutil.which("sudo") is None:
+        raise RootPrivilegesRequired(intent)
 
     try:
         response = input(
             f"Root privileges are required to {intent}. Continue with sudo? [y/N]: "
         )
-    except (EOFError, OSError):
-        return False
-    return response.strip().lower() in {"y", "yes"}
-
-
-def _prompt_password() -> str | None:
-    try:
-        return getpass.getpass("sudo password: ")
-    except (EOFError, KeyboardInterrupt):
-        return None
-
-
-def _sudo_command(argv: Sequence[str]) -> list[str] | None:
-    sudo = shutil.which("sudo")
-    if not sudo:
-        return None
-    return [sudo, "-S", "-E", *argv]
-
-
-def ensure_root_or_escalate(intent: str) -> None:
-    """Ensure the current process has root privileges, escalating via sudo if needed."""
-
-    if _is_root():
-        return
-
-    if not _prompt_confirmation(intent):
+    except (EOFError, KeyboardInterrupt, OSError):
         raise RootPrivilegesRequired(intent)
 
-    password = _prompt_password()
-    if not password:
+    if response.strip().lower() not in {"y", "yes"}:
         raise RootPrivilegesRequired(intent)
 
-    command = _sudo_command(sys.argv)
-    if command is None:
-        raise RootPrivilegesRequired(intent)
-
-    result = subprocess.run(
-        command,
-        input=f"{password}\n".encode(),
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RootPrivilegesRequired(intent)
-
-    sys.exit(result.returncode)
+    exit_code = as_root.invoke(sys.argv[1:])
+    sys.exit(exit_code)
 
