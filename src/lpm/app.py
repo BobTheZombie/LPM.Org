@@ -202,6 +202,7 @@ from . import maintainer_mode, config as _config
 from .atomic_io import atomic_replace
 from .fs_ops import operation_phase
 from .priv import (
+    RootPrivilegesRequired,
     ensure_root_or_escalate,
     set_escalation_disabled,
     set_prompt_context,
@@ -285,14 +286,8 @@ def _handle_permission_denied(intent: str, action_label: str, requirement: str) 
     print(requirement, file=sys.stderr)
     print("", file=sys.stderr)
     set_prompt_context("permission-error")
-    try:
-        ensure_root_or_escalate(intent)
-    except SystemExit as exc:
-        if exc.code != 77:
-            raise
-        raise
-    else:
-        sys.exit(77)
+    ensure_root_or_escalate(intent)
+    return
 
 
 _DELTA_MODE = _config.USE_DELTAS
@@ -5517,6 +5512,9 @@ def main(argv=None):
                 args.func(args)
         else:
             args.func(args)
+    except RootPrivilegesRequired as exc:
+        print(f"lpm: {exc}", file=sys.stderr)
+        return 1
     except ResolutionError as e:
         die(f"dependency resolution failed: {e}")
 
