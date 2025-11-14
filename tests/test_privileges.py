@@ -39,11 +39,11 @@ def _reload_privileges(monkeypatch, *, real_ids, effective_ids, env_ids=None):
     monkeypatch.setattr(os, "setresuid", record("setresuid"), raising=False)
     monkeypatch.setattr(os, "setresgid", record("setresgid"), raising=False)
 
-    sys.modules.pop("src.lpm.privileges", None)
-    module = importlib.import_module("src.lpm.privileges")
+    sys.modules.pop("lpm.lpm.privileges", None)
+    module = importlib.import_module("lpm.lpm.privileges")
 
     def cleanup() -> None:
-        sys.modules.pop("src.lpm.privileges", None)
+        sys.modules.pop("lpm.lpm.privileges", None)
         if added_src:
             try:
                 sys.path.remove(str(src_path))

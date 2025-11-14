@@ -1,6 +1,6 @@
 import pytest
 
-from src.lpm.app import (
+from lpm.app import (
     PkgMeta,
     ResolutionError,
     Universe,

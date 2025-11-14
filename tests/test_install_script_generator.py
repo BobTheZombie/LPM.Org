@@ -5,7 +5,7 @@ from pathlib import Path
 # Allow importing from the src directory
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.installgen import generate_install_script
+from lpm.installgen import generate_install_script
 
 
 def test_desktop_file_triggers_update_desktop_database(tmp_path):

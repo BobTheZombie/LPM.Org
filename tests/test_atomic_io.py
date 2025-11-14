@@ -8,12 +8,12 @@ import pytest
 
 
 def _reload_atomic_io():
-    atomic_io = importlib.import_module("src.atomic_io")
+    atomic_io = importlib.import_module("lpm.atomic_io")
     return importlib.reload(atomic_io)
 
 
 def _reload_config():
-    config = importlib.import_module("src.config")
+    config = importlib.import_module("lpm.config")
     return importlib.reload(config)
 
 

@@ -107,7 +107,7 @@ commit hash.
 
 ### Running the PySide6 UI from source
 
-The modern Qt experience lives in `src/ui/qt_app.py`. To launch it directly
+The modern Qt experience lives in `src/lpm/ui/qt_app.py`. To launch it directly
 from a source checkout:
 
 1. Install the UI dependency once (a virtual environment is recommended):
@@ -120,7 +120,7 @@ from a source checkout:
    resolve:
 
    ```sh
-   python -m src.ui.qt_app
+   python -m lpm.ui.qt_app
    ```
 
 The PySide6 front-end is a thin wrapper over the CLI, so installing or
@@ -154,13 +154,13 @@ Pass `--sysconfig-root /some/chroot` to target an alternate filesystem tree, whi
 Maintainer mode turns LPM into a turnkey release pipeline that copies finished
 packages, their detached signatures, sources, and `.lpmbuild` scripts into a
 publishable tree every time you invoke `lpm buildpkg`, the Python package
-builder, or any other entry point that produces `.zst` artifacts.【F:src/maintainer_mode.py†L100-L210】【F:src/lpm/app.py†L1589-L1626】【F:src/lpm/app.py†L3210-L3236】
+builder, or any other entry point that produces `.zst` artifacts.【F:src/lpm/maintainer_mode.py†L100-L210】【F:src/lpm/app.py†L1589-L1626】【F:src/lpm/app.py†L3210-L3236】
 
 1. Run `sudo lpm setup` and answer **yes** when prompted "Enable distribution
    maintainer mode?". The wizard will then ask for the distribution name,
    repository/source roots, and (optionally) Git information. Press Enter to
    accept the suggested defaults under `/var/lib/lpm/maintainer/...` or point
-   them at existing storage.【F:src/first_run_ui.py†L123-L194】【F:src/config.py†L24-L87】【F:src/config.py†L210-L233】
+  them at existing storage.【F:src/lpm/ui/first_run.py†L123-L194】【F:src/lpm/config.py†L24-L87】【F:src/lpm/config.py†L210-L233】
 2. To enable the pipeline without the wizard, populate `/etc/lpm/lpm.conf` with
    the `DISTRO_*` keys. For example:
 
@@ -178,17 +178,17 @@ builder, or any other entry point that produces `.zst` artifacts.【F:src/mainta
    ```
 
    Re-run `lpm setup` at any time to revise these settings. LPM reloads the
-   configuration for every command, so the changes take effect immediately.【F:src/config.py†L200-L260】
+   configuration for every command, so the changes take effect immediately.【F:src/lpm/config.py†L200-L260】
 
 3. Build packages as usual. When maintainer mode is active, LPM copies each
    artifact (and any split sub-packages) into `<repo-root>/<arch>/`, writes an
    `index.json` using the same generator that powers standard repositories, and
    archives sources plus metadata under the configured roots. Detached
-   signatures (`.sig`) ride along automatically.【F:src/maintainer_mode.py†L132-L210】
+   signatures (`.sig`) ride along automatically.【F:src/lpm/maintainer_mode.py†L132-L210】
 4. If Git publishing is enabled, LPM stages every new file under the configured
    repository root, commits them with a message such as `MyLPM: publish
    pkg-version-arch`, and pushes to the chosen remote/branch when configured.
-   Skip the remote to keep changes local for manual review.【F:src/maintainer_mode.py†L214-L274】
+   Skip the remote to keep changes local for manual review.【F:src/lpm/maintainer_mode.py†L214-L274】
 
 Repositories produced this way are ready to serve over HTTP/HTTPS or export via
 `file://` URLs. Pair them with your existing mirror tooling or point other LPM
@@ -489,7 +489,7 @@ clauses and variable activity. Instantiate `CDCLSolver` with a `CNF` instance
 and call `solve()` with an optional list of assumed literals:
 
 ```python
-from src import CNF, CDCLSolver
+from lpm import CNF, CDCLSolver
 
 cnf = CNF()
 v1 = cnf.new_var("A")

@@ -1,52 +1,33 @@
-"""Convenience exports for LPM library components."""
+"""Compatibility wrapper for legacy ``src`` imports.
 
+The project now exposes its public API from :mod:`lpm`. Importing from the
+``src`` package still works for the time being, but it is deprecated and will
+be removed in a future release.
+"""
+
+from __future__ import annotations
+
+import warnings
 from importlib import import_module
 from typing import Any
 
-from .lpm.resolver import CDCLSolver, CNF, Implication, SATResult
-from .lpm.hooks import (
-    Hook,
-    HookAction,
-    HookError,
-    HookTransactionManager,
-    HookTrigger,
-    load_hooks,
+_LPM = import_module("lpm")
+
+warnings.warn(
+    "Importing from 'src' is deprecated; use the 'lpm' package instead.",
+    DeprecationWarning,
+    stacklevel=2,
 )
 
-__all__ = [
-    "CNF",
-    "SATResult",
-    "Implication",
-    "CDCLSolver",
-    "main",
-    "ResolutionError",
-    "get_runtime_metadata",
-    "Hook",
-    "HookAction",
-    "HookTransactionManager",
-    "HookTrigger",
-    "HookError",
-    "load_hooks",
-]
+__all__ = getattr(_LPM, "__all__", ())
 
 
-def _load_app():
-    return import_module("src.lpm.app")
+def __getattr__(name: str) -> Any:  # pragma: no cover - passthrough wrapper
+    try:
+        return getattr(_LPM, name)
+    except AttributeError as exc:  # pragma: no cover - mirror normal behaviour
+        raise AttributeError(name) from exc
 
 
-def main(argv=None):
-    """Proxy to :func:`src.lpm.app.main` without importing heavy dependencies."""
-
-    return _load_app().main(argv)
-
-
-def get_runtime_metadata():
-    """Proxy to :func:`src.lpm.app.get_runtime_metadata`."""
-
-    return _load_app().get_runtime_metadata()
-
-
-def __getattr__(name: str) -> Any:
-    if name == "ResolutionError":
-        return getattr(_load_app(), name)
-    raise AttributeError(name)
+def __dir__() -> list[str]:  # pragma: no cover - compatibility helper
+    return sorted(set(dir(_LPM)))

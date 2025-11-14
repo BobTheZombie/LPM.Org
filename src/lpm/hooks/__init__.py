@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 module = sys.modules[__name__]
 
 # Expose the module under legacy import paths so monkeypatch helpers and code
-# depending on ``src.liblpmhooks`` continue to function after the move into the
-# :mod:`src.lpm` package.
+# depending on ``src.liblpmhooks`` continue to function after the transition to
+# the :mod:`lpm` package.
 sys.modules.setdefault(__name__ + ".__init__", module)
 sys.modules.setdefault("src.liblpmhooks", module)
 sys.modules.setdefault("src.liblpmhooks.__init__", module)

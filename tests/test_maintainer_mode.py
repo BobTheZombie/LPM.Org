@@ -1,9 +1,9 @@
 import json
 from pathlib import Path
 
-import src.config as config
-from src import maintainer_mode
-from src.lpm.app import PkgMeta
+import lpm.config as config
+from lpm import maintainer_mode
+from lpm.app import PkgMeta
 
 
 def _snapshot_config(keys):

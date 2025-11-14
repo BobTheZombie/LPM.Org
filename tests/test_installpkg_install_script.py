@@ -40,7 +40,7 @@ def _import_lpm(tmp_path, monkeypatch):
 
         module.tqdm = _DummyTqdm  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "tqdm", module)
-    for mod in ["lpm", "src.config"]:
+    for mod in ["lpm", "lpm.config"]:
         if mod in sys.modules:
             del sys.modules[mod]
     return importlib.import_module("lpm")

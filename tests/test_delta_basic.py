@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from src.lpm import delta
+from lpm import delta
 
 
 def test_generate_and_apply_delta(tmp_path: Path):

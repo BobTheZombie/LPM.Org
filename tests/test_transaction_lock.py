@@ -8,17 +8,17 @@ import pytest
 
 
 def _reload_config():
-    config = importlib.import_module("src.config")
+    config = importlib.import_module("lpm.config")
     return importlib.reload(config)
 
 
 def _reload_locking():
-    locking = importlib.import_module("src.lpm.locking")
+    locking = importlib.import_module("lpm.lpm.locking")
     return importlib.reload(locking)
 
 
 def _reload_app():
-    app = importlib.import_module("src.lpm.app")
+    app = importlib.import_module("lpm.lpm.app")
     return importlib.reload(app)
 
 

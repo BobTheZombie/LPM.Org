@@ -4,7 +4,7 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from src import CNF, CDCLSolver
+from lpm import CNF, CDCLSolver
 
 
 def make_unsat_cnf():
