@@ -6,7 +6,7 @@ import logging
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-import src.config as config
+import lpm.config as config
 
 
 def mock_cpuinfo(monkeypatch, data: str) -> None:

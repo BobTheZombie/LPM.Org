@@ -2,8 +2,8 @@ import sys
 
 import pytest
 
-from src.lpm import priv
-from src.lpm.cli import as_root
+from lpm import priv
+from lpm.cli import as_root
 
 
 @pytest.fixture(autouse=True)

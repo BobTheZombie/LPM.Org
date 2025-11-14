@@ -24,7 +24,7 @@ def main() -> None:
         )
         raise SystemExit(1)
 
-    from src.ui.qt_app import main as app_main
+    from lpm.ui.qt_app import main as app_main
 
     app_main()
 

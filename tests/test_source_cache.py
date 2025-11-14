@@ -8,7 +8,7 @@ def _import_lpm(tmp_path, monkeypatch):
     root = Path(__file__).resolve().parents[1]
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
-    for mod in ["lpm", "src.config"]:
+    for mod in ["lpm", "lpm.config"]:
         if mod in sys.modules:
             del sys.modules[mod]
     return importlib.import_module("lpm")

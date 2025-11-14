@@ -6,8 +6,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import lpm
-import src.config as config
-import src.first_run_ui as first_run_ui
+import lpm.config as config
+from lpm.ui import first_run as first_run_ui
 
 
 def test_main_triggers_setup_when_conf_missing(monkeypatch, tmp_path):

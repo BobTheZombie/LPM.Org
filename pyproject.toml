@@ -27,11 +27,12 @@ include-package-data = true
 py-modules = ["lpm", "lpm_ui"]
 
 [tool.setuptools.packages.find]
-include = ["src", "src.*"]
+where = ["src"]
+include = ["lpm", "lpm.*"]
 
 [tool.setuptools.package-data]
-"src" = [
-    "etc/lpm/lpm.conf",
-    "packages/**/*",
-    "usr/**/*",
+"lpm" = [
+    "data/etc/lpm/lpm.conf",
+    "data/packages/**/*",
+    "data/usr/**/*",
 ]

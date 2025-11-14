@@ -3,11 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 
-from src.lpm import app
+from lpm import app
 
 
 def _get_config():
-    """Return the configuration module used by :mod:`src.lpm.app`."""
+    """Return the configuration module used by :mod:`lpm.app`."""
 
     return app._config
 

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 def _import_lpm(tmp_path, monkeypatch):
     monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "state"))
-    for mod in ["lpm", "src.config"]:
+    for mod in ["lpm", "lpm.config"]:
         if mod in sys.modules:
             del sys.modules[mod]
     return importlib.import_module("lpm")

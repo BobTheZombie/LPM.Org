@@ -6,7 +6,7 @@ import hypothesis.strategies as st
 from hypothesis import given, settings
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from src import CNF, CDCLSolver
+from lpm import CNF, CDCLSolver
 
 
 def cnf_strategy():

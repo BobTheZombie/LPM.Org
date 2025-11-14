@@ -61,7 +61,7 @@ def _import_lpm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     if str(stub_dir) not in sys.path:
         sys.path.insert(0, str(stub_dir))
 
-    for mod in ("tqdm", "lpm", "src.config"):
+    for mod in ("tqdm", "lpm", "lpm.config"):
         sys.modules.pop(mod, None)
 
     return importlib.import_module("lpm")

@@ -10,7 +10,7 @@ from typing import Any, Optional, Tuple
 
 from tqdm import tqdm
 
-from .lpm.atomic_io import safe_write
+from .atomic_io import safe_write
 
 
 def read_json(p: Path) -> Any:

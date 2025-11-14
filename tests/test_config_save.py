@@ -2,7 +2,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-import src.config as config
+import lpm.config as config
 
 
 def test_save_conf_round_trip_updates_globals(tmp_path):

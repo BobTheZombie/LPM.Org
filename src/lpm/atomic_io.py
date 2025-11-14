@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator, Optional, Union
+
+import lpm.config as config
 
 
 BytesLike = Union[bytes, bytearray, memoryview]
@@ -228,4 +231,35 @@ __all__ = [
     "safe_write",
     "atomic_replace",
     "_current_umask",
+    "atomic_write_bytes",
+    "atomic_write_text",
+    "atomic_write_json",
 ]
+
+
+@contextmanager
+def _config_umask() -> Iterator[None]:
+    previous = os.umask(config.UMASK)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
+def atomic_write_bytes(path: Union[str, Path], data: Union[str, BytesLike]) -> None:
+    with _config_umask():
+        safe_write(path, data, mode=0o666)
+
+
+def atomic_write_text(
+    path: Union[str, Path],
+    text: str,
+    *,
+    encoding: str = "utf-8",
+) -> None:
+    atomic_write_bytes(path, text.encode(encoding))
+
+
+def atomic_write_json(path: Union[str, Path], obj: object) -> None:
+    payload = json.dumps(obj, indent=2, sort_keys=True)
+    atomic_write_text(path, payload)

@@ -67,7 +67,7 @@ def installpkg(
 
     This is the production-grade installer used by the CLI as well as the test
     suite. It closely mirrors the original implementation from
-    :mod:`src.lpm.app` but lives in its own module so that privilege management
+    :mod:`lpm.app` but lives in its own module so that privilege management
     can happen before any side effects occur.
     """
 

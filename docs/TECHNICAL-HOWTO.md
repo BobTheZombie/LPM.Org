@@ -35,18 +35,18 @@ CPU tuning level or fallback policy.
 
 Key configuration files and directories include:
 
-* `/etc/lpm/lpm.conf` – global defaults consumed from `src.config.CONF`.
+* `/etc/lpm/lpm.conf` – global defaults consumed from `lpm.config.CONF`.
 * `/etc/lpm/protected.json` – list of packages that cannot be removed without
   `--force`; managed through `lpm protected` (see section 8.2).【F:lpm.py†L69-L119】
 * `${XDG_CACHE_HOME:-~/.cache}/lpm` – blob cache cleared by `lpm clean`.
 * `/var/lib/lpm/{state.db,cache,snapshots}` – directories initialised on startup
-  and consumed by package transactions.【F:src/config.py†L5-L33】【F:lpm.py†L447-L546】
+  and consumed by package transactions.【F:src/lpm/config.py†L5-L33】【F:lpm.py†L1-L60】
 
 High-throughput environments can raise the downloader pool and decompression
 buffer directly from `lpm.conf`. `FETCH_MAX_WORKERS` controls how many blob
 downloads run in parallel (defaulting to twice the CPU core count, clamped
 between 4 and 32), while `IO_BUFFER_SIZE` sets the non-streaming extraction
-buffer in bytes (default 1 MiB, minimum 64 KiB).【F:src/config.py†L43-L55】【F:src/config.py†L203-L213】【F:src/lpm/app.py†L1724-L1733】【F:src/lpm/app.py†L1939-L1958】
+buffer in bytes (default 1 MiB, minimum 64 KiB).【F:src/lpm/config.py†L43-L55】【F:src/lpm/config.py†L203-L213】【F:src/lpm/app.py†L1724-L1733】【F:src/lpm/app.py†L1939-L1958】
 
 Always ensure these locations are writable inside the root you target; otherwise
 commands that modify system state will fail.
@@ -377,19 +377,19 @@ Turn on maintainer mode when you want LPM to publish packages automatically.
 Run `lpm setup`, answer **yes** to the maintainer prompt, and provide the
 repository/source locations and optional Git details when prompted. The wizard
 persists the answers to `/etc/lpm/lpm.conf` as `DISTRO_*` keys, which you can
-also edit manually if you prefer.【F:src/first_run_ui.py†L123-L194】【F:src/config.py†L24-L87】【F:src/config.py†L210-L233】
+also edit manually if you prefer.【F:src/lpm/ui/first_run.py†L123-L194】【F:src/lpm/config.py†L24-L87】【F:src/lpm/config.py†L210-L233】
 
 When maintainer mode is active, every call to `lpm buildpkg` (and the internal
 builders used by `lpm pip build`) copies the main package, split packages, and
 their detached signatures into `<DISTRO_REPO_ROOT>/<arch>/`, archives sources
 under `DISTRO_SOURCE_ROOT`, and records metadata plus the `.lpmbuild` script
 under `DISTRO_LPMBUILD_ROOT`. LPM then regenerates `index.json` files so the
-repository stays installable without extra steps.【F:src/maintainer_mode.py†L100-L210】【F:src/lpm/app.py†L1589-L1626】【F:src/lpm/app.py†L3210-L3236】
+repository stays installable without extra steps.【F:src/lpm/maintainer_mode.py†L100-L210】【F:src/lpm/app.py†L1589-L1626】【F:src/lpm/app.py†L3210-L3236】
 
 Enable Git automation to have LPM stage the new and updated files, commit them
 with a summary derived from the published artifacts, and push to a configured
 remote/branch. Leaving the remote blank keeps the changes local for manual
-review or alternative deployment tools.【F:src/maintainer_mode.py†L214-L274】
+review or alternative deployment tools.【F:src/lpm/maintainer_mode.py†L214-L274】
 
 ## 10. Troubleshooting Tips
 

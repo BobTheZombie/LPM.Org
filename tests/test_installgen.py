@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.installgen import generate_install_script
+from lpm.installgen import generate_install_script
 
 
 def _setup_tools(tmp_path, names):

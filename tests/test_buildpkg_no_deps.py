@@ -106,7 +106,7 @@ def test_run_lpmbuild_defaults_missing_arch(tmp_path, monkeypatch):
         )
     )
 
-    for module in ("lpm", "src.config"):
+    for module in ("lpm", "lpm.config"):
         sys.modules.pop(module, None)
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

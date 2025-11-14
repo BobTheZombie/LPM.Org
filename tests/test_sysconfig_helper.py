@@ -3,7 +3,7 @@ from __future__ import annotations
 import stat
 from pathlib import Path
 
-from src.lpm.sysconfig import SysconfigResult, apply_system_configuration
+from lpm.sysconfig import SysconfigResult, apply_system_configuration
 
 
 def _stub_locale_generator(root: Path) -> SysconfigResult:
@@ -73,7 +73,7 @@ def test_apply_system_configuration_preserves_customisations(tmp_path: Path) -> 
 
 
 def test_generate_locales_handles_absent_binary(monkeypatch, tmp_path: Path) -> None:
-    from src.lpm import sysconfig as sysconfig_mod
+    from lpm import sysconfig as sysconfig_mod
 
     monkeypatch.setattr(sysconfig_mod.shutil, "which", lambda _: None)
 
@@ -87,7 +87,7 @@ def test_generate_locales_handles_absent_binary(monkeypatch, tmp_path: Path) -> 
 def test_generate_locales_reports_success(monkeypatch, tmp_path: Path) -> None:
     from types import SimpleNamespace
 
-    from src.lpm import sysconfig as sysconfig_mod
+    from lpm import sysconfig as sysconfig_mod
 
     monkeypatch.setattr(sysconfig_mod.shutil, "which", lambda _: "/usr/bin/locale-gen")
 
