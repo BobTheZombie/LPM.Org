@@ -19,12 +19,12 @@ Homepage = "https://gitlab.com/lpm-org/lpm"
 Repository = "https://gitlab.com/lpm-org/lpm"
 
 [project.scripts]
-lpm = "lpm:main"
+lpm = "lpm_bootstrap:main"
 lpm-ui = "lpm_ui:main"
 
 [tool.setuptools]
 include-package-data = true
-py-modules = ["lpm", "lpm_ui"]
+py-modules = ["lpm", "lpm_bootstrap", "lpm_ui"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
