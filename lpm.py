@@ -12,10 +12,75 @@ from importlib.machinery import ModuleSpec
 from pathlib import Path
 from types import ModuleType
 
-_CANDIDATE_ROOTS = [
-    Path(__file__).resolve().parent / "src" / "lpm",
-    Path(__file__).resolve().parent / "lpm",
-]
+_SCRIPT_PATH = Path(__file__).resolve()
+_SCRIPT_DIR = _SCRIPT_PATH.parent
+
+
+def _iter_site_packages_roots(base: Path) -> list[Path]:
+    """Return candidate ``site-packages``-style directories under *base*.
+
+    Distribution artifacts produced by tools such as PyInstaller or zipapp
+    often ship the :mod:`lpm` package under a conventional ``usr/lib`` or
+    ``lib`` hierarchy that mirrors a Python installation.  We need to locate
+    these directories at runtime so the lightweight ``lpm.py`` shim can import
+    the real package without relying on ``sys.path`` containing the project
+    root.  The helper walks a couple of common layouts and returns any
+    directory that *might* contain third-party modules.
+    """
+
+    candidates: list[Path] = []
+    for prefix in (base, base / "usr"):
+        for lib_name in ("lib", "lib64"):
+            lib_dir = prefix / lib_name
+            if not lib_dir.is_dir():
+                continue
+            for entry in lib_dir.iterdir():
+                if not entry.is_dir():
+                    continue
+                name = entry.name
+                if not name.startswith("python"):
+                    continue
+                for site_name in ("site-packages", "dist-packages"):
+                    site_dir = entry / site_name
+                    if site_dir.is_dir():
+                        candidates.append(site_dir)
+    return candidates
+
+
+def _iter_package_roots() -> list[Path]:
+    """Generate plausible locations for the :mod:`lpm` package.
+
+    The shim primarily targets editable checkouts where the project sources
+    live under ``src/lpm``.  However, binary distributions produced by the
+    project's tooling place the package underneath a staged prefix such as
+    ``usr/lib/python3.11/site-packages`` next to the ``lpm`` entry-point
+    script.  Scanning a broader set of directories keeps the shim functional
+    in these environments without requiring additional import path tweaks.
+    """
+
+    roots: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add(path: Path) -> None:
+        resolved = path.resolve()
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        roots.append(resolved)
+
+    # Editable/source checkouts.
+    _add(_SCRIPT_DIR / "src" / "lpm")
+    _add(_SCRIPT_DIR / "lpm")
+
+    # Any staged prefixes near the shim itself.
+    for parent in [_SCRIPT_DIR, *_SCRIPT_DIR.parents]:
+        for site_dir in _iter_site_packages_roots(parent):
+            _add(site_dir / "lpm")
+
+    return roots
+
+
+_CANDIDATE_ROOTS = _iter_package_roots()
 _PRESERVED_ATTRS = ("ResolutionError",)
 
 
