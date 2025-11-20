@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import sys
 from typing import Iterable
-
-from . import as_root
 from .commands.install import InstallCommand, InstallOptions
 from .context import CLIContext
 from .parser import build_parser
@@ -18,7 +16,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv))
 
-    context = CLIContext(parser.prog, list(argv), args.as_root or as_root.triggered())
+    context = CLIContext(parser.prog, list(argv))
 
     command = args.command
     if command == "install":

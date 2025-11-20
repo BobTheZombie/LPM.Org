@@ -10,9 +10,7 @@ from typing import Sequence
 
 from ...installpkg import apply_install_plan
 from ...priv import require_root
-from .. import as_root
 from ..context import CLIContext
-from ..planfile import InstallPlanFile
 from ..planner import build_install_plan
 
 
@@ -37,14 +35,7 @@ class InstallCommand:
             return 2
 
         plan = build_install_plan(options.packages)
-        if self._context.running_as_root or self._context.escalation_triggered:
-            return self._apply_plan(plan)
-
-        with InstallPlanFile(plan) as plan_file:
-            if not plan_file.path:
-                print("lpm: failed to create install plan", file=sys.stderr)
-                return 3
-            return as_root.invoke(["install", "--plan", plan_file.path])
+        return self._apply_plan(plan)
 
     def _apply_plan(self, plan: dict) -> int:
         try:

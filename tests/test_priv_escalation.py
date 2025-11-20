@@ -1,9 +1,10 @@
+from __future__ import annotations
+
 import sys
 
 import pytest
 
 from lpm import priv
-from lpm.cli import as_root
 
 
 @pytest.fixture(autouse=True)
@@ -21,7 +22,7 @@ def test_require_root_raises_without_privileges(monkeypatch):
     with pytest.raises(priv.RootPrivilegesRequired) as exc:
         priv.require_root("install packages")
     assert "install packages" in str(exc.value)
-    assert as_root.AS_ROOT_FLAG in str(exc.value)
+    assert "sudo" in str(exc.value)
 
 
 def test_format_command_for_hint_uses_current_argv(monkeypatch):
