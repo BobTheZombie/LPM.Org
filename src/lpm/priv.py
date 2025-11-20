@@ -1,14 +1,16 @@
-"""Compatibility shims for privilege handling."""
+"""Root privilege helpers.
+
+The codebase now assumes callers run LPM with traditional ``sudo`` rather than
+attempting automatic privilege escalation. These helpers simply enforce that
+requirement and provide consistent error messaging.
+"""
 
 from __future__ import annotations
 
 import os
 import shlex
-import shutil
 import sys
 from typing import Iterable
-
-from .cli import as_root
 
 __all__ = [
     "RootPrivilegesRequired",
@@ -27,9 +29,7 @@ class RootPrivilegesRequired(PermissionError):
         message = "Root privileges are required"
         if intent:
             message += f" to {intent}"
-        message += (
-            f". Re-run with 'sudo {format_command_for_hint()} {as_root.AS_ROOT_FLAG}'."
-        )
+        message += f". Re-run with 'sudo {format_command_for_hint()}'."
         super().__init__(message)
         self.intent = intent
 
@@ -52,64 +52,22 @@ def set_prompt_context(_context: str) -> None:
     """Retained for compatibility with legacy callers."""
 
 
-def _filtered_argv(argv: Iterable[str]) -> list[str]:
-    args = list(argv)
-    try:
-        flag_index = args.index(as_root.AS_ROOT_FLAG)
-    except ValueError:
-        return args
-    # Remove the first occurrence so hints don't duplicate the flag.
-    return args[:flag_index] + args[flag_index + 1 :]
-
-
 def format_command_for_hint(argv: Iterable[str] | None = None) -> str:
     args = list(argv if argv is not None else sys.argv)
     if not args:
         executable = getattr(sys, "executable", None) or "python3"
         args = [executable, "-m", "lpm"]
-    else:
-        args = _filtered_argv(args)
     return shlex.join(args)
 
 
 def require_root(intent: str | None = None) -> None:
-    if _is_root() or as_root.triggered():
+    if _is_root():
         return
     raise RootPrivilegesRequired(intent)
 
 
-def _stdin_is_tty() -> bool:
-    stream = getattr(sys, "stdin", None)
-    if stream is None:
-        return False
-    try:
-        return bool(stream.isatty())
-    except Exception:
-        return False
-
-
 def ensure_root_or_escalate(intent: str) -> None:
-    """Ensure the current process has root privileges, escalating via sudo."""
+    """Ensure the current process has root privileges."""
 
-    if _is_root() or as_root.triggered():
-        return
-
-    if not _stdin_is_tty():
-        raise RootPrivilegesRequired(intent)
-
-    if shutil.which("sudo") is None:
-        raise RootPrivilegesRequired(intent)
-
-    try:
-        response = input(
-            f"Root privileges are required to {intent}. Continue with sudo? [y/N]: "
-        )
-    except (EOFError, KeyboardInterrupt, OSError):
-        raise RootPrivilegesRequired(intent)
-
-    if response.strip().lower() not in {"y", "yes"}:
-        raise RootPrivilegesRequired(intent)
-
-    exit_code = as_root.invoke(sys.argv[1:])
-    sys.exit(exit_code)
+    require_root(intent)
 

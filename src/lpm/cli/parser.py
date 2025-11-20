@@ -4,12 +4,9 @@ from __future__ import annotations
 
 import argparse
 
-from . import as_root
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lpm")
-    parser.add_argument(as_root.AS_ROOT_FLAG, action="store_true", dest="as_root", help=argparse.SUPPRESS)
 
     sub = parser.add_subparsers(dest="command")
 
