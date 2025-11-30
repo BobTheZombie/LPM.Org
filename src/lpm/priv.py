@@ -1,8 +1,10 @@
-"""Root privilege helpers.
+"""Root privilege helpers with automatic escalation.
 
-The codebase now assumes callers run LPM with traditional ``sudo`` rather than
-attempting automatic privilege escalation. These helpers simply enforce that
-requirement and provide consistent error messaging.
+This module centralises privilege checks and, when allowed, attempts to
+re-execute the current process via ``sudo`` to acquire the privileges required
+by package management operations. Users can opt out of escalation either by
+passing ``--no-escalate`` (which calls :func:`set_escalation_disabled`) or by
+setting the ``LPM_NO_ESCALATE`` environment variable.
 """
 
 from __future__ import annotations
@@ -12,11 +14,16 @@ import shlex
 import sys
 from typing import Iterable
 
+_escalation_disabled = False
+_prompt_context: str | None = None
+
 __all__ = [
     "RootPrivilegesRequired",
     "ensure_root_or_escalate",
     "format_command_for_hint",
     "require_root",
+    "escalation_disabled",
+    "is_root",
     "set_escalation_disabled",
     "set_prompt_context",
 ]
@@ -34,7 +41,7 @@ class RootPrivilegesRequired(PermissionError):
         self.intent = intent
 
 
-def _is_root() -> bool:
+def is_root() -> bool:
     geteuid = getattr(os, "geteuid", None)
     if not callable(geteuid):
         return False
@@ -44,12 +51,28 @@ def _is_root() -> bool:
         return False
 
 
-def set_escalation_disabled(_value: bool) -> None:
-    """Retained for compatibility with legacy callers."""
+# Backwards-compatible alias
+_is_root = is_root
 
 
-def set_prompt_context(_context: str) -> None:
-    """Retained for compatibility with legacy callers."""
+def set_escalation_disabled(value: bool) -> None:
+    """Enable or disable automatic privilege escalation."""
+
+    global _escalation_disabled
+    _escalation_disabled = bool(value)
+
+
+def escalation_disabled() -> bool:
+    """Return ``True`` when escalation has been disabled."""
+
+    return _escalation_disabled or bool(os.environ.get("LPM_NO_ESCALATE"))
+
+
+def set_prompt_context(context: str) -> None:
+    """Record a context string for external prompt handlers."""
+
+    global _prompt_context
+    _prompt_context = context
 
 
 def format_command_for_hint(argv: Iterable[str] | None = None) -> str:
@@ -66,8 +89,29 @@ def require_root(intent: str | None = None) -> None:
     raise RootPrivilegesRequired(intent)
 
 
-def ensure_root_or_escalate(intent: str) -> None:
-    """Ensure the current process has root privileges."""
+def ensure_root_or_escalate(intent: str | None = None) -> None:
+    """Ensure the current process has root privileges.
 
-    require_root(intent)
+    When not running as root, this function re-executes the current program via
+    ``sudo`` with the original command-line arguments so that privileged
+    operations can proceed. Escalation can be disabled with the ``--no-escalate``
+    flag (which calls :func:`set_escalation_disabled`) or by setting the
+    ``LPM_NO_ESCALATE`` environment variable.
+    """
+
+    if _escalation_disabled or os.environ.get("LPM_NO_ESCALATE"):
+        require_root(intent)
+        return
+
+    if _is_root():
+        return
+
+    prog = sys.argv[0]
+    args = sys.argv[1:]
+
+    try:
+        os.execvp("sudo", ["sudo", prog] + args)
+    except Exception:
+        # Fall back to the standard root check to raise a helpful error
+        require_root(intent)
 
