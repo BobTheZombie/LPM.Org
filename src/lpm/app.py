@@ -204,6 +204,8 @@ from .fs_ops import operation_phase
 from .priv import (
     RootPrivilegesRequired,
     ensure_root_or_escalate,
+    escalation_disabled,
+    is_root,
     set_escalation_disabled,
     set_prompt_context,
 )
@@ -3368,17 +3370,11 @@ def build_from_gitlab(pkgname: str) -> Path:
 def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str] = None) -> None:
     """Prompt the user to install a built package.
 
-    Parameters
-    ----------
-    blob : Path
-        Path to the built package file.
-    kind : str
-        Human readable kind of object (package/dependency).
-    default : Optional[str]
-        Default answer if the user just presses Enter. If ``None`` the
-        configuration value ``INSTALL_PROMPT_DEFAULT`` is used. Accepts
-        ``"y"`` or ``"n"``.
+    When run as an unprivileged user, the installation is delegated to the
+    ``installpkg`` CLI subcommand (and thus benefits from automatic privilege
+    escalation). Root callers continue to invoke :func:`installpkg` directly.
     """
+
     try:
         meta, _ = read_package_meta(blob)
         desc = f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}"
@@ -3392,8 +3388,18 @@ def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str]
     resp = input(f"{CYAN}[PROMPT]{RESET} Install {kind} {desc}? {choices} ").strip().lower()
     if not resp:
         resp = default
-    if resp in {"y", "yes"}:
+    if resp not in {"y", "yes"}:
+        return
+
+    if is_root() or escalation_disabled():
         installpkg(blob, explicit=(kind != "dependency"))
+        return
+
+    cmd = [sys.argv[0], "installpkg", str(blob)]
+    if kind == "dependency":
+        cmd.append("--implicit")
+
+    subprocess.run(["sudo"] + cmd, check=True)
 
 
 @dataclass
@@ -5055,7 +5061,7 @@ def cmd_fileinstall(a):
             dry_run=a.dry_run,
             verify=a.verify,
             force=a.force,
-            explicit=True,
+            explicit=not a.implicit,
         )
 
     max_workers = min(8, len(files))
@@ -5471,6 +5477,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--verify", action="store_true", help="verify .sig with trusted keys")
     sp.add_argument("--force", action="store_true", help="override protected package list for install/upgrade")
+    sp.add_argument("--implicit", action="store_true", help="mark the install as implicit (dependency)")
     sp.set_defaults(func=cmd_fileinstall)
 
 
