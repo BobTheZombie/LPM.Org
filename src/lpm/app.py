@@ -3385,7 +3385,11 @@ def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str]
         default = INSTALL_PROMPT_DEFAULT
     default = "y" if str(default).lower() in {"y", "yes"} else "n"
     choices = "[Y/n]" if default == "y" else "[y/N]"
-    resp = input(f"{CYAN}[PROMPT]{RESET} Install {kind} {desc}? {choices} ").strip().lower()
+
+    if not sys.stdin.isatty():
+        resp = default
+    else:
+        resp = input(f"{CYAN}[PROMPT]{RESET} Install {kind} {desc}? {choices} ").strip().lower()
     if not resp:
         resp = default
     if resp not in {"y", "yes"}:
