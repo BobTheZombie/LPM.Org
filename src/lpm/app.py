@@ -3375,6 +3375,7 @@ def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str]
     escalation). Root callers continue to invoke :func:`installpkg` directly.
     """
 
+    meta: Optional[PkgMeta] = None
     try:
         meta, _ = read_package_meta(blob)
         desc = f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}"
@@ -3395,15 +3396,34 @@ def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str]
     if resp not in {"y", "yes"}:
         return
 
-    if is_root() or escalation_disabled():
-        installpkg(blob, explicit=(kind != "dependency"))
-        return
+    if not meta:
+        try:
+            meta, _ = read_package_meta(blob)
+        except Exception as exc:
+            die(f"Failed to read package metadata for {blob}: {exc}")
 
-    cmd = [sys.argv[0], "installpkg", str(blob)]
-    if kind == "dependency":
-        cmd.append("--implicit")
+    if not is_root() and not escalation_disabled():
+        cmd = ["sudo", sys.executable, "-m", "lpm", "installpkg", str(blob)]
+        if kind == "dependency":
+            cmd.append("--implicit")
+        log("Re-executing installpkg under sudo for installation prompt")
+        os.execvp("sudo", cmd)
 
-    subprocess.run(["sudo"] + cmd, check=True)
+    explicit_names: Set[str] = set()
+    if kind != "dependency" and meta.name:
+        explicit_names.add(meta.name)
+
+    do_install(
+        [meta],
+        Path(DEFAULT_ROOT),
+        dry=False,
+        verify=True,
+        force=False,
+        explicit=explicit_names,
+        allow_fallback=ALLOW_LPMBUILD_FALLBACK,
+        force_build=False,
+        local_overrides={meta.name: blob} if meta.name else None,
+    )
 
 
 @dataclass
@@ -3780,6 +3800,10 @@ def run_lpmbuild(
                         local_executor.shutdown(wait=True)
 
     stagedir_base = Path(f"/tmp/pkg-{name}")
+    try:
+        stagedir_base.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        stagedir_base = Path(tempfile.mkdtemp(prefix=f"pkg-{name}-"))
     buildroot_base = Path(f"/tmp/build-{name}")
     srcroot_base = Path(f"/tmp/src-{name}")
 
