@@ -101,6 +101,22 @@ def _load_from_spec(spec: ModuleSpec) -> ModuleType | None:
     return module
 
 
+def _safe_find_spec(name: str) -> ModuleSpec | None:
+    try:
+        spec = importlib.util.find_spec(name)
+    except ModuleNotFoundError:
+        return None
+
+    if not spec:
+        return None
+
+    origin = getattr(spec, "origin", None)
+    if origin and Path(origin) == Path(__file__).resolve():
+        return None
+
+    return spec
+
+
 def _load_package() -> ModuleType:
     for root in _CANDIDATE_ROOTS:
         init = root / "__init__.py"
@@ -114,17 +130,8 @@ def _load_package() -> ModuleType:
             if module is not None:
                 return module
 
-    def _spec_for(name: str) -> ModuleSpec | None:
-        spec = importlib.util.find_spec(name)
-        if not spec:
-            return None
-        origin = getattr(spec, "origin", None)
-        if origin and Path(origin) == Path(__file__).resolve():
-            return None
-        return spec
-
-    for candidate in ("lpm", "src.lpm"):
-        spec = _spec_for(candidate)
+    for candidate in (__name__, "lpm"):
+        spec = _safe_find_spec(candidate)
         if not spec:
             continue
         module = _load_from_spec(spec)
