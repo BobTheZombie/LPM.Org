@@ -27,12 +27,12 @@ def test_shim_falls_back_to_find_spec(monkeypatch):
                 }
             )
 
-    dummy_spec = ModuleSpec(name="src.lpm", loader=DummyLoader())
+    dummy_spec = ModuleSpec(name="lpm", loader=DummyLoader())
     dummy_spec.origin = str(shim_path.with_name("dummy_init.py"))
     dummy_spec.submodule_search_locations = ["dummy"]
 
     def fake_find_spec(name: str):
-        if name == "src.lpm":
+        if name == "lpm":
             return dummy_spec
         return None
 
@@ -60,7 +60,6 @@ def test_shim_falls_back_to_find_spec(monkeypatch):
     finally:
         for name in [
             "lpm_shim_test",
-            "src.lpm",
             "lpm.app",
             "lpm.fs_ops",
             "lpm.atomic_io",
@@ -94,7 +93,6 @@ def test_shim_loads_app_from_package_when_import_fails(monkeypatch):
     finally:
         for name in [
             shim_name,
-            "src.lpm",
             "lpm.app",
             "lpm.fs_ops",
             "lpm.atomic_io",
