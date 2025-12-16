@@ -19,7 +19,7 @@ Homepage = "https://gitlab.com/lpm-org/lpm"
 Repository = "https://gitlab.com/lpm-org/lpm"
 
 [project.scripts]
-lpm = "lpm.bootstrap:main"
+lpm = "lpm_bootstrap:main"
 lpm-ui = "lpm_ui:main"
 
 [tool.setuptools]
