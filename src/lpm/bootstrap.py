@@ -8,7 +8,7 @@ import sys
 from typing import Iterable, Callable
 
 
-CLI_MAIN_IMPORT = "lpm.cli.main"
+CLI_MAIN_IMPORT = "lpm.app"
 
 
 def _strip_script_directory() -> None:
@@ -18,7 +18,7 @@ def _strip_script_directory() -> None:
     the directory containing the launcher (for example ``/usr/bin``) to the
     beginning of :data:`sys.path`.  Some environments also ship a helper module
     named :mod:`lpm` alongside the launcher, which shadows the real package and
-    causes ``import lpm.cli`` to fail with ``'lpm' is not a package``.  Stripping
+    causes ``import lpm.app`` to fail with ``'lpm' is not a package``.  Stripping
     this leading entry ensures that import resolution falls back to the actual
     installation in ``site-packages``.
     """
@@ -36,7 +36,7 @@ def _strip_script_directory() -> None:
         sys.path.pop(0)
 
 
-def _load_cli_main() -> Callable[[Iterable[str] | None], int]:
+def _load_cli_main() -> Callable[[Iterable[str] | None], int | None]:
     module = import_module(CLI_MAIN_IMPORT)
     return module.main
 
