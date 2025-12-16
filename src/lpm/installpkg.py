@@ -23,29 +23,140 @@ __all__ = ["installpkg", "main", "apply_install_plan"]
 
 
 def apply_install_plan(plan: dict) -> int:
-    """Apply a previously constructed install *plan* with elevated privileges.
-
-    This placeholder implementation expects ``plan`` to contain a ``packages``
-    entry listing package identifiers selected by the unprivileged CLI.  The
-    actual installation logic lives in the legacy :mod:`lpm.app` module and will
-    be integrated in a future revision.  For now we simply acknowledge the
-    request to demonstrate the privilege hand-off path.
-    """
+    """Apply a previously constructed install *plan* with elevated privileges."""
 
     packages = plan.get("packages", [])
     if not isinstance(packages, list):
         print("lpm: invalid install plan: 'packages' must be a list", file=sys.stderr)
         return 1
 
+    root_path = Path(plan.get("root") or _app.DEFAULT_ROOT)
+    try:
+        root_path.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    dry_run = bool(plan.get("dry_run", False))
+    verify_default = bool(plan.get("verify", True))
+    force = bool(plan.get("force", False))
+    allow_fallback = bool(plan.get("allow_fallback", _app.ALLOW_LPMBUILD_FALLBACK))
+
+    validated: list[dict[str, object]] = []
     for pkg in packages:
-        if not isinstance(pkg, str):
+        if isinstance(pkg, str):
+            pkg_entry = {"path": pkg}
+        elif isinstance(pkg, dict):
+            pkg_entry = pkg
+        else:
             print(
-                "lpm: invalid install plan: package entries must be strings",
+                "lpm: invalid install plan: package entries must be objects",
                 file=sys.stderr,
             )
             return 1
 
-    # Placeholder behaviour: nothing to do yet.
+        path_value = pkg_entry.get("path")
+        if not isinstance(path_value, str):
+            print("lpm: invalid install plan: missing package path", file=sys.stderr)
+            return 1
+
+        pkg_path = Path(path_value)
+        try:
+            pkg_path = pkg_path.resolve()
+        except OSError:
+            pkg_path = pkg_path
+
+        if not pkg_path.exists():
+            print(f"lpm: package not found: {pkg_path}", file=sys.stderr)
+            return 1
+
+        try:
+            meta, _ = _app.read_package_meta(pkg_path)
+        except Exception as exc:
+            print(f"lpm: failed to read package metadata from {pkg_path}: {exc}", file=sys.stderr)
+            return 1
+
+        if not meta:
+            print(f"lpm: invalid package: {pkg_path.name} (no metadata)", file=sys.stderr)
+            return 1
+
+        for field in ("name", "version", "release", "arch"):
+            expected = pkg_entry.get(field)
+            if expected and getattr(meta, field) != expected:
+                print(
+                    f"lpm: {pkg_path.name} metadata mismatch for {field}: "
+                    f"{getattr(meta, field)} != {expected}",
+                    file=sys.stderr,
+                )
+                return 1
+
+        sig_path = pkg_entry.get("signature")
+        if sig_path is None:
+            sig_path = pkg_path.with_suffix(pkg_path.suffix + ".sig")
+        else:
+            sig_path = Path(sig_path)
+
+        verify = bool(pkg_entry.get("verify", verify_default))
+        explicit = bool(pkg_entry.get("explicit", True))
+
+        validated.append(
+            {
+                "path": pkg_path,
+                "signature": sig_path,
+                "verify": verify,
+                "explicit": explicit,
+            }
+        )
+
+    hook_txn: Optional[HookTransactionManager] = None
+    if not dry_run:
+        hook_txn = HookTransactionManager(
+            hooks=load_hooks(_app.LIBLPM_HOOK_DIRS),
+            root=root_path,
+            base_env={"LPM_ROOT": str(root_path)},
+        )
+
+    try:
+        for pkg in validated:
+            path = pkg["path"]
+            signature = pkg["signature"]
+            verify = bool(pkg["verify"])
+            explicit = bool(pkg["explicit"])
+
+            if verify:
+                try:
+                    _app.verify_signature(path, signature)
+                except Exception as exc:
+                    print(
+                        f"lpm: failed to verify signature for {path.name}: {exc}",
+                        file=sys.stderr,
+                    )
+                    return 4
+
+            try:
+                installpkg(
+                    file=path,
+                    root=root_path,
+                    dry_run=dry_run,
+                    verify=verify,
+                    force=force,
+                    explicit=explicit,
+                    allow_fallback=allow_fallback,
+                    hook_transaction=hook_txn,
+                )
+            except SystemExit as exc:
+                code = exc.code if isinstance(exc.code, int) else 1
+                print(
+                    f"lpm: installation aborted for {path.name} (exit code {code})",
+                    file=sys.stderr,
+                )
+                return code
+            except Exception as exc:  # pragma: no cover - defensive
+                print(f"lpm: install failed for {path.name}: {exc}", file=sys.stderr)
+                return 1
+    finally:
+        if hook_txn is not None:
+            hook_txn.run_post_transaction()
+
     return 0
 
 PkgMeta = _app.PkgMeta

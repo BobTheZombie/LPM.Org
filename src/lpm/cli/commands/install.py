@@ -34,7 +34,11 @@ class InstallCommand:
             print("lpm: at least one package must be specified", file=sys.stderr)
             return 2
 
-        plan = build_install_plan(options.packages)
+        try:
+            plan = build_install_plan(options.packages)
+        except Exception as exc:
+            print(f"lpm: failed to build install plan: {exc}", file=sys.stderr)
+            return 4
         return self._apply_plan(plan)
 
     def _apply_plan(self, plan: dict) -> int:
@@ -46,6 +50,10 @@ class InstallCommand:
 
         try:
             return int(apply_install_plan(plan))
+        except SystemExit as exc:
+            code = exc.code if isinstance(exc.code, int) else 1
+            print(f"lpm: privileged install aborted with exit code {code}", file=sys.stderr)
+            return code
         except Exception as exc:  # pragma: no cover - defensive
             print(f"lpm: privileged install failed: {exc}", file=sys.stderr)
             return 5
@@ -70,4 +78,3 @@ class InstallCommand:
 
 
 __all__ = ["InstallCommand", "InstallOptions"]
-
