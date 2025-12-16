@@ -104,7 +104,7 @@ def _load_from_spec(spec: ModuleSpec) -> ModuleType | None:
 def _safe_find_spec(name: str) -> ModuleSpec | None:
     try:
         spec = importlib.util.find_spec(name)
-    except ModuleNotFoundError:
+    except (ModuleNotFoundError, ValueError):
         return None
 
     if not spec:
@@ -130,7 +130,8 @@ def _load_package() -> ModuleType:
             if module is not None:
                 return module
 
-    for candidate in (__name__, "lpm"):
+    candidates = ("lpm",) if __name__ == "__main__" else (__name__, "lpm")
+    for candidate in candidates:
         spec = _safe_find_spec(candidate)
         if not spec:
             continue
