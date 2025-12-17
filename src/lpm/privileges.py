@@ -4,7 +4,7 @@ import os
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Tuple
 
 
 def _env_int(name: str) -> Optional[int]:
@@ -140,6 +140,24 @@ def privileged_section() -> Iterator[None]:
             _MANAGER.release()
 
 
+def privileges_enabled() -> bool:
+    return _MANAGER.enabled
+
+
+def privilege_info() -> _PrivilegeInfo:
+    return _MANAGER.info
+
+
+def state_owner_ids() -> tuple[Optional[int], Optional[int]]:
+    info = privilege_info()
+    if privileges_enabled() and info.privileged_uid == 0 and info.unpriv_uid != info.privileged_uid:
+        return info.unpriv_uid, info.unpriv_gid
+    return None, None
+
+
 __all__ = [
     "privileged_section",
+    "privileges_enabled",
+    "privilege_info",
+    "state_owner_ids",
 ]

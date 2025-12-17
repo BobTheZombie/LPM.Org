@@ -195,6 +195,7 @@ from ..first_run_ui import run_first_run_wizard
 from .. import maintainer_mode, config as _config
 from .atomic_io import atomic_replace
 from .fs_ops import operation_phase
+from .privileges import privilege_info, privileged_section, privileges_enabled
 from .resolver import CNF, CDCLSolver
 from .hooks import HookTransactionManager, load_hooks
 from .delta import apply_delta, find_cached_by_sha, file_sha256, zstd_version, version_at_least
@@ -747,9 +748,37 @@ CREATE TABLE IF NOT EXISTS snapshots(
 _DB_PATH_OVERRIDE: Optional[Path] = None
 
 
+def _state_owner_group() -> tuple[Optional[int], Optional[int]]:
+    try:
+        info = privilege_info()
+    except Exception:
+        return None, None
+    if privileges_enabled() and info.privileged_uid == 0 and info.unpriv_uid != info.privileged_uid:
+        return info.unpriv_uid, info.unpriv_gid
+    return None, None
+
+
+def _apply_state_permissions(path: Path, *, directory: bool) -> None:
+    owner, group = _state_owner_group()
+    mode = 0o775 if directory else 0o664
+    uid = owner if owner is not None else -1
+    gid = group if group is not None else -1
+    with privileged_section():
+        try:
+            if owner is not None or group is not None:
+                os.chown(path, uid, gid)
+        except OSError:
+            pass
+        try:
+            os.chmod(path, mode)
+        except OSError:
+            pass
+
+
 def _open_state_db(path: Path) -> sqlite3.Connection:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _apply_state_permissions(path.parent, directory=True)
     c = sqlite3.connect(str(path))
     c.execute("PRAGMA journal_mode=WAL")
     c.executescript(SCHEMA)
@@ -761,6 +790,7 @@ def _open_state_db(path: Path) -> sqlite3.Connection:
     if "explicit" not in cols:
         c.execute("ALTER TABLE installed ADD COLUMN explicit INTEGER NOT NULL DEFAULT 0")
     c.commit()
+    _apply_state_permissions(path, directory=False)
     return c
 
 
@@ -4182,7 +4212,6 @@ def run_lpmbuild(
                     "generate_install_script", generate_install_script
                 )(stagedir)
                 with install_sh.open("w", encoding="utf-8") as f:
-                    f.write("#!/bin/sh\nset -e\n")
                     f.write(script_text)
                     if not script_text.endswith("\n"):
                         f.write("\n")
@@ -4864,7 +4893,6 @@ def cmd_splitpkg(a):
                     "generate_install_script", generate_install_script
                 )(stagedir)
                 with install_sh.open("w", encoding="utf-8") as f:
-                    f.write("#!/bin/sh\nset -e\n")
                     f.write(script_text)
                     if not script_text.endswith("\n"):
                         f.write("\n")
