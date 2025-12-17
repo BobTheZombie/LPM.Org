@@ -64,6 +64,26 @@ def initialize_state() -> None:
     os.umask(UMASK)
     for d in (STATE_DIR, CACHE_DIR, SOURCE_CACHE_DIR, SNAPSHOT_DIR):
         d.mkdir(parents=True, exist_ok=True)
+    try:
+        from lpm.privileges import state_owner_ids
+
+        owner, group = state_owner_ids()
+    except Exception:
+        owner = group = None
+
+    def _set_state_perms(path: Path) -> None:
+        try:
+            if owner is not None or group is not None:
+                os.chown(path, owner if owner is not None else -1, group if group is not None else -1)
+        except OSError:
+            pass
+        try:
+            os.chmod(path, 0o775)
+        except OSError:
+            pass
+
+    for d in (STATE_DIR, CACHE_DIR, SOURCE_CACHE_DIR, SNAPSHOT_DIR):
+        _set_state_perms(d)
     if not REPO_LIST.exists():
         REPO_LIST.write_text("[]", encoding="utf-8")
     if not PIN_FILE.exists():
