@@ -642,6 +642,7 @@ class PkgMeta:
     license: str = ""
     developer: str = ""
     requires: List[str] = field(default_factory=list)
+    build_requires: List[str] = field(default_factory=list)
     conflicts: List[str] = field(default_factory=list)
     obsoletes: List[str] = field(default_factory=list)
     provides: List[str] = field(default_factory=list)
@@ -666,7 +667,7 @@ class PkgMeta:
             name=d["name"], version=d["version"], release=d.get("release","1"),
             arch=d.get("arch","noarch"), summary=d.get("summary",""), url=d.get("url",""),
             license=d.get("license",""), developer=d.get("developer",""), requires=d.get("requires",[]), conflicts=d.get("conflicts",[]),
-            obsoletes=d.get("obsoletes",[]), provides=d.get("provides",[]), provides_by_package=d.get("provides_by_package", {}), symbols=d.get("symbols",[]), recommends=d.get("recommends",[]),
+            build_requires=d.get("build_requires", []), obsoletes=d.get("obsoletes",[]), provides=d.get("provides",[]), provides_by_package=d.get("provides_by_package", {}), symbols=d.get("symbols",[]), recommends=d.get("recommends",[]),
             suggests=d.get("suggests",[]), size=d.get("size",0), sha256=d.get("sha256"), blob=d.get("blob"),
             repo=repo_name, prio=prio, bias=bias, decay=decay, kernel=d.get("kernel", False),
             mkinitcpio_preset=d.get("mkinitcpio_preset"), deltas=d.get("deltas", []))
@@ -995,8 +996,14 @@ def _first_missing_dependency(u: Universe, expr: DepExpr) -> Optional[DepExpr]:
     return expr
 
 
+def _iter_requires(meta: PkgMeta, include_build_requires: bool = False) -> Iterable[str]:
+    yield from meta.requires or []
+    if include_build_requires:
+        yield from getattr(meta, "build_requires", []) or []
+
+
 def prune_universe_missing_providers(
-    u: Universe,
+    u: Universe, include_build_requires: bool = False
 ) -> Tuple[Dict[Tuple[str, str], str], Dict[str, List[str]]]:
     """Prune candidates that reference dependencies with no providers."""
 
@@ -1017,7 +1024,7 @@ def prune_universe_missing_providers(
                     continue
 
                 reason: Optional[str] = None
-                for req in meta.requires:
+                for req in _iter_requires(meta, include_build_requires):
                     if not req:
                         continue
                     try:
@@ -1067,6 +1074,8 @@ def encode_resolution(
     u: Universe,
     goals: List[DepExpr],
     goal_texts: Optional[List[str]] = None,
+    *,
+    include_build_requires: bool = False,
 ) -> Tuple[
     CNF,
     Dict[Tuple[str, str], int],
@@ -1077,7 +1086,9 @@ def encode_resolution(
     Dict[Tuple[str, str], str],
     Dict[str, List[str]],
 ]:
-    disqualified, terminal = prune_universe_missing_providers(u)
+    disqualified, terminal = prune_universe_missing_providers(
+        u, include_build_requires
+    )
 
     cnf = CNF()
     var_of: Dict[Tuple[str,str],int] = {}
@@ -1129,7 +1140,7 @@ def encode_resolution(
     def add_pkg_constraints(p: PkgMeta):
         vp = var_of[(p.name,p.version)]
         # requires
-        for s in p.requires:
+        for s in _iter_requires(p, include_build_requires):
             if not s:
                 continue
             e = parse_dep_expr(s)
@@ -1223,7 +1234,9 @@ def encode_resolution(
         terminal,
     )
 
-def solve(goals: List[str], universe: Universe) -> List[PkgMeta]:
+def solve(
+    goals: List[str], universe: Universe, *, include_build_requires: bool = False
+) -> List[PkgMeta]:
     goal_exprs = [parse_dep_expr(s) for s in goals]
     (
         cnf,
@@ -1234,7 +1247,9 @@ def solve(goals: List[str], universe: Universe) -> List[PkgMeta]:
         decay_map,
         _disqualified,
         terminal_errors,
-    ) = encode_resolution(universe, goal_exprs, goals)
+    ) = encode_resolution(
+        universe, goal_exprs, goals, include_build_requires=include_build_requires
+    )
 
     for expr in goal_exprs:
         if expr.kind != "atom":
@@ -2988,6 +3003,7 @@ def _capture_lpmbuild_metadata(
         _emit_scalar_line("INSTALL", "INSTALL", "install"),
         _emit_array_line("SOURCE", "source"),
         _emit_array_line("REQUIRES", "requires", "depends"),
+        _emit_array_line("BUILD_REQUIRES", "build_requires", "makedepends"),
         _emit_array_line("REQUIRES_PYTHON_DEPENDENCIES", "requires_python_dependencies"),
         _emit_array_line("PROVIDES", "provides"),
         _emit_array_line("CONFLICTS", "conflicts"),
@@ -3012,6 +3028,7 @@ def _capture_lpmbuild_metadata(
         for key in [
             "SOURCE",
             "REQUIRES",
+            "BUILD_REQUIRES",
             "REQUIRES_PYTHON_DEPENDENCIES",
             "PROVIDES",
             "CONFLICTS",
@@ -3498,7 +3515,11 @@ def run_lpmbuild(
             finally:
                 conn.close()
 
-        for dep in arr.get("REQUIRES", []):
+        combined_requires = list(arr.get("REQUIRES", [])) + list(
+            arr.get("BUILD_REQUIRES", [])
+        )
+
+        for dep in combined_requires:
             try:
                 e = parse_dep_expr(dep)
             except Exception:
@@ -3522,8 +3543,9 @@ def run_lpmbuild(
         ) -> None:
             if not blob:
                 return
+            reader = _resolve_lpm_attr("read_package_meta", read_package_meta)
             try:
-                meta_obj, _ = read_package_meta(blob)
+                meta_obj, _ = reader(blob)
             except Exception as exc:
                 warn(f"[deps] unable to inspect built dependency {blob}: {exc}")
                 return
@@ -3747,6 +3769,7 @@ def run_lpmbuild(
         "license": license_,
         "developer": developer,
         "requires": arr.get("REQUIRES", []),
+        "build_requires": arr.get("BUILD_REQUIRES", []),
         "provides": provides_list,
         "provides_by_package": provides_by_package,
         "conflicts": arr.get("CONFLICTS", []),
@@ -4224,6 +4247,7 @@ def run_lpmbuild(
         name=name, version=version, release=release, arch=arch,
         summary=summary, url=url, license=license_, developer=developer,
         requires=arr.get("REQUIRES", []),
+        build_requires=arr.get("BUILD_REQUIRES", []),
         provides=provides_list,
         provides_by_package=provides_by_package,
         conflicts=arr.get("CONFLICTS", []),
@@ -4333,6 +4357,7 @@ def cmd_info(a):
         print(f"License:    {p.license}")
         print(f"Provides:   {', '.join(p.provides) or '-'}")
         print(f"Requires:   {', '.join(p.requires) or '-'}")
+        print(f"BuildReqs:  {', '.join(p.build_requires) or '-'}")
         print(f"Conflicts:  {', '.join(p.conflicts) or '-'}")
         print(f"Obsoletes:  {', '.join(p.obsoletes) or '-'}")
         print(f"Recommends: {', '.join(p.recommends) or '-'}")
@@ -4786,6 +4811,7 @@ def cmd_splitpkg(a):
         return []
 
     requires = _merge_list("requires")
+    build_requires = _merge_list("build_requires")
     provides = _merge_list("provides")
     conflicts = _merge_list("conflicts")
     obsoletes = _merge_list("obsoletes")
@@ -4804,6 +4830,7 @@ def cmd_splitpkg(a):
         license=str(license_),
         developer=str(developer),
         requires=requires,
+        build_requires=build_requires,
         provides=provides,
         conflicts=conflicts,
         obsoletes=obsoletes,

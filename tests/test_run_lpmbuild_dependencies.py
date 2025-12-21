@@ -45,30 +45,61 @@ if "tqdm" not in sys.modules:
 import lpm
 
 
-def _write_dummy_lpmbuild(script: Path, deps, python_deps=None):
+def _write_dummy_lpmbuild(
+    script: Path,
+    deps,
+    python_deps=None,
+    build_deps=None,
+    *,
+    name: str = "foo",
+):
     python_block = ""
     if python_deps:
         python_block = f"REQUIRES_PYTHON_DEPENDENCIES=({' '.join(python_deps)})\n"
+    build_block = ""
+    if build_deps:
+        build_block = f"BUILD_REQUIRES=({' '.join(shlex.quote(dep) for dep in build_deps)})\n"
     deps_str = " ".join(shlex.quote(dep) for dep in deps)
     script.write_text(
         textwrap.dedent(
             """
-            NAME=foo
+            NAME={name}
             VERSION=1
             RELEASE=1
             ARCH=noarch
             REQUIRES=({deps})
-            {python_block}prepare() {{ :; }}
+            {build_block}{python_block}prepare() {{ :; }}
             build() {{ :; }}
             staging() {{ :; }}
             """
-        ).format(deps=deps_str, python_block=python_block)
+        ).format(deps=deps_str, build_block=build_block, python_block=python_block, name=name)
     )
 
 
 def _stub_build_pipeline(monkeypatch):
     monkeypatch.setattr(lpm, "sandboxed_run", lambda *args, **kwargs: None)
     monkeypatch.setattr(lpm, "generate_install_script", lambda stagedir: "echo hi")
+    import src.lpm.app as lpm_app
+
+    def fake_read_package_meta(blob):
+        return (lpm.PkgMeta(name=blob.name.split("-")[0], version="1", arch="noarch"), [])
+
+    monkeypatch.setattr(lpm, "read_package_meta", fake_read_package_meta)
+    monkeypatch.setattr(lpm_app, "read_package_meta", fake_read_package_meta)
+    import sys
+
+    sys.modules["lpm"] = lpm
+    sys.modules["lpm"].read_package_meta = fake_read_package_meta
+    assert lpm.read_package_meta is fake_read_package_meta
+    assert lpm_app.read_package_meta is fake_read_package_meta
+
+    def fake_resolve(name, default):
+        if name == "read_package_meta":
+            return fake_read_package_meta
+        return default
+
+    monkeypatch.setattr(lpm, "_resolve_lpm_attr", fake_resolve)
+    monkeypatch.setattr(lpm_app, "_resolve_lpm_attr", fake_resolve)
 
     def fake_build_package(stagedir, meta, out, sign=True):
         out.write_text("pkg")
@@ -329,6 +360,68 @@ def test_run_lpmbuild_respects_pkgconfig_capabilities(tmp_path, monkeypatch):
     shutil.rmtree(Path("/tmp/src-foo"), ignore_errors=True)
 
 
+def test_run_lpmbuild_builds_build_requires(tmp_path, monkeypatch):
+    script = tmp_path / "foo.lpmbuild"
+    _write_dummy_lpmbuild(script, [], build_deps=["bar"], name="foo")
+
+    monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "state"))
+    _stub_build_pipeline(monkeypatch)
+    import src.lpm.app as lpm_app
+
+    built = []
+
+    def fake_build_package(stagedir, meta, out, sign=True):
+        built.append(meta.name)
+        out.write_text("pkg")
+
+    monkeypatch.setattr(lpm, "build_package", fake_build_package)
+    monkeypatch.setattr(lpm_app, "build_package", fake_build_package)
+
+    class DummyConn:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(lpm, "db", lambda: DummyConn())
+    monkeypatch.setattr(lpm, "db_installed", lambda conn: {})
+
+    def fake_fetch_lpmbuild(pkgname: str, dest: Path) -> Path:
+        _write_dummy_lpmbuild(dest, [], name=pkgname)
+        return dest
+
+    monkeypatch.setattr(lpm, "fetch_lpmbuild", fake_fetch_lpmbuild)
+
+    main_script = script.resolve()
+    orig_run_lpmbuild = lpm.run_lpmbuild
+
+    def fake_run_lpmbuild(script_path, *args, **kwargs):
+        if Path(script_path).resolve() != main_script:
+            dep_name = Path(script_path).stem
+            if dep_name.startswith("lpm-dep-"):
+                dep_name = dep_name[len("lpm-dep-") :]
+            built.append(dep_name)
+            return None, 0.0, 0, []
+        return orig_run_lpmbuild(script_path, *args, **kwargs)
+
+    monkeypatch.setattr(lpm, "run_lpmbuild", fake_run_lpmbuild)
+    monkeypatch.setattr(lpm_app, "run_lpmbuild", fake_run_lpmbuild)
+
+    out_path, _, _, _ = lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=True,
+    )
+
+    assert out_path.exists()
+    assert built.count("foo") == 1
+    assert built.count("bar") == 1
+
+    out_path.unlink()
+    shutil.rmtree(Path("/tmp/pkg-foo"), ignore_errors=True)
+    shutil.rmtree(Path("/tmp/build-foo"), ignore_errors=True)
+    shutil.rmtree(Path("/tmp/src-foo"), ignore_errors=True)
+
+
 def test_run_lpmbuild_detects_dependency_cycle(tmp_path, monkeypatch, capsys):
     cycle_scripts = {
         "foo": tmp_path / "foo.lpmbuild",
@@ -412,6 +505,10 @@ def test_run_lpmbuild_collects_dependency_arrays(tmp_path, monkeypatch):
               'binutils'
               'zlib'
             )
+            BUILD_REQUIRES=(
+              'git'
+              'base-devel'
+            )
             PROVIDES=('gcc' 'cc-bin')
             CONFLICTS=('gcc-old' 'gcc-beta')
             OBSOLETES=('gcc-12')
@@ -449,6 +546,7 @@ def test_run_lpmbuild_collects_dependency_arrays(tmp_path, monkeypatch):
     assert out_path.exists()
     meta = captured["meta"]
     assert meta.requires == ["glibc", "linux-headers", "binutils", "zlib"]
+    assert meta.build_requires == ["git", "base-devel"]
     assert meta.provides == ["gcc", "cc-bin"]
     assert meta.conflicts == ["gcc-old", "gcc-beta"]
     assert meta.obsoletes == ["gcc-12"]
