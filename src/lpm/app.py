@@ -4099,7 +4099,14 @@ def run_lpmbuild(
                         continue
                     member.name = stripped
                     members.append(member)
-                tf.extractall(dest, members=members)
+
+                for member in progress_bar(
+                    members,
+                    desc=f"Extracting {path.name}",
+                    unit="file",
+                    total=len(members),
+                ):
+                    tf.extract(member, path=str(dest), filter="data")
             finally:
                 if tf is not None:
                     tf.close()
@@ -4107,20 +4114,22 @@ def run_lpmbuild(
                     fileobj.close()
 
         try:
-            subprocess.run(
-                [
-                    "tar",
-                    "--strip-components=1",
-                    "-xaf",
-                    str(archive_path),
-                    "-C",
-                    str(target_dir),
-                ],
-                check=True,
-            )
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            with contextlib.suppress(Exception):
-                _extract_with_tarfile(archive_path, target_dir)
+            _extract_with_tarfile(archive_path, target_dir)
+        except Exception:
+            try:
+                subprocess.run(
+                    [
+                        "tar",
+                        "--strip-components=1",
+                        "-xaf",
+                        str(archive_path),
+                        "-C",
+                        str(target_dir),
+                    ],
+                    check=True,
+                )
+            except (FileNotFoundError, subprocess.CalledProcessError):
+                pass
 
     run_hook(
         "post_source_fetch",
