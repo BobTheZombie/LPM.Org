@@ -1,0 +1,12 @@
+[package]
+name = "lpm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["LPM Maintainers"]
+
+[dependencies]
+lpm-core = { path = "../lpm-core" }
+clap = { version = "4", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11"
