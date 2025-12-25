@@ -422,6 +422,135 @@ def test_run_lpmbuild_builds_build_requires(tmp_path, monkeypatch):
     shutil.rmtree(Path("/tmp/src-foo"), ignore_errors=True)
 
 
+def test_run_lpmbuild_builds_remaining_dependencies_after_failed_install(
+    tmp_path, monkeypatch
+):
+    script = tmp_path / "main.lpmbuild"
+    script.write_text(
+        textwrap.dedent(
+            """
+            NAME=main
+            VERSION=1
+            RELEASE=1
+            ARCH=noarch
+            REQUIRES=('dep-fail' 'dep-success')
+            prepare() { :; }
+            build() { :; }
+            staging() { :; }
+            """
+        )
+    )
+
+    dep_scripts = {
+        "dep-fail": tmp_path / "dep-fail.lpmbuild",
+        "dep-success": tmp_path / "dep-success.lpmbuild",
+    }
+
+    dep_scripts["dep-fail"].write_text(
+        textwrap.dedent(
+            """
+            NAME=dep-fail
+            VERSION=1
+            RELEASE=1
+            ARCH=noarch
+            PROVIDES=('dep-success')
+            prepare() { :; }
+            build() { :; }
+            staging() { :; }
+            """
+        )
+    )
+
+    dep_scripts["dep-success"].write_text(
+        textwrap.dedent(
+            """
+            NAME=dep-success
+            VERSION=1
+            RELEASE=1
+            ARCH=noarch
+            prepare() { :; }
+            build() { :; }
+            staging() { :; }
+            """
+        )
+    )
+
+    monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "state"))
+    _stub_build_pipeline(monkeypatch)
+    import src.lpm.app as lpm_app
+
+    installed = {}
+
+    class DummyConn:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(lpm, "db", lambda: DummyConn())
+    monkeypatch.setattr(lpm, "db_installed", lambda conn: installed)
+
+    def fake_read_package_meta(blob):
+        name = blob.name.split("-")[0]
+        provides = ["dep-success"] if name == "dep-fail" else []
+        return (lpm.PkgMeta(name=name, version="1", arch="noarch", provides=provides), [])
+
+    monkeypatch.setattr(lpm, "read_package_meta", fake_read_package_meta)
+    monkeypatch.setattr(lpm_app, "read_package_meta", fake_read_package_meta)
+
+    def fake_fetch_lpmbuild(pkgname: str, dest: Path) -> Path:
+        src = dep_scripts.get(pkgname)
+        if src is None:
+            raise AssertionError(f"unexpected dependency fetch: {pkgname}")
+        shutil.copy2(src, dest)
+        return dest
+
+    monkeypatch.setattr(lpm, "fetch_lpmbuild", fake_fetch_lpmbuild)
+    monkeypatch.setattr(lpm_app, "fetch_lpmbuild", fake_fetch_lpmbuild)
+
+    built = []
+
+    def fake_build_package(stagedir, meta, out, sign=True):
+        built.append(meta.name)
+        out.write_text("pkg")
+
+    monkeypatch.setattr(lpm, "build_package", fake_build_package)
+    monkeypatch.setattr(lpm_app, "build_package", fake_build_package)
+
+    prompt_calls = []
+
+    def fake_prompt_install_pkg(blob, kind="package", default=None):
+        prompt_calls.append(blob.name)
+        meta, _ = fake_read_package_meta(blob)
+        if meta.name == "dep-success":
+            installed[meta.name] = {"provides": meta.provides}
+
+    monkeypatch.setattr(lpm, "prompt_install_pkg", fake_prompt_install_pkg)
+    monkeypatch.setattr(lpm_app, "prompt_install_pkg", fake_prompt_install_pkg)
+
+    out_path, _, _, _ = lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=True,
+        build_deps=True,
+    )
+
+    assert out_path.exists()
+    assert built.count("dep-fail") == 1
+    assert built.count("dep-success") == 1
+    assert "dep-fail-1-1.noarch.zst" in prompt_calls
+    assert "dep-success-1-1.noarch.zst" in prompt_calls
+
+    out_path.unlink()
+    shutil.rmtree(Path("/tmp/pkg-main"), ignore_errors=True)
+    shutil.rmtree(Path("/tmp/build-main"), ignore_errors=True)
+    shutil.rmtree(Path("/tmp/src-main"), ignore_errors=True)
+    shutil.rmtree(Path("/tmp/pkg-dep-fail"), ignore_errors=True)
+    shutil.rmtree(Path("/tmp/build-dep-fail"), ignore_errors=True)
+    shutil.rmtree(Path("/tmp/src-dep-fail"), ignore_errors=True)
+    shutil.rmtree(Path("/tmp/pkg-dep-success"), ignore_errors=True)
+    shutil.rmtree(Path("/tmp/build-dep-success"), ignore_errors=True)
+    shutil.rmtree(Path("/tmp/src-dep-success"), ignore_errors=True)
+
+
 def test_run_lpmbuild_detects_dependency_cycle(tmp_path, monkeypatch, capsys):
     cycle_scripts = {
         "foo": tmp_path / "foo.lpmbuild",

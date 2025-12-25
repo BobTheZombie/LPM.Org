@@ -3497,23 +3497,28 @@ def run_lpmbuild(
                 if cap:
                     capabilities.add(cap)
 
-        if not force_rebuild:
+        def _refresh_capabilities_from_installed() -> None:
+            capabilities.clear()
+            if force_rebuild:
+                return
             conn = db()
             try:
                 installed = db_installed(conn)
-                capabilities.update(installed)
-                for pkg_name, meta in installed.items():
-                    if pkg_name:
-                        capabilities.add(pkg_name)
-                    provides = meta.get("provides") if isinstance(meta, dict) else getattr(meta, "provides", None)
-                    if not provides:
-                        continue
-                    for provide in provides:
-                        cap = _canonical_capability(provide)
-                        if cap:
-                            capabilities.add(cap)
             finally:
                 conn.close()
+            capabilities.update(installed)
+            for pkg_name, meta in installed.items():
+                if pkg_name:
+                    capabilities.add(pkg_name)
+                provides = meta.get("provides") if isinstance(meta, dict) else getattr(meta, "provides", None)
+                if not provides:
+                    continue
+                for provide in provides:
+                    cap = _canonical_capability(provide)
+                    if cap:
+                        capabilities.add(cap)
+
+        _refresh_capabilities_from_installed()
 
         combined_requires = list(arr.get("REQUIRES", [])) + list(
             arr.get("BUILD_REQUIRES", [])
@@ -3580,7 +3585,10 @@ def run_lpmbuild(
                 cpu_overrides=overrides,
                 on_built_package=on_built_package,
             )
-            _register_built_dependency_blob(built_blob, splits=split_records)
+            if prompt_install:
+                _refresh_capabilities_from_installed()
+            else:
+                _register_built_dependency_blob(built_blob, splits=split_records)
             return built_blob
 
         if deps_to_build:
@@ -3593,6 +3601,8 @@ def run_lpmbuild(
                     leave=True,
                 ) as pbar:
                     for idx, dep in enumerate(pbar, start=1):
+                        if dep in capabilities:
+                            continue
                         pbar.set_description(f"[deps] {dep}")
                         _build_dep(dep, idx, total)
             else:
@@ -3608,6 +3618,7 @@ def run_lpmbuild(
                     futures = [
                         local_executor.submit(_build_dep, dep, idx, total)
                         for idx, dep in enumerate(deps_to_build, start=1)
+                        if dep not in capabilities
                     ]
                     for fut in progress_bar(
                         as_completed(futures),
@@ -3658,18 +3669,7 @@ def run_lpmbuild(
                 seen.add(alt_key)
             python_to_build.append((spec, canonical_name))
 
-        def _build_python_dep(spec: str, canonical_name: str, idx: Optional[int] = None, total: Optional[int] = None):
-            if idx is not None and total is not None:
-                log(f"[deps] ({idx}/{total}) building required Python package: {spec}")
-            else:
-                log(f"[deps] building required Python package: {spec}")
-            out, meta, _ = _resolve_lpm_attr(
-                "build_python_package_from_pip", build_python_package_from_pip
-            )(
-                spec,
-                outdir or script_dir,
-                include_deps=True,
-            )
+        def _register_python_capabilities_from_meta(meta: PkgMeta, canonical_name: str) -> None:
             _register_meta_capabilities(meta)
             provided_caps = [
                 cap
@@ -3682,8 +3682,34 @@ def run_lpmbuild(
                 meta_canonical = canonicalize_name(getattr(meta, "name", "") or "")
                 if meta_canonical:
                     capabilities.add(f"pypi({meta_canonical})")
+
+        def _python_dep_satisfied(canonical_name: str) -> bool:
+            capability_names = {canonical_name}
+            if canonical_name.startswith("python-"):
+                trimmed = canonical_name[len("python-") :]
+                if trimmed:
+                    capability_names.add(trimmed)
+            if any(name in capabilities for name in capability_names):
+                return True
+            return any(f"pypi({name})" in capabilities for name in capability_names)
+
+        def _build_python_dep(spec: str, canonical_name: str, idx: Optional[int] = None, total: Optional[int] = None):
+            if idx is not None and total is not None:
+                log(f"[deps] ({idx}/{total}) building required Python package: {spec}")
+            else:
+                log(f"[deps] building required Python package: {spec}")
+            out, meta, _ = _resolve_lpm_attr(
+                "build_python_package_from_pip", build_python_package_from_pip
+            )(
+                spec,
+                outdir or script_dir,
+                include_deps=True,
+            )
             if prompt_install:
                 prompt_install_pkg(out, kind="dependency", default=prompt_default)
+                _refresh_capabilities_from_installed()
+            else:
+                _register_python_capabilities_from_meta(meta, canonical_name)
             if on_built_package:
                 try:
                     on_built_package(Path(out), meta)
@@ -3701,6 +3727,8 @@ def run_lpmbuild(
                     leave=True,
                 ) as pbar:
                     for idx, (spec, canonical_name) in enumerate(pbar, start=1):
+                        if _python_dep_satisfied(canonical_name):
+                            continue
                         pbar.set_description(f"[deps] pip {canonical_name}")
                         _build_python_dep(spec, canonical_name, idx, total)
             else:
@@ -3719,6 +3747,7 @@ def run_lpmbuild(
                         for idx, (spec, canonical_name) in enumerate(
                             python_to_build, start=1
                         )
+                        if not _python_dep_satisfied(canonical_name)
                     ]
                     for fut in progress_bar(
                         as_completed(futures),
