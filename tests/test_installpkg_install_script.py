@@ -80,15 +80,31 @@ def _make_install_script_pkg(lpm, tmp_path):
     return out
 
 
-def _make_simple_pkg(lpm, tmp_path, *, name="scripted", version="1", release="1", payload="from package\n"):
+def _make_simple_pkg(
+    lpm,
+    tmp_path,
+    *,
+    name="scripted",
+    version="1",
+    release="1",
+    payload="from package\n",
+    filename="foo",
+    obsoletes=None,
+):
     staged = tmp_path / f"stage-{name}-{version}-{release}"
     staged.mkdir()
 
-    payload_path = staged / "foo"
+    payload_path = staged / filename
     payload_path.write_text(payload)
 
     manifest = lpm.collect_manifest(staged)
-    meta = lpm.PkgMeta(name=name, version=version, release=release, arch="noarch")
+    meta = lpm.PkgMeta(
+        name=name,
+        version=version,
+        release=release,
+        arch="noarch",
+        obsoletes=obsoletes or [],
+    )
 
     (staged / ".lpm-meta.json").write_text(json.dumps(dataclasses.asdict(meta)))
     (staged / ".lpm-manifest.json").write_text(json.dumps(manifest))
@@ -278,3 +294,45 @@ def test_installpkg_lpmbuild_install_hooks(tmp_path, monkeypatch):
         "post_install 2.0-3 upgrade",
         "post_upgrade 2.0-3 1.0-1",
     ]
+
+
+def test_installpkg_removes_obsoletes(tmp_path, monkeypatch):
+    lpm = _import_lpm(tmp_path, monkeypatch)
+    root = tmp_path / "root"
+    root.mkdir()
+
+    obsolete_pkg = _make_simple_pkg(
+        lpm,
+        tmp_path,
+        name="oldpkg",
+        filename="old.txt",
+        payload="old-package\n",
+    )
+    lpm.installpkg(
+        obsolete_pkg, root=root, dry_run=False, verify=False, force=False, explicit=True
+    )
+
+    replacement_pkg = _make_simple_pkg(
+        lpm,
+        tmp_path,
+        name="newpkg",
+        filename="new.txt",
+        payload="new-package\n",
+        obsoletes=["oldpkg"],
+    )
+    lpm.installpkg(
+        replacement_pkg, root=root, dry_run=False, verify=False, force=False, explicit=True
+    )
+
+    assert not (root / "old.txt").exists()
+    assert (root / "new.txt").exists()
+
+    conn = sqlite3.connect(tmp_path / "state" / "state.db")
+    try:
+        names = {row[0] for row in conn.execute("SELECT name FROM installed")}
+        history = list(conn.execute("SELECT name, action FROM history ORDER BY ts"))
+    finally:
+        conn.close()
+
+    assert names == {"newpkg"}
+    assert any(entry == ("oldpkg", "remove") for entry in history)

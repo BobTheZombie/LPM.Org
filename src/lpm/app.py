@@ -2674,9 +2674,6 @@ def do_install(
                 paths=manifest_paths,
             )
 
-    if hook_txn is not None:
-        hook_txn.ensure_pre_transaction()
-
     for pkg, blob_path in progress_bar(jobs, desc="Installing", unit="pkg"):
         try:
             meta = installpkg(
@@ -5108,6 +5105,86 @@ def cmd_fileinstall(a):
         ):
             fut.result()
 
+
+def _installed_provider_map(installed: Mapping[str, dict]) -> Dict[str, Set[str]]:
+    providers: Dict[str, Set[str]] = {}
+
+    def add(token: str, pkg_name: str) -> None:
+        if not token:
+            return
+        providers.setdefault(token, set()).add(pkg_name)
+
+    for name, meta in installed.items():
+        add(name, name)
+        for prov in meta.get("provides", []) or []:
+            prov = (prov or "").strip()
+            if not prov:
+                continue
+            m = re.match(r"^([A-Za-z0-9._\-+]+)\s*(==|=|>=|<=|>|<|~=?)*\s*(.*)?$", prov)
+            if not m:
+                continue
+            nm, op, ver = m.group(1), (m.group(2) or ""), (m.group(3) or "")
+            add(nm, name)
+            if nm and op and ver:
+                norm_op = "==" if op == "=" else op
+                add(f"{nm}{norm_op}{ver}", name)
+
+    return providers
+
+
+def _match_dep_expr_against_installed(
+    expr: DepExpr,
+    installed: Mapping[str, dict],
+    providers: Mapping[str, Set[str]],
+) -> Set[str]:
+    if expr.kind == "atom":
+        atom = expr.atom
+        if not atom:
+            return set()
+        matches: Set[str] = set()
+        for pkg_name in providers.get(atom.name, set()):
+            meta = installed.get(pkg_name)
+            if meta is None:
+                continue
+            if atom.op and atom.ver:
+                if not satisfies(meta.get("version", ""), f"{atom.op}{atom.ver}"):
+                    continue
+            matches.add(pkg_name)
+        return matches
+
+    if expr.kind == "or":
+        left = _match_dep_expr_against_installed(expr.left, installed, providers) if expr.left else set()
+        right = _match_dep_expr_against_installed(expr.right, installed, providers) if expr.right else set()
+        return left | right
+
+    if expr.kind == "and":
+        left = _match_dep_expr_against_installed(expr.left, installed, providers) if expr.left else set()
+        right = _match_dep_expr_against_installed(expr.right, installed, providers) if expr.right else set()
+        if not left or not right:
+            return set()
+        return left & right
+
+    return set()
+
+
+def _resolve_obsoletes_against_installed(
+    obsoletes: Iterable[str], installed: Mapping[str, dict]
+) -> Set[str]:
+    providers = _installed_provider_map(installed)
+    matches: Set[str] = set()
+
+    for raw in obsoletes:
+        if not raw:
+            continue
+        try:
+            expr = parse_dep_expr(raw)
+        except Exception:
+            warn(f"Invalid obsoletes expression: {raw}")
+            continue
+        matches.update(_match_dep_expr_against_installed(expr, installed, providers))
+
+    return matches
+
 def installpkg(
     file: Path,
     root: Path = Path(DEFAULT_ROOT),
@@ -5183,6 +5260,7 @@ def installpkg(
 
 
     manifest_paths = _normalize_manifest_paths(mani)
+    obsoletes_to_remove: Dict[str, dict] = {}
 
     # --- Step 4: Dry-run ---
     if dry_run:
@@ -5193,6 +5271,25 @@ def installpkg(
 
     # --- Step 5: Transaction (unchanged below) ---
     conn = db()
+    installed_state: Dict[str, dict] = {}
+    if meta.obsoletes:
+        installed_state = db_installed(conn)
+        matched_obsoletes = _resolve_obsoletes_against_installed(
+            meta.obsoletes, installed_state
+        )
+        for obsolete in sorted(matched_obsoletes):
+            obsolete_meta = installed_state.get(obsolete)
+            if obsolete_meta is None:
+                continue
+            if obsolete in PROTECTED and not force:
+                warn(
+                    f"{obsolete} is protected (from {PROTECTED_FILE}) and cannot be removed without --force"
+                )
+                continue
+            if obsolete == meta.name:
+                continue
+            obsoletes_to_remove[obsolete] = obsolete_meta
+
     row = conn.execute(
         "SELECT version, release FROM installed WHERE name=?",
         (meta.name,),
@@ -5200,18 +5297,37 @@ def installpkg(
     previous_version = row[0] if row else None
     previous_release = row[1] if row else None
 
-    if txn is not None and register_event:
-        operation = "Upgrade" if row else "Install"
-        txn.add_package_event(
-            name=meta.name,
-            operation=operation,
-            version=meta.version,
-            release=meta.release,
-            paths=manifest_paths,
-        )
-
     if txn is not None:
+        if register_event:
+            operation = "Upgrade" if row else "Install"
+            txn.add_package_event(
+                name=meta.name,
+                operation=operation,
+                version=meta.version,
+                release=meta.release,
+                paths=manifest_paths,
+            )
+
+        for obsolete_name, obsolete_meta in obsoletes_to_remove.items():
+            txn.add_package_event(
+                name=obsolete_name,
+                operation="Remove",
+                version=obsolete_meta.get("version"),
+                release=obsolete_meta.get("release"),
+                paths=_normalize_manifest_paths(obsolete_meta.get("manifest", [])),
+            )
+
         txn.ensure_pre_transaction()
+
+    for obsolete_name in obsoletes_to_remove:
+        removepkg(
+            name=obsolete_name,
+            root=root,
+            dry_run=dry_run,
+            force=force,
+            hook_transaction=txn,
+            register_event=False,
+        )
 
     with transaction(conn, f"install {meta.name}", dry_run):
 
