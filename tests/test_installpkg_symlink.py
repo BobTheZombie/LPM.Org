@@ -232,7 +232,8 @@ def test_installpkg_replace_all_option(tmp_path, monkeypatch):
     root = tmp_path / "root-conflict"
     (root / "etc").mkdir(parents=True)
 
-    (root / "etc" / "foo").write_text("existing foo\n")
+    (root / "etc" / "foo").write_text("package foo\n")
+    foo_inode_before = os.stat(root / "etc" / "foo").st_ino
     (root / "etc" / "bar").write_text("existing bar\n")
 
     pkg = _make_conflict_pkg(lpm, tmp_path)
@@ -257,3 +258,4 @@ def test_installpkg_replace_all_option(tmp_path, monkeypatch):
 
     assert (root / "etc" / "foo").read_text() == "package foo\n"
     assert (root / "etc" / "bar").read_text() == "package bar\n"
+    assert os.stat(root / "etc" / "foo").st_ino != foo_inode_before

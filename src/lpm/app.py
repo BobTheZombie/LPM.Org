@@ -5444,16 +5444,6 @@ def installpkg(
                             continue
 
                         if dest.exists() or dest.is_symlink():
-                            same = False
-                            try:
-                                if dest.is_file() and sha256sum(dest) == e["sha256"]:
-                                    same = True
-                            except Exception:
-                                pass
-                            if same:
-                                log(f"[skip] {rel} already up-to-date")
-                                continue
-
                             def _remove_dest() -> None:
                                 if dest.is_file() or dest.is_symlink():
                                     dest.unlink()
@@ -5463,6 +5453,16 @@ def installpkg(
                             if replace_all:
                                 _remove_dest()
                             else:
+                                same = False
+                                try:
+                                    if dest.is_file() and sha256sum(dest) == e["sha256"]:
+                                        same = True
+                                except Exception:
+                                    pass
+                                if same:
+                                    log(f"[skip] {rel} already up-to-date")
+                                    continue
+
                                 while True:
                                     resp = input(
                                         f"[conflict] {rel} exists. [R]eplace / [RA] Replace All / [S]kip / [A]bort? "
