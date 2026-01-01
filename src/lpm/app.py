@@ -1424,6 +1424,8 @@ SYSTEMD_UNIT_DIRECTORIES = (
     "lib/systemd/system",
 )
 
+DEFAULT_INIT_SYSTEMD_DENYLIST = {"systemd", "systemd-libs"}
+
 
 def _normalize_manifest_paths(manifest_entries: Optional[List[object]]) -> List[str]:
     paths: List[str] = []
@@ -1453,11 +1455,27 @@ def _iter_systemd_units_from_manifest(paths: Iterable[str]) -> Iterable[Tuple[st
                 break
 
 
+def _is_core_init_package(pkg_name: str) -> bool:
+    denylist_raw = CONF.get("INIT_SYSTEMD_DENYLIST", "")
+    denylisted_pkgs = {
+        pkg.strip().lower()
+        for pkg in {"", *DEFAULT_INIT_SYSTEMD_DENYLIST, *denylist_raw.split(",")}
+        if pkg and pkg.strip()
+    }
+    return pkg_name.strip().lower() in denylisted_pkgs
+
+
 def handle_service_files(pkg_name: str, root: Path, manifest_entries: Optional[List[object]] = None):
     """
     Detect service files from installed package and register them
     according to the active init system.
     """
+    if _is_core_init_package(pkg_name):
+        log(
+            f"[init] Skipping automatic unit management for core init package '{pkg_name}'"
+        )
+        return
+
     init = detect_init_system()
     policy = CONF.get("INIT_POLICY", "manual").lower()  # auto/manual/none
 
@@ -1559,6 +1577,12 @@ def remove_service_files(pkg_name: str, root: Path, manifest_entries: Optional[L
     """
     Handle service cleanup on package removal.
     """
+    if _is_core_init_package(pkg_name):
+        log(
+            f"[init] Skipping automatic unit management for core init package '{pkg_name}'"
+        )
+        return
+
     init = detect_init_system()
     policy = CONF.get("INIT_POLICY", "manual").lower()
 

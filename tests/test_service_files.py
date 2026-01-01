@@ -279,3 +279,61 @@ def test_handle_service_files_ignores_units_not_in_manifest(root, monkeypatch, c
     assert "foo.service" in err
     assert "other.service" not in err
     assert calls == [["systemctl", "enable", "--now", "foo.service"]]
+
+
+def test_handle_service_files_skips_core_init_packages(root, monkeypatch, capsys):
+    service = root / "lib/systemd/system/foo.service"
+    _create_service(service)
+
+    monkeypatch.setitem(lpm.CONF, "INIT_POLICY", "auto")
+    monkeypatch.setattr(
+        lpm, "detect_init_system", lambda: (_ for _ in ()).throw(AssertionError)
+    )
+
+    calls = []
+
+    def fake_run(cmd, check=False, **kwargs):
+        calls.append(cmd)
+
+    monkeypatch.setattr(lpm.subprocess, "run", fake_run)
+
+    manifest = [
+        {"path": "/lib/systemd/system/foo.service"},
+    ]
+
+    lpm.handle_service_files("systemd", root, manifest)
+
+    err = capsys.readouterr().err
+
+    assert "Skipping automatic unit management for core init package" in err
+    assert "systemctl" not in err
+    assert calls == []
+
+
+def test_remove_service_files_skips_core_init_packages(root, monkeypatch, capsys):
+    service = root / "lib/systemd/system/foo.service"
+    _create_service(service)
+
+    monkeypatch.setitem(lpm.CONF, "INIT_POLICY", "auto")
+    monkeypatch.setattr(
+        lpm, "detect_init_system", lambda: (_ for _ in ()).throw(AssertionError)
+    )
+
+    calls = []
+
+    def fake_run(cmd, check=False, **kwargs):
+        calls.append(cmd)
+
+    monkeypatch.setattr(lpm.subprocess, "run", fake_run)
+
+    manifest = [
+        {"path": "/lib/systemd/system/foo.service"},
+    ]
+
+    lpm.remove_service_files("systemd-libs", root, manifest)
+
+    err = capsys.readouterr().err
+
+    assert "Skipping automatic unit management for core init package" in err
+    assert "systemctl" not in err
+    assert calls == []
