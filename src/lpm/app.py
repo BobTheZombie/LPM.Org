@@ -2803,11 +2803,7 @@ def do_upgrade(targets: List[str], root: Path, dry: bool, verify: bool, force: b
     do_install(upgrades, root, dry, verify, force=force, explicit=explicit_names)
 
 
-def autoremove(root: Path, dry: bool) -> None:
-    conn = db()
-    installed = db_installed(conn)
-    conn.close()
-
+def _compute_needed_set(installed: Dict[str, dict]) -> Set[str]:
     needed: Set[str] = {n for n, m in installed.items() if m.get("explicit")}
     changed = True
     while changed:
@@ -2825,6 +2821,15 @@ def autoremove(root: Path, dry: bool) -> None:
                         if mname not in needed:
                             needed.add(mname)
                             changed = True
+    return needed
+
+
+def autoremove(root: Path, dry: bool) -> None:
+    conn = db()
+    installed = db_installed(conn)
+    conn.close()
+
+    needed = _compute_needed_set(installed)
 
     to_remove = [n for n in installed.keys() if n not in needed]
     if not to_remove:
@@ -5611,17 +5616,31 @@ def removepkg(
         return
 
     conn = db()
-    cur = conn.execute("SELECT version, release, manifest FROM installed WHERE name=?", (name,))
+    cur = conn.execute(
+        "SELECT version, release, manifest, requires, explicit FROM installed WHERE name=?",
+        (name,),
+    )
     row = cur.fetchone()
     if not row:
         warn(f"{name} not installed")
         return
 
-    version, release, manifest_json = row
+    version, release, manifest_json, requires_json, explicit_int = row
     manifest = json.loads(manifest_json) if manifest_json else []
-    meta = {"name": name, "version": version, "release": release, "manifest": manifest}
+    requires = json.loads(requires_json) if requires_json else []
+    explicit = bool(explicit_int)
+    meta = {
+        "name": name,
+        "version": version,
+        "release": release,
+        "manifest": manifest,
+        "requires": requires,
+        "explicit": explicit,
+    }
 
     manifest_paths = _normalize_manifest_paths(manifest)
+    is_meta_package = not manifest_paths and bool(requires)
+    meta_requires = requires
 
     if txn is not None and register_event and not dry_run:
         txn.add_package_event(
@@ -5639,6 +5658,36 @@ def removepkg(
         run_hook("pre_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)})
         _remove_installed_package(meta, root, dry_run, conn)
         run_hook("post_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)})
+
+    if not dry_run and is_meta_package:
+        installed_after = db_installed(conn)
+        needed = _compute_needed_set(installed_after)
+        candidates = {req.split()[0] for req in meta_requires}
+        auto_remove = []
+        for cand in sorted(candidates):
+            dep_meta = installed_after.get(cand)
+            if not dep_meta:
+                continue
+            if dep_meta.get("explicit"):
+                continue
+            if cand in needed:
+                continue
+            auto_remove.append(cand)
+
+        if auto_remove:
+            log(
+                f"[lpm] Autoremoving dependencies no longer needed after {name}: "
+                + ", ".join(auto_remove)
+            )
+            for dep in auto_remove:
+                removepkg(
+                    name=dep,
+                    root=root,
+                    dry_run=dry_run,
+                    force=force,
+                    hook_transaction=txn,
+                    register_event=register_event,
+                )
 
     if txn is not None and owns_txn and not dry_run:
         txn.run_post_transaction()
