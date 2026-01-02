@@ -29,6 +29,7 @@ $(BUILD_INFO_JSON):
 NUITKA_FLAGS ?= \
         --onefile \
         --include-package=src \
+        --include-package=packaging \
         --follow-imports \
         --lto=yes \
         --jobs=$(shell nproc) \
