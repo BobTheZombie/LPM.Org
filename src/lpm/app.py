@@ -17,6 +17,13 @@ License: MIT
 
 from __future__ import annotations
 import argparse, contextlib, dataclasses, errno, fnmatch, hashlib, io, json, os, re, shlex, shutil, sqlite3, stat, subprocess, sys, tarfile, tempfile, time, urllib.parse
+try:
+    import idna  # type: ignore  # noqa: F401  # ensure IDNA codec is bundled in frozen builds
+except ModuleNotFoundError:  # pragma: no cover - fallback for minimal envs without system idna
+    try:
+        import pip._vendor.idna as idna  # type: ignore  # noqa: F401
+    except ModuleNotFoundError:  # pragma: no cover - last resort for Python without pip vendoring
+        import encodings.idna as idna  # type: ignore  # noqa: F401
 from datetime import datetime, timezone
 from email.parser import Parser
 from concurrent.futures import ThreadPoolExecutor, as_completed
