@@ -3863,6 +3863,7 @@ def run_lpmbuild(
     helper_path = buildroot / helper_name
     exec_candidate = getattr(sys, "executable", None)
     exec_path: Optional[Path] = None
+    exec_path_resolved: Optional[Path] = None
     if exec_candidate:
         try:
             exec_path = Path(exec_candidate)
@@ -3871,19 +3872,29 @@ def run_lpmbuild(
 
     module_path = Path(__file__).resolve()
     is_frozen = bool(getattr(sys, "frozen", False))
-    use_argv0 = is_frozen or exec_path is None or not exec_path.exists()
+
+    exec_path_missing = True
+    if exec_path is not None:
+        try:
+            if exec_path.exists():
+                exec_path_resolved = exec_path.resolve()
+                exec_path_missing = False
+        except (OSError, PermissionError) as exc:
+            warn(f"Unable to stat sys.executable {exec_path}: {exc}; falling back to argv[0]/module path")
+
+    use_argv0 = is_frozen or exec_path_missing
 
     if use_argv0:
         argv0 = sys.argv[0] if sys.argv else None
         if argv0:
             command_path = Path(argv0).resolve()
-        elif exec_path is not None:
-            command_path = exec_path.resolve()
+        elif exec_path_resolved is not None:
+            command_path = exec_path_resolved
         else:
             command_path = module_path
         helper_cmd = [shlex.quote(str(command_path)), "splitpkg"]
     else:
-        command_path = exec_path.resolve()
+        command_path = exec_path_resolved or module_path
         helper_cmd = [
             shlex.quote(str(command_path)),
             shlex.quote(str(module_path)),
