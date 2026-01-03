@@ -4310,6 +4310,7 @@ def run_lpmbuild(
                     "generate_install_script", generate_install_script
                 )(stagedir)
                 with install_sh.open("w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\nset -e\n")
                     f.write(script_text)
                     if not script_text.endswith("\n"):
                         f.write("\n")
@@ -4995,6 +4996,7 @@ def cmd_splitpkg(a):
                     "generate_install_script", generate_install_script
                 )(stagedir)
                 with install_sh.open("w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\nset -e\n")
                     f.write(script_text)
                     if not script_text.endswith("\n"):
                         f.write("\n")
@@ -5311,6 +5313,13 @@ def installpkg(
                 return meta
 
 
+        install_script_entry = next(
+            (e for e in mani if isinstance(e, dict) and e.get("path") == "/.lpm-install.sh"),
+            None,
+        )
+        if install_script_entry:
+            mani = [e for e in mani if e is not install_script_entry]
+
         manifest_paths = _normalize_manifest_paths(mani)
         obsoletes_to_remove: Dict[str, dict] = {}
 
@@ -5547,37 +5556,47 @@ def installpkg(
                             except PermissionError:
                                 warn(f"Permission denied setting ownership for {dest}")
 
-                    # Handle install scripts
-                    install_script_rel = "/.lpm/install.sh"
-                    staged_script = tmp_root / install_script_rel.lstrip("/")
-                    installed_script = root / install_script_rel.lstrip("/")
-                    if staged_script.exists():
-                        try:
-                            staged_script.chmod(staged_script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-                        except OSError:
-                            pass
-                        staged_script.rename(installed_script)
-                        mani.append(
-                            {
-                                "path": install_script_rel,
-                                "mode": installed_script.stat().st_mode,
-                                "uid": installed_script.stat().st_uid,
-                                "gid": installed_script.stat().st_gid,
-                                "sha256": sha256sum(installed_script),
-                            }
-                        )
+                    install_script_path = tmp_root / ".lpm-install.sh"
+                    if install_script_entry or install_script_path.exists():
+                        if install_script_path.exists():
+                            try:
+                                install_script_path.chmod(
+                                    install_script_path.stat().st_mode
+                                    | stat.S_IXUSR
+                                    | stat.S_IXGRP
+                                    | stat.S_IXOTH
+                                )
+                            except OSError:
+                                pass
 
-                    # Handle delta generation
-                    try:
-                        generate_deltas(pkg_file, meta, mani, staged_script, installed_script)
-                    except Exception as e:
-                        warn(f"Delta generation failed: {e}")
-                        try:
-                            for candidate in (installed_script, staged_script):
-                                candidate.unlink()
-                        except FileNotFoundError:
-                            pass
-                        mani = [e for e in mani if e["path"] != install_script_rel]
+                            action = "upgrade" if previous_version is not None else "install"
+                            new_full = f"{meta.version}-{meta.release}"
+                            old_full = (
+                                f"{previous_version}-{previous_release}"
+                                if previous_version is not None and previous_release is not None
+                                else ""
+                            )
+
+                            try:
+                                subprocess.run(
+                                    [
+                                        str(install_script_path),
+                                        action,
+                                        new_full,
+                                        old_full,
+                                    ],
+                                    check=True,
+                                    cwd=root,
+                                    env={
+                                        **os.environ,
+                                        "LPM_ROOT": str(root),
+                                        "LPM_INSTALL_ACTION": action,
+                                    },
+                                )
+                            except subprocess.CalledProcessError as exc:
+                                die(f"Install script failed with code {exc.returncode}")
+                        else:
+                            warn("Manifest referenced install script but no file was extracted")
 
                 # Update DB
                 conn.execute(
