@@ -198,14 +198,7 @@ from .fs_ops import operation_phase
 from .privileges import privilege_info, privileged_section, privileges_enabled
 from .resolver import CNF, CDCLSolver
 from .hooks import HookTransactionManager, load_hooks
-from .delta import (
-    apply_delta,
-    find_cached_by_sha,
-    file_sha256,
-    generate_delta,
-    zstd_version,
-    version_at_least,
-)
+from .delta import apply_delta, find_cached_by_sha, file_sha256, zstd_version, version_at_least
 
 # =========================== Protected packages ===============================
 PROTECTED_FILE = Path("/etc/lpm/protected.json")
@@ -2506,57 +2499,6 @@ def _attempt_delta(pkg: PkgMeta, dst: Path) -> bool:
     if mode == "always":
         raise RuntimeError(f"delta required for {pkg.name} but no candidate succeeded")
     return False
-
-
-def generate_deltas(
-    pkg_file: Path,
-    meta: PkgMeta,
-    manifest: List[dict],
-    base_install_script: Optional[Path],
-    new_install_script: Path,
-    root: Path,
-) -> None:
-    """Generate delta artifacts for install scripts when possible.
-
-    The helper is intentionally best-effort: if prerequisites are missing (for
-    example, an unavailable ``zstd`` binary or an absent prior install script),
-    the function returns without raising.
-    """
-
-    del pkg_file  # currently unused but retained for API stability
-    if base_install_script is None or not base_install_script.exists():
-        return
-    if not new_install_script.exists():
-        return
-
-    version = zstd_version()
-    if not version_at_least(version, _config.ZSTD_MIN_VERSION):
-        warn(
-            f"Skipping delta generation for {meta.name}: zstd>={_config.ZSTD_MIN_VERSION} not available"
-        )
-        return
-
-    delta_path = new_install_script.with_suffix(new_install_script.suffix + ".zstpatch")
-    delta_meta = generate_delta(base_install_script, new_install_script, delta_path, _config.ZSTD_MIN_VERSION)
-    if not delta_meta:
-        raise RuntimeError("zstd delta generation failed")
-
-    try:
-        rel_path = "/" + str(delta_path.relative_to(root))
-    except ValueError:
-        rel_path = str(delta_path)
-
-    stat_result = delta_path.stat()
-    manifest.append(
-        {
-            "path": rel_path,
-            "mode": stat_result.st_mode,
-            "uid": stat_result.st_uid,
-            "gid": stat_result.st_gid,
-            "size": stat_result.st_size,
-            "sha256": file_sha256(delta_path),
-        }
-    )
 
 def fetch_blob(p: PkgMeta) -> Tuple[Path, Optional[Path]]:
     if not p.blob: die(f"{p.name}-{p.version} missing blob")
@@ -5598,14 +5540,6 @@ def installpkg(
                     install_script_rel = "/.lpm/install.sh"
                     staged_script = tmp_root / install_script_rel.lstrip("/")
                     installed_script = root / install_script_rel.lstrip("/")
-                    previous_install_script: Optional[Path] = None
-                    if installed_script.exists():
-                        try:
-                            with tempfile.NamedTemporaryFile(delete=False) as tmp_prev:
-                                shutil.copy2(installed_script, tmp_prev.name)
-                                previous_install_script = Path(tmp_prev.name)
-                        except Exception:
-                            previous_install_script = None
                     if staged_script.exists():
                         try:
                             staged_script.chmod(staged_script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -5624,7 +5558,7 @@ def installpkg(
 
                     # Handle delta generation
                     try:
-                        generate_deltas(pkg_file, meta, mani, previous_install_script, installed_script, root)
+                        generate_deltas(pkg_file, meta, mani, staged_script, installed_script)
                     except Exception as e:
                         warn(f"Delta generation failed: {e}")
                         try:
@@ -5633,10 +5567,6 @@ def installpkg(
                         except FileNotFoundError:
                             pass
                         mani = [e for e in mani if e["path"] != install_script_rel]
-                    finally:
-                        if previous_install_script is not None:
-                            with contextlib.suppress(FileNotFoundError):
-                                previous_install_script.unlink()
 
                 # Update DB
                 conn.execute(
