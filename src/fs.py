@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ssl
 import urllib.error
 import urllib.request
 from email.header import decode_header, make_header
@@ -42,9 +43,18 @@ def _content_disposition_filename(header: str | None) -> Optional[str]:
     return Path(filename).name
 
 
-def urlread(url: str, timeout: float | None = 10) -> Tuple[bytes, Optional[str]]:
+def urlread(
+    url: str,
+    timeout: float | None = 10,
+    *,
+    cafile: str | bytes | None = None,
+    ssl_context: ssl.SSLContext | None = None,
+) -> Tuple[bytes, Optional[str]]:
+    context = ssl_context
+    if context is None and cafile:
+        context = ssl.create_default_context(cafile=cafile)
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
+        with urllib.request.urlopen(url, timeout=timeout, context=context) as r:
             meta_filename = _content_disposition_filename(r.headers.get("content-disposition"))
             final_url = r.geturl()
             total = int(r.headers.get("content-length", 0) or 0)
@@ -62,7 +72,12 @@ def urlread(url: str, timeout: float | None = 10) -> Tuple[bytes, Optional[str]]
                     bar.update(len(chunk))
             return bytes(data), meta_filename or final_url
     except urllib.error.URLError as e:
-        raise RuntimeError(f"Failed to read URL {url}") from e
+        detail = ""
+        if isinstance(getattr(e, "reason", None), ssl.SSLError):
+            detail = f" (SSL error: {e.reason})"
+        raise RuntimeError(f"Failed to read URL {url}{detail}") from e
+    except ssl.SSLError as e:
+        raise RuntimeError(f"Failed to read URL {url} (SSL error: {e})") from e
 
 
 __all__ = ["read_json", "write_json", "urlread"]

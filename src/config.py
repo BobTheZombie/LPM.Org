@@ -24,6 +24,7 @@ LIBLPM_ADMIN_HOOK_DIR = Path("/etc/lpm/hooks")
 LIBLPM_HOOK_DIRS = (LIBLPM_SYSTEM_HOOK_DIR, LIBLPM_ADMIN_HOOK_DIR)
 SIGN_KEY  = Path("/etc/lpm/private/lpm_signing.pem")   # OpenSSL PEM private key for signing
 TRUST_DIR = Path("/etc/lpm/trust")                     # dir of *.pem public keys for verification
+SSL_CA_FILE: Path | None = None
 DEFAULT_ROOT = "/"
 UMASK = 0o22
 
@@ -202,7 +203,7 @@ def _apply_conf(conf: Mapping[str, str]) -> None:
     global DISTRO_MAINTAINER_MODE, DISTRO_NAME, DISTRO_REPO_ROOT
     global DISTRO_REPO_BASE_URL, DISTRO_SOURCE_ROOT, DISTRO_LPMBUILD_ROOT
     global DISTRO_GIT_ENABLED, DISTRO_GIT_REMOTE, DISTRO_GIT_BRANCH, DISTRO_GIT_ROOT
-    global DISTRO_LPMSPEC_PATH
+    global DISTRO_LPMSPEC_PATH, SSL_CA_FILE
     global USE_DELTAS, ZSTD_MIN_VERSION
 
     CONF = dict(conf)
@@ -226,6 +227,24 @@ def _apply_conf(conf: Mapping[str, str]) -> None:
     if mode not in {"auto", "always", "never"}:
         mode = "auto"
     USE_DELTAS = mode
+
+    def _expand_path(value: object, default: Path) -> Path:
+        if isinstance(value, Path):
+            return value
+        text = str(value).strip() if isinstance(value, str) else ""
+        if not text:
+            return default
+        expanded = os.path.expanduser(text)
+        try:
+            return Path(expanded).resolve()
+        except Exception:
+            return Path(expanded)
+
+    def _optional_path(value: object) -> Path | None:
+        text = str(value).strip() if isinstance(value, str) else ""
+        if not text:
+            return None
+        return _expand_path(text, Path(text))
 
     ZSTD_MIN_VERSION = CONF.get("ZSTD_MIN_VERSION", "1.5.5").strip() or "1.5.5"
 
@@ -256,20 +275,11 @@ def _apply_conf(conf: Mapping[str, str]) -> None:
     except ValueError:
         IO_BUFFER_SIZE = default_io_buffer
 
+    ca_from_env = os.environ.get("LPM_SSL_CA_FILE")
+    SSL_CA_FILE = _optional_path(CONF.get("SSL_CA_FILE", ca_from_env if ca_from_env is not None else ""))
+
     DISTRO_MAINTAINER_MODE = _get_bool("DISTRO_MAINTAINER_MODE", False)
     DISTRO_NAME = CONF.get("DISTRO_NAME", "")
-
-    def _expand_path(value: object, default: Path) -> Path:
-        if isinstance(value, Path):
-            return value
-        text = str(value).strip() if isinstance(value, str) else ""
-        if not text:
-            return default
-        expanded = os.path.expanduser(text)
-        try:
-            return Path(expanded).resolve()
-        except Exception:
-            return Path(expanded)
 
     default_repo = _MAINTAINER_BASE / "repo"
     DISTRO_REPO_ROOT = _expand_path(CONF.get("DISTRO_REPO_ROOT", str(default_repo)), default_repo)

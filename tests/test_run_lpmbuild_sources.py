@@ -122,7 +122,7 @@ def test_run_lpmbuild_fetches_relative_sources(lpm_module, tmp_path, monkeypatch
 
     fetched_urls: list[str] = []
 
-    def fake_urlread(url, timeout=10):
+    def fake_urlread(url, timeout=10, **kwargs):
         fetched_urls.append(url)
         return b"payload", url
 
@@ -180,7 +180,7 @@ def test_run_lpmbuild_downloads_multiple_url_sources(lpm_module, tmp_path, monke
 
     fetched_urls: list[str] = []
 
-    def fake_urlread(url, timeout=10):
+    def fake_urlread(url, timeout=10, **kwargs):
         fetched_urls.append(url)
         return f"payload:{url}".encode(), url
 
@@ -240,7 +240,7 @@ def test_run_lpmbuild_allows_alias_for_repo_sources(lpm_module, tmp_path, monkey
 
     fetched_urls: list[str] = []
 
-    def fake_urlread(url, timeout=10):
+    def fake_urlread(url, timeout=10, **kwargs):
         fetched_urls.append(url)
         return b"payload", url
 
@@ -291,7 +291,7 @@ def test_run_lpmbuild_skips_metadata_url_fetch(lpm_module, tmp_path, monkeypatch
 
     fetched_urls: list[str] = []
 
-    def fake_urlread(url, timeout=10):
+    def fake_urlread(url, timeout=10, **kwargs):
         if "unreachable" in url:
             raise AssertionError("metadata URL should not be fetched")
         fetched_urls.append(url)
@@ -432,7 +432,7 @@ def test_maybe_fetch_source_skips_existing_file(lpm_module, tmp_path, monkeypatc
     target = src_dir / "already.patch"
     target.write_text("present", encoding="utf-8")
 
-    def fake_urlread(url, timeout=10):
+    def fake_urlread(url, timeout=10, **kwargs):
         raise AssertionError("should not refetch existing sources")
 
     monkeypatch.setattr(lpm, "urlread", fake_urlread)

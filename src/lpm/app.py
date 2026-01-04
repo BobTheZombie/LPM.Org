@@ -16,7 +16,7 @@ License: MIT
 """
 
 from __future__ import annotations
-import argparse, contextlib, dataclasses, errno, fnmatch, hashlib, io, json, os, re, shlex, shutil, sqlite3, stat, subprocess, sys, tarfile, tempfile, time, urllib.parse
+import argparse, contextlib, dataclasses, errno, fnmatch, functools, hashlib, io, json, os, re, shlex, shutil, sqlite3, ssl, stat, subprocess, sys, tarfile, tempfile, time, urllib.parse
 try:
     import idna  # type: ignore  # noqa: F401  # ensure IDNA codec is bundled in frozen builds
 except ModuleNotFoundError:  # pragma: no cover - fallback for minimal envs without system idna
@@ -265,6 +265,14 @@ def warn(msg: str):
     if override is not None and override is not warn:
         return override(msg)
     print(f"{CYAN}[WARN]{RESET} {msg}", file=sys.stderr)
+
+
+@functools.lru_cache(maxsize=1)
+def _url_ssl_context() -> ssl.SSLContext | None:
+    ca_file = _config.SSL_CA_FILE
+    if ca_file is None:
+        return None
+    return ssl.create_default_context(cafile=str(ca_file))
 
 
 _DELTA_MODE = _config.USE_DELTAS
@@ -705,7 +713,7 @@ def del_repo(name):
 
 def fetch_repo_index(repo: Repo) -> List[PkgMeta]:
     idx_url = repo.url.rstrip("/") + "/index.json"
-    raw, _ = _resolve_lpm_attr("urlread", urlread)(idx_url)
+    raw, _ = _resolve_lpm_attr("urlread", urlread)(idx_url, ssl_context=_url_ssl_context())
     j = json.loads(raw.decode("utf-8"))
     return [PkgMeta.from_dict(p, repo.name, repo.priority, repo.bias, repo.decay) for p in j.get("packages",[])]
 
@@ -2418,7 +2426,7 @@ def _download_to(location: str, dest: Path) -> None:
             raise FileNotFoundError(src)
         shutil.copy2(src, dest)
         return
-    data, _ = _resolve_lpm_attr("urlread", urlread)(location)
+    data, _ = _resolve_lpm_attr("urlread", urlread)(location, ssl_context=_url_ssl_context())
     dest.write_bytes(data)
 
 
@@ -2436,7 +2444,7 @@ def _ensure_signature(url: str, sig_dst: Path) -> Optional[Path]:
                 return sig_dst
         else:
             sig_url = url + ".sig"
-            data, _ = _resolve_lpm_attr("urlread", urlread)(sig_url)
+            data, _ = _resolve_lpm_attr("urlread", urlread)(sig_url, ssl_context=_url_ssl_context())
             sig_dst.write_bytes(data)
             return sig_dst
     except Exception:
@@ -2541,7 +2549,7 @@ def fetch_blob(p: PkgMeta) -> Tuple[Path, Optional[Path]]:
                 shutil.copy2(src, dst)
         else:
             for _ in progress_bar(range(1), desc=f"Downloading {p.name}"):
-                data, _ = _resolve_lpm_attr("urlread", urlread)(url)
+                data, _ = _resolve_lpm_attr("urlread", urlread)(url, ssl_context=_url_ssl_context())
                 dst.write_bytes(data)
 
     sig_path = _ensure_signature(url, sig_dst)
@@ -3215,7 +3223,7 @@ def _maybe_fetch_source(url: str, dst_dir: Path, *, filename: Optional[str] = No
             warn(f"Failed to use cached source for {url}: {e}")
 
     ok(f"Fetching source: {url}")
-    data, meta = _resolve_lpm_attr("urlread", urlread)(url)
+    data, meta = _resolve_lpm_attr("urlread", urlread)(url, ssl_context=_url_ssl_context())
 
     resolved_name = filename
     if not resolved_name:
@@ -3325,7 +3333,7 @@ def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
     ok(f"Fetching lpmbuild for {pkgname} from {url}")
     dst.parent.mkdir(parents=True, exist_ok=True)
     try:
-        data, _ = _resolve_lpm_attr("urlread", urlread)(url)
+        data, _ = _resolve_lpm_attr("urlread", urlread)(url, ssl_context=_url_ssl_context())
     except Exception as e:
         die(f"Failed to fetch lpmbuild for {pkgname}: {e}")
     dst.write_bytes(data)

@@ -18,7 +18,7 @@ def test_maybe_fetch_source_uses_cache(tmp_path, monkeypatch):
     lpm = _import_lpm(tmp_path, monkeypatch)
     calls = {"count": 0}
 
-    def fake_urlread(url, timeout=10):
+    def fake_urlread(url, timeout=10, **kwargs):
         calls["count"] += 1
         return b"payload", url
 
@@ -59,7 +59,7 @@ def test_maybe_fetch_source_uses_redirect_filename(tmp_path, monkeypatch):
 
     final_url = "https://downloads.example.com/get?filename=foo-1.0.tar.gz"
 
-    def fake_urlread(url, timeout=10):
+    def fake_urlread(url, timeout=10, **kwargs):
         assert url == "https://example.com/source"
         return b"payload", final_url
 
