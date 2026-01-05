@@ -4,8 +4,10 @@ NUITKA ?= $(PYTHON) -m nuitka
 NUITKA_REPO ?= https://github.com/BobTheZombie/Nuitka.git
 NUITKA_REF ?= develop
 APP = lpm
-ENTRY = $(PWD)/lpm.py
-UI_ENTRY = $(PWD)/lpm_ui.py
+# Use Make's CURDIR instead of the shell's PWD to avoid losing the working
+# directory when running under tools like sudo.
+ENTRY = $(CURDIR)/lpm.py
+UI_ENTRY = $(CURDIR)/lpm_ui.py
 UI_APP_NAME = lpm-ui
 BUILD_DIR = build/nuitka
 DIST_DIR = dist
