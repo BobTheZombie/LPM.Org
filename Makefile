@@ -27,7 +27,7 @@ $(BUILD_INFO_JSON):
 
 
 NUITKA_FLAGS ?= \
-        --onefile \
+        --standalone \
         --include-package=src \
         --include-package=packaging \
         --follow-imports \
@@ -155,8 +155,11 @@ export PYTHONPATH := $(PWD)$(if $(PYTHONPATH),:$(PYTHONPATH),)
 
 PREFIX ?= /usr
 
-BIN_TARGET = $(BUILD_DIR)/$(APP).bin
-UI_BIN_TARGET = $(BUILD_DIR)/$(UI_APP_NAME).bin
+BIN_DIST_DIR = $(BUILD_DIR)/$(APP).bin.dist
+UI_BIN_DIST_DIR = $(BUILD_DIR)/$(UI_APP_NAME).bin.dist
+
+BIN_TARGET = $(BIN_DIST_DIR)/$(APP).bin
+UI_BIN_TARGET = $(UI_BIN_DIST_DIR)/$(UI_APP_NAME).bin
 ALL_BIN_TARGETS = $(BIN_TARGET) $(UI_BIN_TARGET)
 STAGING_DIR = $(DIST_DIR)/$(APP)-$(SAFE_VERSION)
 TARBALL = $(DIST_DIR)/$(APP)-$(SAFE_VERSION).tar.gz
@@ -240,8 +243,24 @@ $(STAGING_DIR): $(ALL_BIN_TARGETS) README.md LICENSE etc/lpm/lpm.conf $(BUILD_IN
 	@mkdir -p $(DIST_DIR)
 	@rm -rf $@
 	mkdir -p $@/bin
-	cp $(BIN_TARGET) $@/bin/$(APP)
-	cp $(UI_BIN_TARGET) $@/bin/$(UI_APP_NAME)
+	mkdir -p $@/usr/lib/lpm/$(APP)
+	cp -a $(BIN_DIST_DIR)/. $@/usr/lib/lpm/$(APP)
+	mkdir -p $@/usr/lib/lpm/$(UI_APP_NAME)
+	cp -a $(UI_BIN_DIST_DIR)/. $@/usr/lib/lpm/$(UI_APP_NAME)
+	cat <<-'WRAPPER' > $@/bin/$(APP)
+	#!/bin/sh
+	set -eu
+	APP_ROOT="$$(CDPATH= cd -- "$$(dirname "$$0")/../lib/lpm/$(APP)" && pwd)"
+	exec "$$APP_ROOT/$(APP).bin" "$$@"
+	WRAPPER
+	chmod +x $@/bin/$(APP)
+	cat <<-'WRAPPER' > $@/bin/$(UI_APP_NAME)
+	#!/bin/sh
+	set -eu
+	APP_ROOT="$$(CDPATH= cd -- "$$(dirname "$$0")/../lib/lpm/$(UI_APP_NAME)" && pwd)"
+	exec "$$APP_ROOT/$(UI_APP_NAME).bin" "$$@"
+	WRAPPER
+	chmod +x $@/bin/$(UI_APP_NAME)
 	mkdir -p $@/usr/share/lpm
 	cp $(BUILD_INFO_JSON) $@/usr/share/lpm/build-info.json
 	cp -R $(HOOK_SRC) $@/usr/share/lpm/
@@ -258,10 +277,16 @@ $(STAGING_DIR): $(ALL_BIN_TARGETS) README.md LICENSE etc/lpm/lpm.conf $(BUILD_IN
 	PREFIX="$${PREFIX:-/usr/local}"
 	DESTDIR="$${DESTDIR:-}"
 	ROOT="$$(CDPATH= cd -- "$$(dirname "$$0")" && pwd)"
-	
+
 	mkdir -p "$${DESTDIR}$${PREFIX}/bin"
 	install -m 0755 "$${ROOT}/bin/lpm" "$${DESTDIR}$${PREFIX}/bin/lpm"
 	install -m 0755 "$${ROOT}/bin/$(UI_APP_NAME)" "$${DESTDIR}$${PREFIX}/bin/$(UI_APP_NAME)"
+
+	RUNTIME_ROOT="$${DESTDIR}/usr/lib/lpm"
+	rm -rf "$${RUNTIME_ROOT}/$(APP)" "$${RUNTIME_ROOT}/$(UI_APP_NAME)"
+	mkdir -p "$${RUNTIME_ROOT}"
+	cp -R "$${ROOT}/usr/lib/lpm/$(APP)" "$${RUNTIME_ROOT}/"
+	cp -R "$${ROOT}/usr/lib/lpm/$(UI_APP_NAME)" "$${RUNTIME_ROOT}/"
 	
 	HOOK_DEST="$${DESTDIR}/usr/share/lpm"
 	rm -rf "$${HOOK_DEST}/hooks"

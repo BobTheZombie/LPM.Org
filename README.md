@@ -38,23 +38,18 @@ The project ships with a `Makefile` that invokes Nuitka to produce stand-alone
 executables for both the command-line client and the Qt-based graphical
 frontend.
 
-1. Install build dependencies for Nuitka, including `patchelf` on Linux (see
-   the notes below for details on static builds).
+1. Install build dependencies for Nuitka (see the notes below for details on
+   static builds).
 2. From the repository root run `make` (or `make all`) to build:
-   - `build/nuitka/lpm.bin` – the command-line interface.
-   - `build/nuitka/lpm-ui.bin` – the graphical launcher that can be run
-     separately, similar to using `apt` alongside `synaptic`.
+   - `build/nuitka/lpm.bin.dist/lpm.bin` – the command-line interface and its
+     bundled dependencies.
+   - `build/nuitka/lpm-ui.bin.dist/lpm-ui.bin` – the graphical launcher and its
+     bundled dependencies, which can be run separately similar to using `apt`
+     alongside `synaptic`.
 
 Both binaries are rebuilt on every invocation so you can keep the CLI and GUI in
 lockstep. The makefile automatically installs/updates Nuitka from the pinned Git
 revision during the build.
-
-### Build prerequisites
-
-On Linux, Nuitka's onefile mode requires [`patchelf`](https://nixos.org/patchelf)
-to be available on the build host. Install it with your system package manager
-before running `make`; for example, `apt-get install patchelf` on Debian and
-Ubuntu derivatives.
 
 ### Using a static libpython
 
