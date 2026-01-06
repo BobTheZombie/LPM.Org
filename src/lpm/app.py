@@ -3871,7 +3871,19 @@ def run_lpmbuild(
 
     module_path = Path(__file__).resolve()
     is_frozen = bool(getattr(sys, "frozen", False))
-    use_argv0 = is_frozen or exec_path is None or not exec_path.exists()
+    use_argv0 = is_frozen or exec_path is None
+
+    if not use_argv0:
+        try:
+            exec_exists = exec_path.exists()
+        except OSError as exc:  # PermissionError, etc.
+            warn(
+                f"unable to stat sys.executable {exec_path}: {exc}; "
+                "falling back to argv[0]"
+            )
+            use_argv0 = True
+        else:
+            use_argv0 = not exec_exists
 
     if use_argv0:
         argv0 = sys.argv[0] if sys.argv else None
