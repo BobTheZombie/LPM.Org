@@ -245,14 +245,14 @@ $(STAGING_DIR): $(ALL_BIN_TARGETS) README.md LICENSE etc/lpm/lpm.conf $(BUILD_IN
 	@mkdir -p $(DIST_DIR)
 	@rm -rf $@
 	mkdir -p $@/bin
-	mkdir -p $@/usr/lib/lpm
-	cp -a $(BIN_DIST_DIR)/. $@/usr/lib/lpm
+	mkdir -p $@/usr/lib/lpm/$(APP)
+	cp -a $(BIN_DIST_DIR)/. $@/usr/lib/lpm/$(APP)
 	mkdir -p $@/usr/lib/lpm/$(UI_APP_NAME)
 	cp -a $(UI_BIN_DIST_DIR)/. $@/usr/lib/lpm/$(UI_APP_NAME)
 	cat <<-'WRAPPER' > $@/bin/$(APP)
 	#!/bin/sh
 	set -eu
-	APP_ROOT="$$(CDPATH= cd -- "$$(dirname "$$0")/../lib/lpm" && pwd)"
+	APP_ROOT="$$(CDPATH= cd -- "$$(dirname "$$0")/../lib/lpm/$(APP)" && pwd)"
 	exec "$$APP_ROOT/$(APP).bin" "$$@"
 	WRAPPER
 	chmod +x $@/bin/$(APP)
@@ -284,10 +284,18 @@ $(STAGING_DIR): $(ALL_BIN_TARGETS) README.md LICENSE etc/lpm/lpm.conf $(BUILD_IN
 	install -m 0755 "$${ROOT}/bin/lpm" "$${DESTDIR}$${PREFIX}/bin/lpm"
 	install -m 0755 "$${ROOT}/bin/$(UI_APP_NAME)" "$${DESTDIR}$${PREFIX}/bin/$(UI_APP_NAME)"
 
-	RUNTIME_ROOT="$${DESTDIR}/usr/lib/lpm"
+	RUNTIME_BASE="$${DESTDIR}/usr/lib/lpm"
+	mkdir -p "$${RUNTIME_BASE}"
+
+	RUNTIME_ROOT="$${RUNTIME_BASE}/$(APP)"
 	rm -rf "$${RUNTIME_ROOT}"
 	mkdir -p "$${RUNTIME_ROOT}"
-	cp -R "$${ROOT}/usr/lib/lpm/." "$${RUNTIME_ROOT}/"
+	cp -R "$${ROOT}/usr/lib/lpm/$(APP)/." "$${RUNTIME_ROOT}/"
+
+	UI_RUNTIME_ROOT="$${RUNTIME_BASE}/$(UI_APP_NAME)"
+	rm -rf "$${UI_RUNTIME_ROOT}"
+	mkdir -p "$${UI_RUNTIME_ROOT}"
+	cp -R "$${ROOT}/usr/lib/lpm/$(UI_APP_NAME)/." "$${UI_RUNTIME_ROOT}/"
 	
 	HOOK_DEST="$${DESTDIR}/usr/share/lpm"
 	rm -rf "$${HOOK_DEST}/hooks"
