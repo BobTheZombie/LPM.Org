@@ -49,6 +49,28 @@ Both binaries are rebuilt on every invocation so you can keep the CLI and GUI in
 lockstep. The makefile automatically installs/updates Nuitka from the pinned Git
 revision during the build.
 
+### Building distributable wheels
+
+`pyproject.toml` defines the package metadata, console entry points (`lpm` and
+`lpm-ui`), and an optional `ui` extra that pulls in the PySide6 dependencies
+listed in `requirements-ui.txt`. Run `python -m build` from the repository root
+to produce both an sdist and a wheel; the wheel contains the compiled
+executables under `lpm/bin/`.
+
+Nuitka compilation is wired into the setuptools build via custom commands. The
+following environment variables tweak the process when invoking `python -m build`:
+
+- `LPM_SKIP_NUITKA=1` – omit the compilation step entirely.
+- `LPM_NUITKA_FLAGS="..."` – append additional flags for both the CLI and UI
+  builds.
+- `LPM_NUITKA_UI_FLAGS="..."` – supply UI-specific flags (defaults to
+  `--enable-plugin=pyside6`).
+- `LPM_NUITKA_BIN="python -m nuitka"` – override the command used to run Nuitka.
+- `LPM_NUITKA_SKIP_UI=1` – skip compiling the GUI launcher (useful when PySide6
+  is unavailable).
+- `LPM_NUITKA_FORCE_UI=1` – force the GUI build even if PySide6 cannot be
+  imported, letting you manage dependencies externally.
+
 ### Build prerequisites
 
 On Linux, Nuitka's onefile mode requires [`patchelf`](https://nixos.org/patchelf)

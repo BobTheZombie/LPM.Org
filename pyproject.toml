@@ -1,0 +1,47 @@
+[build-system]
+requires = [
+    "setuptools>=68",
+    "wheel",
+    "build",
+    "nuitka>=1.9",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lpm"
+version = "1.0.0"
+description = "Linux Package Manager with SAT solver, native .lpm packaging, signatures, and .lpmbuild support."
+readme = "README.md"
+authors = [{ name = "Derek Midkiff" }]
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+ui = ["PySide6>=6.6"]
+
+[project.entry-points."console_scripts"]
+lpm = "lpm.cli_shim:main"
+"lpm-ui" = "lpm.ui_launcher:main"
+
+[tool.setuptools]
+packages = { find = { where = ["src"] } }
+package-dir = {"" = "src"}
+include-package-data = true
+scripts = ["lpm.py", "lpm_ui.py"]
+
+[tool.setuptools.cmdclass]
+build_py = "tools.setuptools_nuitka:BuildPyWithNuitka"
+build_nuitka = "tools.setuptools_nuitka:BuildNuitka"
+
+[tool.setuptools.package-data]
+"lpm" = ["bin/*"]
+
+[tool.setuptools.data-files]
+"etc/lpm" = ["etc/lpm/lpm.conf"]
+"share/liblpm/hooks" = ["usr/share/liblpm/hooks/*.hook"]
+"share/lpm/hooks" = ["usr/share/lpm/hooks/*"]
+"share/lpm/hooks/post_install.d" = ["usr/share/lpm/hooks/post_install.d/.gitkeep"]
+"share/lpm/hooks/post_upgrade.d" = ["usr/share/lpm/hooks/post_upgrade.d/.gitkeep"]
+"libexec/lpm/hooks" = ["usr/libexec/lpm/hooks/*"]
+"share/lpm/packages" = ["packages/lpm/lpm.lpmbuild"]
