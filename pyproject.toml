@@ -31,8 +31,8 @@ include-package-data = true
 scripts = ["lpm.py", "lpm_ui.py"]
 
 [tool.setuptools.cmdclass]
-build_py = "tools.setuptools_nuitka:BuildPyWithNuitka"
-build_nuitka = "tools.setuptools_nuitka:BuildNuitka"
+build_py = "tools.setuptools_nuitka.BuildPyWithNuitka"
+build_nuitka = "tools.setuptools_nuitka.BuildNuitka"
 
 [tool.setuptools.package-data]
 "lpm" = ["bin/*"]
