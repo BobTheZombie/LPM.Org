@@ -96,4 +96,10 @@ class BuildPyWithNuitka(build_py):
 
     def run(self) -> None:  # pragma: no cover - distutils API
         super().run()
-        self.run_command("build_nuitka")
+        if os.environ.get("LPM_ENABLE_NUITKA") == "1":
+            self.run_command("build_nuitka")
+        else:
+            self.announce(
+                "LPM_ENABLE_NUITKA=1 not set; skipping Nuitka compilation",
+                level=2,
+            )
