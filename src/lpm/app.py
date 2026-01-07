@@ -220,6 +220,7 @@ from .config import (
     REPO_LIST,
     SIGN_KEY,
     SNAPSHOT_DIR,
+    STATE_DIR,
     TRUST_DIR,
     detect_init_system,
     initialize_state,
