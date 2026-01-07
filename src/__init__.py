@@ -31,17 +31,17 @@ __all__ = [
 
 
 def _load_app():
-    return import_module("src.lpm.app")
+    return import_module("lpm.app")
 
 
 def main(argv=None):
-    """Proxy to :func:`src.lpm.app.main` without importing heavy dependencies."""
+    """Proxy to :func:`lpm.app.main` without importing heavy dependencies."""
 
     return _load_app().main(argv)
 
 
 def get_runtime_metadata():
-    """Proxy to :func:`src.lpm.app.get_runtime_metadata`."""
+    """Proxy to :func:`lpm.app.get_runtime_metadata`."""
 
     return _load_app().get_runtime_metadata()
 

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from src.lpm.ui_launcher import main
+from lpm.ui_launcher import main
 
 
 if __name__ == "__main__":
