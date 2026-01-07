@@ -23,8 +23,21 @@ __all__ = [
 ]
 
 
+_MODULE_PREFIXES = ("lpm", "src.lpm")
+
+
+def _import_with_fallback(module: str):
+    last_exc: Exception | None = None
+    for prefix in _MODULE_PREFIXES:
+        try:
+            return import_module(f"{prefix}.{module}")
+        except ModuleNotFoundError as exc:
+            last_exc = exc
+    raise last_exc  # type: ignore[misc]
+
+
 def _load_app():
-    return import_module("src.lpm.app")
+    return _import_with_fallback("app")
 
 
 def main(argv=None):
