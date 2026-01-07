@@ -194,7 +194,7 @@ def get_runtime_metadata() -> Dict[str, str]:
         "url": __url__,
     }
 
-from config import (
+from .config import (
     ARCH,
     ALLOW_LPMBUILD_FALLBACK,
     CACHE_DIR,
@@ -229,7 +229,7 @@ from fs import read_json, write_json, urlread
 from installgen import generate_install_script
 from first_run_ui import run_first_run_wizard
 import maintainer_mode
-import config as _config
+from . import config as _config
 from .atomic_io import atomic_replace
 from .fs_ops import operation_phase
 from .privileges import privilege_info, privileged_section, privileges_enabled
