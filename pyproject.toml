@@ -28,7 +28,6 @@ lpm = "lpm.cli_shim:main"
 packages = { find = { where = ["src"] } }
 package-dir = {"" = "src"}
 include-package-data = true
-scripts = ["lpm.py", "lpm_ui.py"]
 
 [tool.setuptools.cmdclass]
 build_nuitka = "tools.setuptools_nuitka.BuildNuitka"
