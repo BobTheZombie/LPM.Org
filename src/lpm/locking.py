@@ -7,7 +7,7 @@ from typing import Optional
 
 import fcntl
 
-from .. import config
+from . import config
 
 
 class TransactionLockError(RuntimeError):

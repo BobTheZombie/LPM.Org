@@ -17,6 +17,7 @@ License: MIT
 
 from __future__ import annotations
 import argparse, contextlib, dataclasses, errno, fnmatch, hashlib, io, json, os, re, shlex, shutil, sqlite3, stat, subprocess, sys, tarfile, tempfile, time, urllib.parse
+import importlib.util
 from datetime import datetime, timezone
 from email.parser import Parser
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -24,10 +25,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Iterable, Callable, BinaryIO, Mapping
 from collections import deque
-try:
-    import zstandard as zstd
-except ModuleNotFoundError:  # pragma: no cover - fallback for test environment
+
+if __package__ in {None, ""}:
+    src_root = Path(__file__).resolve().parents[1]
+    if str(src_root) not in sys.path:
+        sys.path.insert(0, str(src_root))
+    __package__ = "lpm"
+
+_LPM_OVERRIDE_MODULES: list[object] = []
+for _module_name in ("lpm", "src.lpm"):
+    _module = sys.modules.get(_module_name)
+    if _module is not None:
+        _LPM_OVERRIDE_MODULES.append(_module)
+if importlib.util.find_spec("zstandard") is None:  # pragma: no cover - fallback for test environment
     from . import _zstd_stub as zstd
+else:
+    import zstandard as zstd
 from packaging.markers import default_environment
 from packaging.requirements import Requirement
 from packaging.specifiers import Specifier, SpecifierSet
@@ -83,6 +96,13 @@ def _load_build_metadata() -> Dict[str, str]:
         candidates.append(Path(env_path))
 
     module_path = Path(__file__).resolve()
+    package_module = sys.modules.get("lpm") or sys.modules.get("src.lpm")
+    if package_module is None and _LPM_OVERRIDE_MODULES:
+        package_module = _LPM_OVERRIDE_MODULES[0]
+    if package_module is not None:
+        package_file = getattr(package_module, "__file__", None)
+        if package_file:
+            module_path = Path(package_file).resolve()
     candidates.append(module_path.with_name("_build_info.json"))
 
     parents = module_path.parents
@@ -139,6 +159,21 @@ __url__ = os.environ.get(_ENV_URL, _DEFAULT_URL)
 LPMSPEC_API_VERSION = "1.0"
 
 
+def _refresh_runtime_metadata() -> None:
+    build_metadata = _load_build_metadata()
+    default_build_date = build_metadata.get("build_date") or _default_build_date()
+    default_version = build_metadata.get("version") or default_build_date or _FALLBACK_VERSION
+    default_build = build_metadata.get("build") or _FALLBACK_BUILD
+
+    global __title__, __version__, __build__, __build_date__, __developer__, __url__
+    __title__ = os.environ.get(_ENV_NAME, _DEFAULT_NAME)
+    __version__ = os.environ.get(_ENV_VERSION, default_version)
+    __build__ = os.environ.get(_ENV_BUILD, default_build)
+    __build_date__ = os.environ.get(_ENV_BUILD_DATE, default_build_date)
+    __developer__ = os.environ.get(_ENV_DEVELOPER, _DEFAULT_DEVELOPER)
+    __url__ = os.environ.get(_ENV_URL, _DEFAULT_URL)
+
+
 def get_runtime_metadata() -> Dict[str, str]:
     """Return runtime metadata describing the current LPM build.
 
@@ -149,6 +184,7 @@ def get_runtime_metadata() -> Dict[str, str]:
     values without triggering the heavier initialization logic below.
     """
 
+    _refresh_runtime_metadata()
     return {
         "name": __title__,
         "version": __version__,
@@ -229,10 +265,26 @@ RED    = "\033[1;31m"
 RESET  = "\033[0m"
 
 def _resolve_lpm_attr(name: str, default):
-    module = sys.modules.get("lpm")
-    if module is None:
-        return default
-    return getattr(module, name, default)
+    for module_name in ("lpm", "src.lpm"):
+        module = sys.modules.get(module_name)
+        if module is not None and module not in _LPM_OVERRIDE_MODULES:
+            _LPM_OVERRIDE_MODULES.append(module)
+
+    current_modules = [sys.modules.get("lpm"), sys.modules.get("src.lpm")]
+    ordered_modules = [m for m in current_modules if m is not None]
+    for module in _LPM_OVERRIDE_MODULES:
+        if module not in ordered_modules:
+            ordered_modules.append(module)
+
+    for module in ordered_modules:
+        if name in getattr(module, "__dict__", {}):
+            return module.__dict__[name]
+    for module in ordered_modules:
+        try:
+            return getattr(module, name)
+        except AttributeError:
+            continue
+    return default
 
 
 def log(msg: str):
@@ -800,7 +852,11 @@ def db() -> sqlite3.Connection:
     override = _resolve_lpm_attr("db", None)
     if override is not None and override is not db:
         return override()
-    path = _DB_PATH_OVERRIDE or DB_PATH
+    state_dir_override = os.environ.get("LPM_STATE_DIR")
+    if state_dir_override:
+        path = Path(state_dir_override) / "state.db"
+    else:
+        path = _DB_PATH_OVERRIDE or DB_PATH
     return _open_state_db(path)
 
 def db_installed(conn) -> Dict[str,dict]:
@@ -1367,20 +1423,64 @@ def _run_hook_script(script: Path, env: Dict[str, str]):
         subprocess.run([*shebang_cmd, str(script)], env=merged_env, check=True)
 
 
+def _run_hook_config(config_path: Path, env: Dict[str, str]) -> None:
+    merged_env = {**os.environ, **env}
+    hooks = load_hooks([config_path.parent])
+    hook = hooks.get(config_path.stem)
+    if hook is None:
+        return
+    exec_cmd = list(hook.action.exec)
+    if exec_cmd:
+        exec_path = Path(exec_cmd[0])
+        if exec_path.is_absolute() and not exec_path.exists():
+            for parent in config_path.parents:
+                if parent.name == "usr":
+                    root = parent.parent
+                    candidate = root / exec_path.relative_to("/")
+                    if candidate.exists():
+                        exec_cmd[0] = str(candidate)
+                    break
+    subprocess.run(exec_cmd, env=merged_env, check=True)
+
+
 def run_hook(hook: str, env: Dict[str,str]):
-    path = HOOK_DIR / hook
-    if path.is_file():
-        _run_hook_script(path, env)
+    hook_dir = _resolve_lpm_attr("HOOK_DIR", HOOK_DIR)
+    liblpm_dirs = _resolve_lpm_attr("LIBLPM_HOOK_DIRS", LIBLPM_HOOK_DIRS)
+    hook_dirs = [hook_dir, *(liblpm_dirs or ())]
+    if hook_dir is not None:
+        hook_dir = Path(hook_dir)
+        if hook_dir.parts[-2:] == ("lpm", "hooks"):
+            hook_dirs.append(hook_dir.parent.parent / "liblpm" / "hooks")
+    seen: set[Path] = set()
 
-    py_path = path.with_suffix(".py")
-    if py_path.is_file():
-        _run_hook_script(py_path, env)
+    hook_names = {hook, hook.replace("_", "-")}
 
-    dpath = HOOK_DIR / f"{hook}.d"
-    if dpath.is_dir():
-        for script in sorted(dpath.iterdir()):
-            if script.is_file():
-                _run_hook_script(script, env)
+    for base_dir in hook_dirs:
+        if base_dir is None:
+            continue
+        path = Path(base_dir)
+        if path in seen:
+            continue
+        seen.add(path)
+
+        for hook_name in hook_names:
+            hook_path = path / hook_name
+            if hook_path.is_file():
+                _run_hook_script(hook_path, env)
+
+            py_path = hook_path.with_suffix(".py")
+            if py_path.is_file():
+                _run_hook_script(py_path, env)
+
+            hook_path_ext = hook_path.with_suffix(".hook")
+            if hook_path_ext.is_file():
+                _run_hook_config(hook_path_ext, env)
+
+            dpath = path / f"{hook_name}.d"
+            if dpath.is_dir():
+                for script in sorted(dpath.iterdir()):
+                    if script.is_file():
+                        _run_hook_script(script, env)
         
 # =========================== Service File Handling =============================
 def _is_default_root(root: Path) -> bool:
@@ -3139,6 +3239,21 @@ def _url_digest(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
 
 
+def _current_state_dir() -> Path:
+    override = os.environ.get("LPM_STATE_DIR")
+    if override:
+        return Path(override)
+    return STATE_DIR
+
+
+def _current_cache_dir() -> Path:
+    return _current_state_dir() / "cache"
+
+
+def _current_source_cache_dir() -> Path:
+    return _current_cache_dir() / "sources"
+
+
 def _source_cache_path(url: str, filename: str, *, digest: Optional[str] = None) -> Path:
     parsed = urllib.parse.urlparse(url)
     base = os.path.basename(parsed.path.rstrip("/")) or filename or "source"
@@ -3147,7 +3262,7 @@ def _source_cache_path(url: str, filename: str, *, digest: Optional[str] = None)
         stem = "source"
     if digest is None:
         digest = _url_digest(url)
-    return SOURCE_CACHE_DIR / f"{stem}-{digest}{ext}"
+    return _current_source_cache_dir() / f"{stem}-{digest}{ext}"
 
 
 def _cache_entry_filename(path: Path, *, digest: str) -> str:
@@ -3188,7 +3303,7 @@ def _maybe_fetch_source(url: str, dst_dir: Path, *, filename: Optional[str] = No
     if cache_path is None:
         pattern = f"*-{url_digest}*"
         best_match: Optional[Path] = None
-        for match in SOURCE_CACHE_DIR.glob(pattern):
+        for match in _current_source_cache_dir().glob(pattern):
             if best_match is None or match.name < best_match.name:
                 best_match = match
         if best_match is not None:
@@ -3243,7 +3358,8 @@ def _maybe_fetch_source(url: str, dst_dir: Path, *, filename: Optional[str] = No
     dst.write_bytes(data)
 
     try:
-        SOURCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_dir = _current_source_cache_dir()
+        cache_dir.mkdir(parents=True, exist_ok=True)
         cache_path = _source_cache_path(url, resolved_name, digest=url_digest)
         tmp_cache = cache_path.with_suffix(cache_path.suffix + ".tmp")
         tmp_cache.write_bytes(data)
@@ -3366,7 +3482,8 @@ def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str]
         ``"y"`` or ``"n"``.
     """
     try:
-        meta, _ = read_package_meta(blob)
+        reader = _resolve_lpm_attr("read_package_meta", read_package_meta)
+        meta, _ = reader(blob)
         desc = f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}"
     except Exception:
         desc = blob.name
@@ -3379,7 +3496,7 @@ def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str]
     if not resp:
         resp = default
     if resp in {"y", "yes"}:
-        installpkg(blob, explicit=(kind != "dependency"))
+        _resolve_lpm_attr("installpkg", installpkg)(blob, explicit=(kind != "dependency"))
 
 
 @dataclass
@@ -3476,7 +3593,7 @@ def run_lpmbuild(
     overrides = cpu_overrides.normalized() if cpu_overrides else None
     script_arch = (scal.get("ARCH") or "").strip()
     override_arch = (overrides.arch or "").strip() if overrides and overrides.arch else ""
-    arch = override_arch or script_arch or (ARCH or "")
+    arch = override_arch or script_arch or (_resolve_lpm_attr("ARCH", ARCH) or "")
     if not arch:
         arch = PkgMeta.__dataclass_fields__["arch"].default
     summary = scal.get("SUMMARY", "")
@@ -3871,6 +3988,13 @@ def run_lpmbuild(
             exec_path = None
 
     module_path = Path(__file__).resolve()
+    package_module = sys.modules.get("lpm") or sys.modules.get("src.lpm")
+    if package_module is None and _LPM_OVERRIDE_MODULES:
+        package_module = _LPM_OVERRIDE_MODULES[0]
+    if package_module is not None:
+        package_file = getattr(package_module, "__file__", None)
+        if package_file:
+            module_path = Path(package_file).resolve()
     is_frozen = bool(getattr(sys, "frozen", False))
     use_argv0 = is_frozen or exec_path is None
 
@@ -3947,7 +4071,7 @@ def run_lpmbuild(
             return "x86-64"
         return lowered
 
-    host_arch = (ARCH or "").strip()
+    host_arch = (_resolve_lpm_attr("ARCH", ARCH) or "").strip()
     target_arch = arch.strip()
     if not target_arch or target_arch.lower() in {"noarch", "any"}:
         target_arch = host_arch or target_arch or "x86_64"
@@ -3962,10 +4086,10 @@ def run_lpmbuild(
     forced_override = False
 
     if ENABLE_CPU_OPTIMIZATIONS:
-        default_march = (MARCH or "").strip()
+        default_march = (_resolve_lpm_attr("MARCH", MARCH) or "").strip()
         if not default_march or default_march.lower() == "generic":
             default_march = _default_march_for_arch(target_arch)
-        default_mtune = (MTUNE or "").strip() or "generic"
+        default_mtune = (_resolve_lpm_attr("MTUNE", MTUNE) or "").strip() or "generic"
 
         march_source = overrides.march if overrides and overrides.march else default_march
         mtune_source = overrides.mtune if overrides and overrides.mtune else default_mtune
@@ -4312,9 +4436,17 @@ def run_lpmbuild(
                     "generate_install_script", generate_install_script
                 )(stagedir)
                 with install_sh.open("w", encoding="utf-8") as f:
-                    f.write(script_text)
-                    if not script_text.endswith("\n"):
-                        f.write("\n")
+                    if script_text.lstrip().startswith("#!"):
+                        f.write(script_text)
+                        if not script_text.endswith("\n"):
+                            f.write("\n")
+                    else:
+                        f.write("#!/bin/sh\n")
+                        f.write("set -e\n")
+                        if script_text:
+                            f.write(script_text)
+                            if not script_text.endswith("\n"):
+                                f.write("\n")
                 install_sh.chmod(0o755)
         except Exception as e:
             warn(f"Could not embed install script for {name}: {e}")
@@ -4997,9 +5129,17 @@ def cmd_splitpkg(a):
                     "generate_install_script", generate_install_script
                 )(stagedir)
                 with install_sh.open("w", encoding="utf-8") as f:
-                    f.write(script_text)
-                    if not script_text.endswith("\n"):
-                        f.write("\n")
+                    if script_text.lstrip().startswith("#!"):
+                        f.write(script_text)
+                        if not script_text.endswith("\n"):
+                            f.write("\n")
+                    else:
+                        f.write("#!/bin/sh\n")
+                        f.write("set -e\n")
+                        if script_text:
+                            f.write(script_text)
+                            if not script_text.endswith("\n"):
+                                f.write("\n")
                 install_sh.chmod(0o755)
             except Exception as exc:
                 warn(f"Could not embed install script for {name}: {exc}")
@@ -5059,9 +5199,10 @@ def cmd_buildpkg(a):
     if not script_path.exists():
         die(f".lpmbuild script not found: {script_path}")
 
+    run_lpmbuild_fn = _resolve_lpm_attr("run_lpmbuild", run_lpmbuild)
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         future = executor.submit(
-            run_lpmbuild,
+            run_lpmbuild_fn,
             script_path,
             a.outdir,
             build_deps=not a.no_deps,
@@ -5073,7 +5214,7 @@ def cmd_buildpkg(a):
         out, duration, phases, splits = future.result()
 
     if out and out.exists():
-        meta, _ = read_package_meta(out)
+        meta, _ = _resolve_lpm_attr("read_package_meta", read_package_meta)(out)
         print_build_summary(meta, out, duration, len(meta.requires), phases)
         if splits:
             for spath, smeta in splits:
@@ -5550,10 +5691,23 @@ def installpkg(
                                 warn(f"Permission denied setting ownership for {dest}")
 
                     # Handle install scripts
-                    install_script_rel = "/.lpm/install.sh"
-                    staged_script = tmp_root / install_script_rel.lstrip("/")
-                    installed_script = root / install_script_rel.lstrip("/")
-                    if staged_script.exists():
+                    install_script_rel = None
+                    staged_script = None
+                    installed_script = None
+                    for candidate_rel in ("/.lpm-install.sh", "/.lpm/install.sh"):
+                        candidate_path = tmp_root / candidate_rel.lstrip("/")
+                        candidate_installed = root / candidate_rel.lstrip("/")
+                        if candidate_path.exists():
+                            install_script_rel = candidate_rel
+                            staged_script = candidate_path
+                            installed_script = candidate_installed
+                            break
+                        if candidate_installed.exists():
+                            install_script_rel = candidate_rel
+                            installed_script = candidate_installed
+                            break
+
+                    if install_script_rel is not None and staged_script is not None:
                         try:
                             staged_script.chmod(staged_script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
                         except OSError:
@@ -5570,16 +5724,38 @@ def installpkg(
                         )
 
                     # Handle delta generation
-                    try:
-                        generate_deltas(pkg_file, meta, mani, staged_script, installed_script)
-                    except Exception as e:
-                        warn(f"Delta generation failed: {e}")
+                    if staged_script is not None and installed_script is not None:
                         try:
-                            for candidate in (installed_script, staged_script):
-                                candidate.unlink()
-                        except FileNotFoundError:
-                            pass
-                        mani = [e for e in mani if e["path"] != install_script_rel]
+                            generate_deltas(pkg_file, meta, mani, staged_script, installed_script)
+                        except Exception as e:
+                            warn(f"Delta generation failed: {e}")
+                            try:
+                                for candidate in (installed_script, staged_script):
+                                    candidate.unlink()
+                            except FileNotFoundError:
+                                pass
+                            if install_script_rel is not None:
+                                mani = [e for e in mani if e["path"] != install_script_rel]
+
+                    if install_script_rel is not None and installed_script is not None and installed_script.exists():
+                        install_action = "upgrade" if previous_version is not None else "install"
+                        install_env = {**os.environ, **hook_env, "LPM_INSTALL_ACTION": install_action}
+                        new_full = f"{meta.version}-{meta.release}"
+                        old_full = (
+                            f"{previous_version}-{previous_release}"
+                            if previous_version is not None and previous_release is not None
+                            else ""
+                        )
+                        try:
+                            subprocess.run(
+                                [str(installed_script), install_action, new_full, old_full],
+                                env=install_env,
+                                check=True,
+                            )
+                        finally:
+                            with contextlib.suppress(FileNotFoundError):
+                                installed_script.unlink()
+                            mani = [e for e in mani if e["path"] != install_script_rel]
 
                 # Update DB
                 conn.execute(
@@ -5765,7 +5941,7 @@ def cmd_protected(a):
 
 
 def cmd_setup(_):
-    run_first_run_wizard()
+    _resolve_lpm_attr("run_first_run_wizard", run_first_run_wizard)()
 
 
 # =========================== Maintainer spec generation =======================
@@ -6138,8 +6314,9 @@ def main(argv=None):
         return 0
     if cmd is None:
         parser.error("a subcommand is required")
-    if cmd != "setup" and not CONF_FILE.exists():
-        run_first_run_wizard()
+    conf_file = _resolve_lpm_attr("CONF_FILE", CONF_FILE)
+    if cmd != "setup" and not conf_file.exists():
+        _resolve_lpm_attr("run_first_run_wizard", run_first_run_wizard)()
     try:
         if cmd in _PRIVILEGED_COMMANDS:
             with operation_phase(privileged=True):
