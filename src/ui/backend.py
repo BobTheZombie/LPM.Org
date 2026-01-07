@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Mapping, Sequence
 
-from src import config as lpm_config
-from src.lpm.app import PkgMeta, Repo, db, list_repos, load_universe, save_repos
+from lpm import config as lpm_config
+from lpm.app import PkgMeta, Repo, db, list_repos, load_universe, save_repos
 
 
 @dataclass(frozen=True)
@@ -285,7 +285,7 @@ class LPMBackend:
     def run_cli(self, args: Sequence[str], *, root: Path | None = None) -> subprocess.CompletedProcess[str]:
         """Invoke the CLI in a subprocess and capture its output."""
 
-        cmd = [sys.executable, "-m", "src.lpm.app", *args]
+        cmd = [sys.executable, "-m", "lpm.app", *args]
         env = dict(os.environ)
         if root is not None:
             env.setdefault("LPM_ROOT", str(root))
