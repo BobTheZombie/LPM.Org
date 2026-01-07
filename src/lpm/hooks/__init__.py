@@ -4,6 +4,7 @@ import errno
 import logging
 import os
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,8 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Mapping, MutableMapping, Optional, Sequence, Set
+
+from ..privileges import privileged_section
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +198,22 @@ def _str_to_bool(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _ensure_executable(path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        if os.access(path, os.X_OK):
+            return
+        mode = path.stat().st_mode
+        new_mode = mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+        if new_mode == mode:
+            return
+        with privileged_section():
+            path.chmod(new_mode)
+    except OSError:
+        logger.debug("Unable to adjust execute permissions for %s", path, exc_info=True)
+
+
 def load_hooks(paths: Sequence[Path]) -> Dict[str, Hook]:
     hooks: Dict[str, Hook] = {}
     for hook_path in _iter_hook_files(paths):
@@ -344,6 +363,10 @@ class HookTransactionManager:
     def _run_hook(self, hook: Hook, targets: List[str]) -> None:
         action = hook.action
         base_argv = list(action.exec)
+        if base_argv:
+            exec_path = Path(base_argv[0])
+            if exec_path.is_absolute():
+                _ensure_executable(exec_path)
         env = os.environ.copy()
         env.update(self.base_env)
         env.update(
@@ -374,7 +397,8 @@ class HookTransactionManager:
         else:
             argv = base_argv
         try:
-            subprocess.run(argv, check=True, env=env)
+            with privileged_section():
+                subprocess.run(argv, check=True, env=env)
         except OSError as exc:
             if exc.errno == errno.E2BIG and action.needs_targets:
                 logger.warning(
@@ -441,7 +465,8 @@ def _run_hook_with_temp_targets(
         fallback_env.pop("LPM_TARGETS", None)
         fallback_env["LPM_TARGETS_FILE"] = temp_path
         fallback_env["LPM_TARGET_COUNT"] = str(len(targets))
-        subprocess.run(base_argv, check=True, env=fallback_env)
+        with privileged_section():
+            subprocess.run(base_argv, check=True, env=fallback_env)
     finally:
         if temp_path is not None:
             try:
