@@ -29,6 +29,7 @@ lpm = "lpm.app:main"
 packages = { find = { where = ["src"] } }
 package-dir = {"" = "src"}
 include-package-data = true
+py-modules = ["config"]
 
 [tool.setuptools.cmdclass]
 build_nuitka = "tools.setuptools_nuitka.BuildNuitka"
