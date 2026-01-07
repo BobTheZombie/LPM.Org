@@ -5,7 +5,6 @@ requires = [
     "build",
 ]
 build-backend = "setuptools.build_meta"
-backend-path = ["."]
 
 [project]
 name = "lpm"
@@ -19,28 +18,22 @@ dependencies = []
 
 [project.optional-dependencies]
 ui = ["PySide6>=6.6"]
-nuitka = ["nuitka>=1.9"]
 
 [project.entry-points."console_scripts"]
 lpm = "lpm.app:main"
-"lpm-ui" = "lpm.ui_launcher:main"
+lpm-ui = "lpm.ui_launcher:main"
 
 [tool.setuptools]
 packages = { find = { where = ["src"] } }
-package-dir = {"" = "src"}
+package-dir = { "" = "src" }
 include-package-data = true
-
-[tool.setuptools.cmdclass]
-build_nuitka = "tools.setuptools_nuitka.BuildNuitka"
+py-modules = ["config"]
 
 [tool.setuptools.package-data]
-"lpm" = ["bin/*"]
+lpm = ["bin/*"]
 
 [tool.setuptools.data-files]
 "etc/lpm" = ["etc/lpm/lpm.conf"]
 "share/liblpm/hooks" = ["usr/share/liblpm/hooks/*.hook"]
-"share/lpm/hooks" = ["usr/share/lpm/hooks/*"]
-"share/lpm/hooks/post_install.d" = ["usr/share/lpm/hooks/post_install.d/.gitkeep"]
-"share/lpm/hooks/post_upgrade.d" = ["usr/share/lpm/hooks/post_upgrade.d/.gitkeep"]
 "libexec/lpm/hooks" = ["usr/libexec/lpm/hooks/*"]
 "share/lpm/packages" = ["packages/lpm/lpm.lpmbuild"]
