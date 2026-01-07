@@ -80,9 +80,13 @@ class tqdm:
 """
     )
     existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(stub_dir), existing]))
+    repo_root = Path(__file__).resolve().parent.parent
+    src_root = repo_root / "src"
+    env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [str(src_root), str(stub_dir), existing])
+    )
     result = subprocess.run(
-        [sys.executable, str(Path(__file__).resolve().parent.parent / "lpm.py"), "buildpkg", str(script)],
+        [sys.executable, "-m", "lpm", "buildpkg", str(script)],
         env=env,
         capture_output=True,
         text=True,

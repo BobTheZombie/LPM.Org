@@ -58,13 +58,15 @@ class tqdm:
 """
     )
     existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(stub_dir), existing]))
-
-    lpm = Path(__file__).resolve().parent.parent / "lpm.py"
+    repo_root = Path(__file__).resolve().parent.parent
+    src_root = repo_root / "src"
+    env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [str(src_root), str(stub_dir), existing])
+    )
 
     # Without --no-deps the build should fail trying to fetch the missing dep
     result = subprocess.run(
-        [sys.executable, str(lpm), "buildpkg", str(script)],
+        [sys.executable, "-m", "lpm", "buildpkg", str(script)],
         env=env,
         cwd=tmp_path,
         capture_output=True,
@@ -75,7 +77,7 @@ class tqdm:
 
     # With --no-deps the build should succeed and produce a package
     result = subprocess.run(
-        [sys.executable, str(lpm), "buildpkg", str(script), "--no-deps"],
+        [sys.executable, "-m", "lpm", "buildpkg", str(script), "--no-deps"],
         env=env,
         cwd=tmp_path,
         capture_output=True,
@@ -106,16 +108,13 @@ def test_run_lpmbuild_defaults_missing_arch(tmp_path, monkeypatch):
         )
     )
 
-    for module in ("lpm", "src.config"):
+    for module in ("lpm", "lpm.app", "config"):
         sys.modules.pop(module, None)
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(root / "src"))
 
-    spec = importlib.util.spec_from_file_location("lpm", Path(__file__).resolve().parent.parent / "lpm.py")
-    assert spec and spec.loader
-    lpm = importlib.util.module_from_spec(spec)
-    sys.modules["lpm"] = lpm
-    spec.loader.exec_module(lpm)
+    lpm = importlib.import_module("lpm.app")
 
     built, _, _, splits = lpm.run_lpmbuild(
         script,
@@ -134,7 +133,7 @@ def test_run_lpmbuild_defaults_missing_arch(tmp_path, monkeypatch):
 def test_run_lpmbuild_force_rebuild_builds_installed_dependencies(monkeypatch, tmp_path):
     monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "state"))
 
-    import lpm as lpm_module
+    import lpm.app as lpm_module
 
     script = tmp_path / "force.lpmbuild"
     script.write_text("", encoding="utf-8")

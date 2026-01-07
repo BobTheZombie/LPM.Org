@@ -41,7 +41,7 @@ class BuildNuitka(Command):
         extra_flags = shlex.split(os.environ.get("LPM_NUITKA_FLAGS", ""))
         self._build_script(
             script_name="lpm",
-            script_path=project_root / "lpm.py",
+            script_path=project_root / "src" / "lpm" / "__main__.py",
             flags=[*base_flags, *extra_flags],
         )
 

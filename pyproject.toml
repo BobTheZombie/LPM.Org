@@ -22,7 +22,7 @@ ui = ["PySide6>=6.6"]
 nuitka = ["nuitka>=1.9"]
 
 [project.entry-points."console_scripts"]
-lpm = "lpm.cli_shim:main"
+lpm = "lpm.app:main"
 "lpm-ui" = "lpm.ui_launcher:main"
 
 [tool.setuptools]

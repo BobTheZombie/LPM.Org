@@ -311,13 +311,13 @@ contents and runs common maintenance commands based on what it finds:
   without a URL scheme automatically resolve to
   `{LPMBUILD_REPO}/{pkgname}/{filename}`, matching Arch Linux's `source=()`
   behaviour, while explicit URLs and `foo::https://example.com/src` rename
-  syntax are honoured as-is.【F:lpm.py†L2116-L2159】
+  syntax are honoured as-is.【F:src/lpm/app.py†L4044-L4092】
   For Python dependencies that should be sourced from PyPI, add a
   `REQUIRES_PYTHON_DEPENDENCIES=()` array with standard pip requirement
   strings such as `('requests==2.0')`; `lpm buildpkg` canonicalises the
   distribution names, skips entries already provided by packages exposing
   `pypi(<name>)`, and otherwise invokes the built-in pip builder (with
-  dependency resolution enabled) before executing your script.【F:lpm.py†L2367-L2486】
+  dependency resolution enabled) before executing your script.【F:src/lpm/app.py†L3663-L3721】
   Meta-packages can also map individual dependencies to virtual provides by
   declaring an associative array named `META_PROVIDES` (or the lowercase
   `meta_provides`). Each key corresponds to a required package while the value

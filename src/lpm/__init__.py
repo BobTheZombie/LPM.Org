@@ -10,6 +10,9 @@ __all__ = [
     "main",
     "ResolutionError",
     "get_runtime_metadata",
+    "fs_ops",
+    "atomic_io",
+    "privileges",
     "CNF",
     "SATResult",
     "Implication",
@@ -51,4 +54,10 @@ def get_runtime_metadata():
 def __getattr__(name: str) -> Any:
     if name == "ResolutionError":
         return getattr(_load_app(), name)
-    raise AttributeError(name)
+    if name in {"fs_ops", "atomic_io", "privileges"}:
+        return import_module(f"{__name__}.{name}")
+    app = _load_app()
+    try:
+        return getattr(app, name)
+    except AttributeError:
+        raise AttributeError(name) from None

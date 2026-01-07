@@ -12,7 +12,7 @@ from typing import Iterator
 def _enforce_umask() -> Iterator[None]:
     """Temporarily apply the configured umask for the duration of an operation."""
 
-    from . import config
+    import config
 
     previous = os.umask(config.UMASK)
     try:
@@ -22,7 +22,7 @@ def _enforce_umask() -> Iterator[None]:
 
 
 def _target_permissions() -> int:
-    from . import config
+    import config
 
     return 0o666 & ~config.UMASK
 
