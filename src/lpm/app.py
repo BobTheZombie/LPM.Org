@@ -5456,7 +5456,6 @@ def installpkg(
 
 
         manifest_paths = _normalize_manifest_paths(mani)
-        obsoletes_to_remove: Dict[str, dict] = {}
 
         # --- Step 4: Dry-run ---
         if dry_run:
@@ -5473,18 +5472,16 @@ def installpkg(
             matched_obsoletes = _resolve_obsoletes_against_installed(
                 meta.obsoletes, installed_state
             )
-            for obsolete in sorted(matched_obsoletes):
-                obsolete_meta = installed_state.get(obsolete)
-                if obsolete_meta is None:
-                    continue
-                if obsolete in PROTECTED and not force:
-                    warn(
-                        f"{obsolete} is protected (from {PROTECTED_FILE}) and cannot be removed without --force"
-                    )
-                    continue
-                if obsolete == meta.name:
-                    continue
-                obsoletes_to_remove[obsolete] = obsolete_meta
+            pending_obsoletes = [
+                obsolete
+                for obsolete in sorted(matched_obsoletes)
+                if obsolete != meta.name
+            ]
+            if pending_obsoletes:
+                warn(
+                    "[lpm] Obsoletes detected during install, but automatic removal is disabled. "
+                    f"Remove manually if desired: {', '.join(pending_obsoletes)}"
+                )
 
         row = conn.execute(
             "SELECT version, release FROM installed WHERE name=?",
@@ -5504,26 +5501,7 @@ def installpkg(
                     paths=manifest_paths,
                 )
 
-            for obsolete_name, obsolete_meta in obsoletes_to_remove.items():
-                txn.add_package_event(
-                    name=obsolete_name,
-                    operation="Remove",
-                    version=obsolete_meta.get("version"),
-                    release=obsolete_meta.get("release"),
-                    paths=_normalize_manifest_paths(obsolete_meta.get("manifest", [])),
-                )
-
             txn.ensure_pre_transaction()
-
-        for obsolete_name in obsoletes_to_remove:
-            removepkg(
-                name=obsolete_name,
-                root=root,
-                dry_run=dry_run,
-                force=force,
-                hook_transaction=txn,
-                register_event=False,
-            )
 
         with transaction(conn, f"install {meta.name}", dry_run):
 
