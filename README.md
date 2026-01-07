@@ -54,13 +54,25 @@ revision during the build.
 `pyproject.toml` defines the package metadata, console entry points (`lpm` and
 `lpm-ui`), and an optional `ui` extra that pulls in the PySide6 dependencies
 listed in `requirements-ui.txt`. Run `python -m build` from the repository root
-to produce both an sdist and a wheel; the wheel contains the compiled
-executables under `lpm/bin/`.
+to produce both an sdist and a wheel. By default the wheel is pure Python and
+does not include any Nuitka-compiled executables. To opt in to compiled launchers,
+install the extra and set `LPM_ENABLE_NUITKA=1`:
 
-Nuitka compilation is wired into the setuptools build via custom commands. The
-following environment variables tweak the process when invoking `python -m build`:
+```sh
+python -m pip install ".[nuitka]"
+LPM_ENABLE_NUITKA=1 python -m build
+```
 
-- `LPM_SKIP_NUITKA=1` – omit the compilation step entirely.
+You can also invoke Nuitka directly with `python setup.py build_nuitka` when you
+only want the compiled artifacts.
+
+Nuitka compilation is available via custom setuptools commands. The following
+environment variables tweak the process when invoking `python -m build` or
+`python setup.py build_nuitka`:
+
+- `LPM_ENABLE_NUITKA=1` – opt in to running Nuitka during `python -m build`.
+- `LPM_SKIP_NUITKA=1` – omit the compilation step entirely (useful when running
+  `build_nuitka` but wanting to skip it conditionally).
 - `LPM_NUITKA_FLAGS="..."` – append additional flags for both the CLI and UI
   builds.
 - `LPM_NUITKA_UI_FLAGS="..."` – supply UI-specific flags (defaults to
@@ -529,4 +541,3 @@ result_with_assump = solver.solve([v1])  # assume A is true temporarily
 
 Subsequent calls to `solve()` reuse variable activity and learned clauses
 accumulated from previous runs, enabling efficient incremental solving.
-

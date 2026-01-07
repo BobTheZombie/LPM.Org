@@ -3,7 +3,6 @@ requires = [
     "setuptools>=68",
     "wheel",
     "build",
-    "nuitka>=1.9",
 ]
 build-backend = "setuptools.build_meta"
 
@@ -19,6 +18,7 @@ dependencies = []
 
 [project.optional-dependencies]
 ui = ["PySide6>=6.6"]
+nuitka = ["nuitka>=1.9"]
 
 [project.entry-points."console_scripts"]
 lpm = "lpm.cli_shim:main"
@@ -31,7 +31,6 @@ include-package-data = true
 scripts = ["lpm.py", "lpm_ui.py"]
 
 [tool.setuptools.cmdclass]
-build_py = "tools.setuptools_nuitka.BuildPyWithNuitka"
 build_nuitka = "tools.setuptools_nuitka.BuildNuitka"
 
 [tool.setuptools.package-data]
