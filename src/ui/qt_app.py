@@ -3,7 +3,7 @@
 This module provides a PySide6 user interface that mirrors the behaviour
 of the legacy Tkinter front-end while offering a more contemporary and
 visually appealing experience.  It communicates with the LPM backend via
-``src.ui.backend.LPMBackend`` and executes CLI operations in background
+``ui.backend.LPMBackend`` and executes CLI operations in background
 threads so the interface remains responsive.
 """
 
