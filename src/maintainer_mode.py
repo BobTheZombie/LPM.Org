@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional, Sequence, Tuple
 
-from . import config
+import config
 
 logger = logging.getLogger(__name__)
 

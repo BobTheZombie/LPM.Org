@@ -4,7 +4,7 @@ NUITKA ?= $(PYTHON) -m nuitka
 NUITKA_REPO ?= https://github.com/BobTheZombie/Nuitka.git
 NUITKA_REF ?= develop
 APP = lpm
-ENTRY = $(PWD)/lpm.py
+ENTRY = $(PWD)/src/lpm/__main__.py
 UI_ENTRY = $(PWD)/lpm_ui.py
 UI_APP_NAME = lpm-ui
 BUILD_DIR = build/nuitka
@@ -228,7 +228,7 @@ $(NUITKA_STAMP_FILE): $(STATIC_PYTHON_READY) | $(NUITKA_SOURCE_DIR)
 		printf 'Nuitka already installed at %s; skipping reinstall.\n' "$$REV"; \
 	fi
 
-$(BIN_TARGET): lpm.py $(SRC_FILES) | nuitka-install
+$(BIN_TARGET): src/lpm/__main__.py $(SRC_FILES) | nuitka-install
 	@mkdir -p $(BUILD_DIR)
 	$(NUITKA) $(NUITKA_FLAGS) --output-dir=$(BUILD_DIR) --output-filename=$(APP).bin $(ENTRY)
 

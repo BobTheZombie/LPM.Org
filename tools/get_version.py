@@ -9,18 +9,19 @@ mirror the previous behaviour.
 """
 
 import pathlib
-import re
 import subprocess
+import sys
 
 
 def main() -> None:
     root = pathlib.Path(__file__).resolve().parents[1]
     version: str | None = None
-    lpm_path = root / "lpm.py"
-    if lpm_path.exists():
-        match = re.search(r"__version__\s*=\s*['\"]([^'\"]+)['\"]", lpm_path.read_text(encoding="utf-8"))
-        if match:
-            version = match.group(1)
+    src_root = root / "src"
+    if str(src_root) not in sys.path:
+        sys.path.insert(0, str(src_root))
+    from lpm.app import get_runtime_metadata
+
+    version = get_runtime_metadata().get("version")
     if version is None:
         try:
             version = subprocess.check_output([

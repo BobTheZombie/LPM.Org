@@ -25,9 +25,9 @@ for concise argument help at any time.
 
 `lpm setup` launches the interactive wizard provided by `run_first_run_wizard()`
 which populates `/etc/lpm/lpm.conf` with architecture, optimisation, repository,
-and policy defaults.【F:lpm.py†L3027-L3037】 The wizard also runs automatically if
+and policy defaults.【F:src/lpm/app.py†L5767-L5768】 The wizard also runs automatically if
 no configuration file exists and you invoke any other command, ensuring that the
-package manager never operates without explicit settings.【F:lpm.py†L3194-L3201】
+package manager never operates without explicit settings.【F:src/lpm/app.py†L6139-L6143】
 Re-run `lpm setup` whenever you need to change system-wide defaults such as the
 CPU tuning level or fallback policy.
 
@@ -37,10 +37,10 @@ Key configuration files and directories include:
 
 * `/etc/lpm/lpm.conf` – global defaults consumed from `src.config.CONF`.
 * `/etc/lpm/protected.json` – list of packages that cannot be removed without
-  `--force`; managed through `lpm protected` (see section 8.2).【F:lpm.py†L69-L119】
+  `--force`; managed through `lpm protected` (see section 8.2).【F:src/lpm/app.py†L205-L222】【F:src/lpm/app.py†L5741-L5763】
 * `${XDG_CACHE_HOME:-~/.cache}/lpm` – blob cache cleared by `lpm clean`.
 * `/var/lib/lpm/{state.db,cache,snapshots}` – directories initialised on startup
-  and consumed by package transactions.【F:src/config.py†L5-L33】【F:lpm.py†L447-L546】
+  and consumed by package transactions.【F:src/config.py†L63-L90】
 
 High-throughput environments can raise the downloader pool and decompression
 buffer directly from `lpm.conf`. `FETCH_MAX_WORKERS` controls how many blob
@@ -60,7 +60,7 @@ commands for maintenance.
 ### 2.1 `lpm repolist`
 
 Displays all configured repositories sorted by priority using `list_repos()`.
-Each line prints the repository name, its base URL, and numeric priority.【F:lpm.py†L1982-L1995】
+Each line prints the repository name, its base URL, and numeric priority.【F:src/lpm/app.py†L4407-L4409】
 Example:
 
 ```bash
@@ -73,7 +73,7 @@ extra           https://repo.example.com/extra (prio 10)
 
 Adds a repository definition (name, URL, optional priority) via `add_repo()`.
 Priorities are integers where lower numbers win tie-breaks during dependency
-resolution.【F:lpm.py†L414-L445】
+resolution.【F:src/lpm/app.py†L692-L718】
 
 ```bash
 # Add a high-priority internal repository
@@ -83,7 +83,7 @@ $ sudo lpm repoadd staging https://repo.example.com/staging --priority 2
 ### 2.3 `lpm repodel`
 
 Removes a repository by delegating to `del_repo()`. The repository entry is
-removed from the configuration so future resolves ignore it.【F:lpm.py†L420-L426】
+removed from the configuration so future resolves ignore it.【F:src/lpm/app.py†L697-L698】
 
 ```bash
 $ sudo lpm repodel staging
@@ -92,7 +92,7 @@ $ sudo lpm repodel staging
 ### 2.4 `lpm clean`
 
 Purges cached blobs from `CACHE_DIR`, freeing local storage. The command removes
-both directories and individual files, then reports success.【F:lpm.py†L2656-L2670】
+both directories and individual files, then reports success.【F:src/lpm/app.py†L5090-L5098】
 Run it when you need to reclaim disk space or after switching mirrors.
 
 ```bash
@@ -109,7 +109,7 @@ modify the system.
 
 Loads the entire package universe (`load_universe()`) and prints matching names,
 versions, and summaries. Shell-style wildcards are allowed; no pattern means
-`*` (everything).【F:lpm.py†L1989-L2006】
+`*` (everything).【F:src/lpm/app.py†L706-L718】【F:src/lpm/app.py†L4414-L4422】
 
 ```bash
 $ lpm search openssl
@@ -119,7 +119,7 @@ openssl                       3.3.1     TLS/SSL cryptography library
 ### 3.2 `lpm info NAME ...`
 
 For each package, `lpm info` shows full metadata including provides, conflicts,
-and optional dependencies by reading repository entries.【F:lpm.py†L2008-L2023】
+and optional dependencies by reading repository entries.【F:src/lpm/app.py†L4424-L4442】
 
 ```bash
 $ lpm info openssl
@@ -140,7 +140,7 @@ Blob:       openssl-3.3.1-1.x86_64.zst
 ### 3.3 `lpm list`
 
 Queries the installed-package database and prints `name version-release.arch`
-for each entry, allowing you to audit what is currently deployed.【F:lpm.py†L2236-L2240】
+for each entry, allowing you to audit what is currently deployed.【F:src/lpm/app.py†L4661-L4685】
 
 ```bash
 $ lpm list | head
@@ -151,7 +151,7 @@ ca-certificates                2024.07-1.noarch
 ### 3.4 `lpm files NAME`
 
 Lists every file path recorded in the manifest for an installed package. Useful
-for locating configuration files or verifying what a package owns.【F:lpm.py†L2208-L2234】
+for locating configuration files or verifying what a package owns.【F:src/lpm/app.py†L4640-L4650】
 
 ```bash
 $ lpm files openssl | grep bin
@@ -164,13 +164,13 @@ $ lpm files openssl | grep bin
 
 Resolves dependencies via `solve()`, downloads missing blobs, verifies
 signatures (unless `--no-verify`), creates a filesystem snapshot if possible,
-and finally installs packages into the chosen root.【F:lpm.py†L2018-L2116】
+and finally installs packages into the chosen root.【F:src/lpm/app.py†L4444-L4494】
 Key options:
 
 * `--root PATH` – operate inside an alternate root.
 * `--dry-run` – print the planned transaction but skip modifications.
 * `--allow-fallback` / `--no-fallback` – override the global
-  `ALLOW_LPMBUILD_FALLBACK` behaviour for GitLab-based script retrievals.【F:lpm.py†L2059-L2076】
+  `ALLOW_LPMBUILD_FALLBACK` behaviour for GitLab-based script retrievals.【F:src/lpm/app.py†L4459-L4461】
 * `--force` – install packages even if they appear in the protected list.
 
 Example:
@@ -184,7 +184,7 @@ $ sudo lpm install vim
 
 Installs local `.zst` archives directly. Each file is validated (extension,
 magic number, signature if `--verify`), metadata is read, and the package is
-installed through the same pipeline used by repository installs.【F:lpm.py†L2672-L2767】
+installed through the same pipeline used by repository installs.【F:src/lpm/app.py†L5230-L5286】
 Options include `--root`, `--dry-run`, `--verify`, and `--force`.
 
 ```bash
@@ -197,7 +197,7 @@ $ sudo lpm installpkg ./builds/hello-1.0-1.x86_64.zst --verify
 
 Uninstalls packages while honouring protected-package rules. Before modifying
 files, LPM snapshots the affected paths (unless `--dry-run`) so you can roll
-back if necessary.【F:lpm.py†L2110-L2160】 Use `--force` to override protection.
+back if necessary.【F:src/lpm/app.py†L4501-L4522】 Use `--force` to override protection.
 
 ```bash
 $ sudo lpm remove oldpkg --force
@@ -207,7 +207,7 @@ $ sudo lpm remove oldpkg --force
 
 Computes and removes orphaned dependencies that are no longer required by any
 explicitly installed package. Supports `--root` and `--dry-run` just like
-`remove`.【F:lpm.py†L2162-L2166】
+`remove`.【F:src/lpm/app.py†L4531-L4533】
 
 All package transactions automatically trigger the system-maintenance hook,
 which runs `lpm autoremove --root "$LPM_ROOT"` plus snapshot pruning and cache
@@ -222,7 +222,7 @@ $ sudo lpm autoremove
 
 Removes already-installed packages by name without consulting repositories,
 primarily for local `.zst` deployments. It runs in parallel for efficiency and
-accepts `--root`, `--dry-run`, and `--force`.【F:lpm.py†L2600-L2648】
+accepts `--root`, `--dry-run`, and `--force`.【F:src/lpm/app.py†L5101-L5114】【F:src/lpm/app.py†L6115-L6120】
 
 ```bash
 $ sudo lpm removepkg hello --dry-run
@@ -237,7 +237,7 @@ package to the latest available version by generating version constraints such a
 `pkg ~= current_version`. With explicit names it only targets the listed
 packages. The command honours verification and fallback flags, creates
 snapshots, removes obsolete service files, and upgrades packages in dependency
-order.【F:lpm.py†L2168-L2257】
+order.【F:src/lpm/app.py†L4535-L4634】
 
 ```bash
 # Upgrade everything with verification
@@ -256,7 +256,7 @@ recover from changes.
 ### 7.1 `lpm snapshots`
 
 Lists stored snapshots (`id timestamp tag archive`) and optionally deletes or
-prunes them. Use `--delete` with IDs or `--prune` to enforce `MAX_SNAPSHOTS`.【F:lpm.py†L2242-L2294】
+prunes them. Use `--delete` with IDs or `--prune` to enforce `MAX_SNAPSHOTS`.【F:src/lpm/app.py†L4707-L4733】
 
 ```bash
 $ lpm snapshots
@@ -267,7 +267,7 @@ $ sudo lpm snapshots --delete 12
 ### 7.2 `lpm rollback [SNAPSHOT_ID]`
 
 Restores a snapshot archive into the root filesystem. With no argument it picks
-the most recent snapshot. The action is logged in history for auditing.【F:lpm.py†L2296-L2316】
+the most recent snapshot. The action is logged in history for auditing.【F:src/lpm/app.py†L4734-L4752】
 
 ```bash
 $ sudo lpm rollback 11
@@ -276,7 +276,7 @@ $ sudo lpm rollback 11
 ### 7.3 `lpm history`
 
 Displays the last 200 transactions recorded in the history table, identifying
-installs, removals, and rollbacks with timestamps.【F:lpm.py†L2318-L2333】
+installs, removals, and rollbacks with timestamps.【F:src/lpm/app.py†L4753-L4763】
 
 ```bash
 $ lpm history | head
@@ -289,7 +289,7 @@ $ lpm history | head
 
 Recomputes the manifest for every installed package and reports missing files,
 size mismatches, or hash mismatches. Parallel verification keeps large systems
-fast. A successful run prints `[OK] All files validated successfully`.【F:lpm.py†L2335-L2369】
+fast. A successful run prints `[OK] All files validated successfully`.【F:src/lpm/app.py†L4766-L4806】
 
 ```bash
 $ sudo lpm verify
@@ -299,7 +299,7 @@ $ sudo lpm verify
 
 Manipulates `pins.json`, allowing you to hold packages or prefer specific
 versions. Actions include `list`, `hold`, `unhold`, and `prefer name:constraint`.
-Internally the command updates the JSON file used by the resolver.【F:lpm.py†L2371-L2392】
+Internally the command updates the JSON file used by the resolver.【F:src/lpm/app.py†L4809-L4833】
 
 ```bash
 $ lpm pins hold openssl zlib
@@ -310,7 +310,7 @@ $ lpm pins prefer openssl:~=3.3
 
 Views or edits the protected package list stored in `protected.json`. The `add`
 and `remove` actions mutate the JSON file and emit success messages, while
-`list` prints the current contents.【F:lpm.py†L3016-L3034】
+`list` prints the current contents.【F:src/lpm/app.py†L5741-L5763】
 
 ```bash
 $ sudo lpm protected add kernel linux-firmware
@@ -327,7 +327,7 @@ $ lpm protected list
 Packages a staged filesystem tree (`DESTDIR`) into a `.zst` archive. You must
 supply metadata such as `--name`, `--version`, and optionally dependency lists
 (`--requires`, `--provides`, etc.). LPM signs the package unless `--no-sign` is
-passed, then optionally prompts for installation.【F:lpm.py†L2394-L2411】
+passed, then optionally prompts for installation.【F:src/lpm/app.py†L4836-L4847】
 
 ```bash
 $ lpm build pkgroot --name hello --version 1.0 --arch x86_64 --summary "Hello CLI" \
@@ -339,7 +339,7 @@ $ lpm build pkgroot --name hello --version 1.0 --arch x86_64 --summary "Hello CL
 Executes a `.lpmbuild` script inside a sandbox, running the `prepare`, `build`,
 and `install` phases while applying CPU-specific optimisation flags. Dependencies
 can be pulled automatically unless `--no-deps` is supplied. The command prints a
-Meson-style summary with build time and dependency count when it finishes.【F:lpm.py†L1789-L1890】【F:lpm.py†L2398-L2438】
+Meson-style summary with build time and dependency count when it finishes.【F:src/lpm/app.py†L3499-L3570】【F:src/lpm/app.py†L4010-L4041】【F:src/lpm/app.py†L4213-L4243】【F:src/lpm/app.py†L5021-L5078】
 
 ```bash
 $ lpm buildpkg packages/hello/hello.lpmbuild --outdir dist
@@ -359,13 +359,13 @@ cp fortran/* "$splitdir/usr/bin/"
 ```
 
 Each invocation writes the package to the current build output directory and is
-reported alongside the primary package when the build completes.【F:lpm.py†L1833-L1894】【F:lpm.py†L2405-L2445】
+reported alongside the primary package when the build completes.【F:src/lpm/app.py†L5075-L5081】
 
 ### 9.3 `lpm genindex`
 
 Generates an `index.json` for a repository directory full of `.zst` archives.
 You can set a `--base-url` to embed download URLs and restrict output to a
-specific `--arch`. Useful for publishing custom repositories.【F:lpm.py†L2652-L2654】
+specific `--arch`. Useful for publishing custom repositories.【F:src/lpm/app.py†L2867-L2894】
 
 ```bash
 $ lpm genindex repo/ --base-url https://repo.example.com/custom
