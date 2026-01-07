@@ -8,7 +8,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Mapping, Optional, TextIO
 
-import src.config as config
+from lpm import config
 
 
 @dataclass(frozen=True)

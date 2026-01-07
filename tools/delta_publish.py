@@ -9,8 +9,8 @@ import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.config import ZSTD_MIN_VERSION, load_conf
-from src.lpm.delta import DeltaMeta, delta_relpath, generate_delta
+from lpm.config import ZSTD_MIN_VERSION, load_conf
+from lpm.delta import DeltaMeta, delta_relpath, generate_delta
 
 
 def _package_version_label(pkg: Dict[str, Any]) -> str:
