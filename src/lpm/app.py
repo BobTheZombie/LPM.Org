@@ -235,7 +235,7 @@ from .atomic_io import atomic_replace
 from .fs_ops import operation_phase
 from .privileges import privilege_info, privileged_section, privileges_enabled
 from .resolver import CNF, CDCLSolver
-from .hooks import HookTransactionManager, load_hooks
+from .hooks import HookTransactionManager, _ensure_executable, load_hooks
 from .delta import apply_delta, find_cached_by_sha, file_sha256, zstd_version, version_at_least
 
 # =========================== Protected packages ===============================
@@ -1400,7 +1400,8 @@ def _run_hook_script(script: Path, env: Dict[str, str]):
     merged_env = {**os.environ, **env}
     if os.access(script, os.X_OK):
         try:
-            subprocess.run([str(script)], env=merged_env, check=True)
+            with privileged_section():
+                subprocess.run([str(script)], env=merged_env, check=True)
             return
         except OSError as exc:
             if exc.errno not in {errno.ENOEXEC, errno.EACCES}:
@@ -1409,19 +1410,22 @@ def _run_hook_script(script: Path, env: Dict[str, str]):
     if script.suffix == ".py":
         interpreter = _detect_python_for_hooks()
         if interpreter:
-            subprocess.run([interpreter, str(script)], env=merged_env, check=True)
+            with privileged_section():
+                subprocess.run([interpreter, str(script)], env=merged_env, check=True)
             return
 
         shebang_cmd = _shebang_command(script)
         if shebang_cmd:
-            subprocess.run([*shebang_cmd, str(script)], env=merged_env, check=True)
+            with privileged_section():
+                subprocess.run([*shebang_cmd, str(script)], env=merged_env, check=True)
             return
 
         raise RuntimeError(f"Unable to locate Python interpreter for hook {script}")
 
     shebang_cmd = _shebang_command(script)
     if shebang_cmd:
-        subprocess.run([*shebang_cmd, str(script)], env=merged_env, check=True)
+        with privileged_section():
+            subprocess.run([*shebang_cmd, str(script)], env=merged_env, check=True)
 
 
 def _run_hook_config(config_path: Path, env: Dict[str, str]) -> None:
@@ -1441,7 +1445,11 @@ def _run_hook_config(config_path: Path, env: Dict[str, str]) -> None:
                     if candidate.exists():
                         exec_cmd[0] = str(candidate)
                     break
-    subprocess.run(exec_cmd, env=merged_env, check=True)
+        exec_path = Path(exec_cmd[0])
+        if exec_path.is_absolute():
+            _ensure_executable(exec_path)
+    with privileged_section():
+        subprocess.run(exec_cmd, env=merged_env, check=True)
 
 
 def run_hook(hook: str, env: Dict[str,str]):
@@ -5393,6 +5401,9 @@ def installpkg(
     PROTECTED = load_protected()
 
     root = Path(root)
+    if _is_default_root(root):
+        if os.geteuid() != 0 and not privileges_enabled():
+            die("installpkg requires root privileges when installing to the default root")
 
     is_single_path = isinstance(file, Path)
     files: List[Path] = [Path(file)] if is_single_path else [Path(f) for f in file]
