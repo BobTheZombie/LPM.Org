@@ -27,7 +27,7 @@ lpm-ui = "lpm.ui_launcher:main"
 packages = { find = { where = ["src"] } }
 package-dir = { "" = "src" }
 include-package-data = true
-py-modules = ["config"]
+py-modules = ["config", "first_run_ui", "fs", "installgen", "maintainer_mode"]
 
 [tool.setuptools.package-data]
 lpm = ["bin/*"]
