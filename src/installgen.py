@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import os
-import textwrap
+from pathlib import Path
 
 
 def _escape_double_quotes(value: str) -> str:
@@ -11,35 +10,15 @@ def _escape_double_quotes(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def generate_install_script(stagedir: Path) -> str:
-    """Return the default embedded install script body.
-
-    The script opts into strict error handling, provides structured logging,
-    and refreshes post-install caches only when the necessary tools, targets,
-    and privileges are present. Operations that require root use ``run_as_root``
-    for clearer diagnostics instead of failing with obscure permission errors.
-    """
-
-    stagedir = stagedir.resolve()
+def _build_simple_commands(stagedir: Path) -> list[str]:
     cmds: list[str] = []
 
     apps_dir = stagedir / "usr/share/applications"
     if apps_dir.is_dir() and any(apps_dir.rglob("*.desktop")):
         rel = apps_dir.relative_to(stagedir).as_posix()
         cmds.append(
-            textwrap.dedent(
-                f"""
-                if command -v update-desktop-database >/dev/null 2>&1; then
-                  if ! run_as_root update-desktop-database "${{ROOT}}/{rel}"; then
-                    log_warn "desktop database not refreshed; rerun 'sudo update-desktop-database \\\"${{ROOT}}/{rel}\\\"'"
-                  else
-                    log_ok "updated desktop database"
-                  fi
-                else
-                  log_warn "update-desktop-database not found; skipping desktop cache refresh"
-                fi
-                """
-            ).strip()
+            'command -v update-desktop-database >/dev/null 2>&1 '
+            f'&& update-desktop-database "${{LPM_ROOT:-/}}/{rel}" || true'
         )
 
     icons_root = stagedir / "usr/share/icons"
@@ -47,19 +26,8 @@ def generate_install_script(stagedir: Path) -> str:
         for index in icons_root.glob("*/index.theme"):
             theme_dir = index.parent.relative_to(stagedir).as_posix()
             cmds.append(
-                textwrap.dedent(
-                    f"""
-                    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-                      if ! run_as_root gtk-update-icon-cache "${{ROOT}}/{theme_dir}"; then
-                        log_warn "icon cache for '{theme_dir}' not refreshed; rerun 'sudo gtk-update-icon-cache "${{ROOT}}/{theme_dir}"'"
-                      else
-                        log_ok "updated icon cache for {theme_dir}"
-                      fi
-                    else
-                      log_warn "gtk-update-icon-cache not found; skipping icon cache refresh"
-                    fi
-                    """
-                ).strip()
+                'command -v gtk-update-icon-cache >/dev/null 2>&1 '
+                f'&& gtk-update-icon-cache "${{LPM_ROOT:-/}}/{theme_dir}" || true'
             )
 
     lib_dirs: list[Path] = []
@@ -68,15 +36,15 @@ def generate_install_script(stagedir: Path) -> str:
             lib_dirs.append(candidate)
 
     if any(p.is_file() for d in lib_dirs for p in d.rglob("*.so*")):
-        cmds.append("update_ld_cache")
+        cmds.append(
+            '[ "${LPM_ROOT:-/}" = "/" ] && command -v ldconfig >/dev/null 2>&1 && ldconfig || true'
+        )
 
-    gio_candidates = [
-        stagedir / "usr/lib/gio/modules",
-        stagedir / "usr/lib64/gio/modules",
-    ]
-    if any(path.is_dir() for path in gio_candidates):
-        cmds.append("update_gio_modules_cache")
+    return cmds
 
+
+def _find_absolute_symlinks(stagedir: Path) -> list[tuple[str, str]]:
+    results: list[tuple[str, str]] = []
     for link in stagedir.rglob("*"):
         try:
             if not link.is_symlink():
@@ -100,107 +68,135 @@ def generate_install_script(stagedir: Path) -> str:
 
         start = parent_rel or "."
         rel_target = os.path.relpath(target.lstrip("/"), start)
+        results.append((rel_path, rel_target))
 
-        dest_expr = f"${{ROOT}}/{rel_path}"
-        dest_quoted = _escape_double_quotes(dest_expr)
-        target_quoted = _escape_double_quotes(rel_target)
+    return results
 
-        cmds.append(
-            textwrap.dedent(
-                f"""
-                if ! run_as_root ln -snf "{target_quoted}" "{dest_quoted}"; then
-                  log_warn "could not retarget absolute symlink {rel_path}"
-                fi
-                """
-            ).strip()
+
+def generate_install_script(stagedir: Path) -> str:
+    """Return the default embedded install script body."""
+
+    stagedir = stagedir.resolve()
+    simple_cmds = _build_simple_commands(stagedir)
+    ldconfig_cmd = None
+    for cmd in simple_cmds:
+        if cmd.startswith("["):
+            ldconfig_cmd = cmd
+            break
+
+    gio_candidates = [
+        stagedir / "usr/lib/gio/modules",
+        stagedir / "usr/lib64/gio/modules",
+    ]
+    has_gio = any(path.is_dir() for path in gio_candidates)
+    absolute_symlinks = _find_absolute_symlinks(stagedir)
+
+    needs_complex = has_gio or bool(absolute_symlinks)
+    if not needs_complex:
+        if not simple_cmds:
+            return ":"
+        return "\n".join(simple_cmds)
+
+    if ldconfig_cmd is not None:
+        simple_cmds = [cmd for cmd in simple_cmds if cmd is not ldconfig_cmd]
+
+    lines: list[str] = [
+        "#!/bin/sh",
+        "set -e",
+        "",
+        'log_ok() { echo "[OK] $*" >&2; }',
+        'log_warn() { echo "[warn] $*" >&2; }',
+        'log_error() { echo "[ERROR] $*" >&2; }',
+        "",
+        'ROOT="${LPM_ROOT:-/}"',
+        'ROOT="${ROOT%/}"',
+        'ROOT="${ROOT:-/}"',
+        "",
+    ]
+
+    if has_gio:
+        lines.extend(
+            [
+                "update_gio_modules_cache() {",
+                "  if ! command -v gio-querymodules >/dev/null 2>&1; then",
+                "    log_warn \"gio-querymodules not found; skipping gio module cache refresh\"",
+                "    return 0",
+                "  fi",
+                "",
+                "  module_dir=\"\"",
+                "  for candidate in \"$ROOT/usr/lib/gio/modules\" \"$ROOT/usr/lib64/gio/modules\"; do",
+                "    if [ -d \"$candidate\" ]; then",
+                "      module_dir=\"$candidate\"",
+                "      break",
+                "    fi",
+                "  done",
+                "",
+                "  if [ -z \"$module_dir\" ]; then",
+                "    log_warn \"no gio module directory found under $ROOT; skipping\"",
+                "    return 0",
+                "  fi",
+                "",
+                "  if [ \"$(id -u)\" -ne 0 ]; then",
+                "    log_warn \"gio module cache not refreshed (requires root). Run 'sudo gio-querymodules \\\"$module_dir\\\"' after install.\"",
+                "    return 0",
+                "  fi",
+                "",
+                "  if gio-querymodules \"$module_dir\"; then",
+                "    log_ok \"updated gio module cache ($module_dir)\"",
+                "  else",
+                "    log_warn \"gio-querymodules failed for $module_dir\"",
+                "  fi",
+                "}",
+                "",
+            ]
         )
 
-    body = "\n\n".join(cmds)
+    if ldconfig_cmd is not None:
+        lines.extend(
+            [
+                "update_ld_cache() {",
+                "  if [ \"$ROOT\" != \"/\" ]; then",
+                "    log_warn \"ldconfig skipped for non-root prefix $ROOT\"",
+                "    return 0",
+                "  fi",
+                "",
+                "  if ! command -v ldconfig >/dev/null 2>&1; then",
+                "    return 0",
+                "  fi",
+                "",
+                "  if [ \"$(id -u)\" -ne 0 ]; then",
+                "    log_warn \"ldconfig skipped (requires root). Run 'sudo ldconfig' after install.\"",
+                "    return 0",
+                "  fi",
+                "",
+                "  if ldconfig; then",
+                "    log_ok \"refreshed dynamic linker cache\"",
+                "  else",
+                "    log_warn \"ldconfig failed\"",
+                "  fi",
+                "}",
+                "",
+            ]
+        )
 
-    script = textwrap.dedent(
-        f"""
-        #!/bin/bash
-        set -euo pipefail
+    if simple_cmds:
+        lines.extend(simple_cmds)
+        lines.append("")
 
-        log_ok() {{ echo "[OK] $*" >&2; }}
-        log_warn() {{ echo "[warn] $*" >&2; }}
-        log_error() {{ echo "[ERROR] $*" >&2; }}
-        log_info() {{ echo "[lpm] $*" >&2; }}
+    if absolute_symlinks:
+        for rel_path, rel_target in absolute_symlinks:
+            dest_expr = f"${{LPM_ROOT:-/}}/{rel_path}"
+            dest_quoted = _escape_double_quotes(dest_expr)
+            target_quoted = _escape_double_quotes(rel_target)
+            lines.append(f'ln -snf "{target_quoted}" "{dest_quoted}" || true')
+        lines.append("")
 
-        ROOT="${{LPM_ROOT:-/}}"
-        ROOT="${{ROOT%/}}"
-        ROOT="${{ROOT:-/}}"
+    if has_gio:
+        lines.append("update_gio_modules_cache")
+    if ldconfig_cmd is not None:
+        lines.append("update_ld_cache")
 
-        run_as_root() {{
-          if [ "$(id -u)" -eq 0 ]; then
-            "$@"
-            return $?
-          fi
-          log_error "root privileges required to run: $*"
-          return 1
-        }}
-
-        update_gio_modules_cache() {{
-          if ! command -v gio-querymodules >/dev/null 2>&1; then
-            log_warn "gio-querymodules not found; skipping gio module cache refresh"
-            return 0
-          fi
-
-          local module_dir=""
-          for candidate in "${{ROOT}}/usr/lib/gio/modules" "${{ROOT}}/usr/lib64/gio/modules"; do
-            if [ -d "$candidate" ]; then
-              module_dir="$candidate"
-              break
-            fi
-          done
-
-          if [ -z "$module_dir" ]; then
-            log_warn "no gio module directory found under $ROOT; skipping"
-            return 0
-          fi
-
-          if [ "$(id -u)" -ne 0 ]; then
-            log_warn "gio module cache not refreshed (requires root). Run 'sudo gio-querymodules "$module_dir"' after install."
-            return 0
-          fi
-
-          if gio-querymodules "$module_dir"; then
-            log_ok "updated gio module cache ($module_dir)"
-          else
-            log_warn "gio-querymodules failed for $module_dir"
-          fi
-        }}
-
-        update_ld_cache() {{
-          if [ "${{ROOT}}" != "/" ]; then
-            log_warn "ldconfig skipped for non-root prefix $ROOT"
-            return 0
-          fi
-
-          if ! command -v ldconfig >/dev/null 2>&1; then
-            return 0
-          fi
-
-          if [ "$(id -u)" -ne 0 ]; then
-            log_warn "ldconfig skipped (requires root). Run 'sudo ldconfig' after install."
-            return 0
-          fi
-
-          if ldconfig; then
-            log_ok "refreshed dynamic linker cache"
-          else
-            log_warn "ldconfig failed"
-          fi
-        }}
-
-        {body}
-        """
-    ).strip()
-
-    if not script.endswith("\n"):
-        script += "\n"
-
-    return script
+    return "\n".join(line for line in lines if line is not None)
 
 
 __all__ = ["generate_install_script"]
