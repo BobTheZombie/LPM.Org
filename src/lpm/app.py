@@ -4544,7 +4544,7 @@ def run_lpmbuild(
     return out, duration, phase_count, split_records
 
 # =========================== CLI commands =====================================
-_PRIVILEGED_COMMANDS = {"install", "remove", "upgrade", "rollback"}
+_PRIVILEGED_COMMANDS = {"install", "installpkg", "remove", "upgrade", "rollback"}
 def cmd_repolist(_):
     for r in sorted(list_repos(), key=lambda x:x.priority):
         print(f"{r.name:15} {r.url} (prio {r.priority})")
