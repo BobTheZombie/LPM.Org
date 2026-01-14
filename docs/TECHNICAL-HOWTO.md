@@ -360,6 +360,10 @@ cp fortran/* "$splitdir/usr/bin/"
 Each invocation writes the package to the current build output directory and is
 reported alongside the primary package when the build completes.【F:src/lpm/app.py†L5075-L5081】
 
+The build environment also provides a `_cherry-pick` helper by default (aligned
+with Arch's `_pick`). Define `_cherry-pick` in the `.lpmbuild` to override the
+default implementation if you need custom behavior.
+
 ### 9.3 `lpm genindex`
 
 Generates an `index.json` for a repository directory full of `.zst` archives.

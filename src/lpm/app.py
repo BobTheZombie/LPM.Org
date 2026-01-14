@@ -454,6 +454,24 @@ def sandboxed_run(
     mode = CONF.get("SANDBOX_MODE", "none").lower()
     script_abs = script_path.resolve()
     script_quoted = shlex.quote(str(script_abs))
+    cherry_pick_def = "\n".join(
+        [
+            "_cherry-pick() {",
+            "    local _repo",
+            "    local _commit",
+            "    if [[ -d \"$1/.git\" ]]; then",
+            "        _repo=$1",
+            "        shift",
+            "    else",
+            "        _repo=.",
+            "    fi",
+            "    for _commit in \"$@\"; do",
+            "        git -C \"$_repo\" cherry-pick -n \"$_commit\"",
+            "    done",
+            "}",
+            "",
+        ]
+    )
 
     candidates = [func, *aliases]
     candidate_list = " ".join(shlex.quote(name) for name in candidates)
@@ -477,7 +495,7 @@ def sandboxed_run(
         "}\n"
         f"__lpm_run_phase {shlex.quote(func)}\n"
     )
-    wrapper = f"set -e\nsource {script_quoted}\n{wrapper_body}"
+    wrapper = f"set -e\n{cherry_pick_def}source {script_quoted}\n{wrapper_body}"
 
     run_env = dict(env)
 
@@ -527,7 +545,7 @@ def sandboxed_run(
             "--die-with-parent",
             "bash",
             "-c",
-            f"set -e\ncd /src\nsource {script_quoted}\n{wrapper_body}",
+            f"set -e\ncd /src\n{cherry_pick_def}source {script_quoted}\n{wrapper_body}",
         ]
         subprocess.run(cmd, check=True, env=run_env, cwd=str(cwd))
         return
@@ -3075,6 +3093,21 @@ def _capture_lpmbuild_metadata(
         names = " ".join(f'"{name}"' for name in (canonical, canonical, *aliases))
         return f"_emit_map {names}"
 
+    cherry_pick_def = [
+        "_cherry-pick() {",
+        "  local _repo",
+        "  local _commit",
+        "  if [[ -d \"$1/.git\" ]]; then",
+        "    _repo=$1",
+        "    shift",
+        "  else",
+        "    _repo=.",
+        "  fi",
+        "  for _commit in \"$@\"; do",
+        "    git -C \"$_repo\" cherry-pick -n \"$_commit\"",
+        "  done",
+        "}",
+    ]
     lines = [
         "set -e",
         "_emit_scalar() {",
@@ -3123,6 +3156,7 @@ def _capture_lpmbuild_metadata(
         '  done',
         '  printf "\n"',
         "}",
+        *cherry_pick_def,
         f'source "{script_path}"',
         _emit_scalar_line("NAME", "name", "pkgname"),
         _emit_scalar_line("VERSION", "version", "pkgver"),
