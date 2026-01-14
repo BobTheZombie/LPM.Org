@@ -3,8 +3,9 @@ Type = Package
 Operation = Install
 Operation = Upgrade
 Operation = Remove
-Target = *
+Target = lpm-maintenance-disabled
 
 [Action]
+Description = Automatic maintenance disabled (adjust target to enable)
 When = PostTransaction
 Exec = /usr/libexec/lpm/hooks/system-maintenance

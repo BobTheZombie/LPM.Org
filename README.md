@@ -15,8 +15,8 @@ The Linux Package Manager
   operation runs at a time, complementing snapshot rollbacks.
 - **Bootstrap mode** to build a minimal chroot and populate it with verified
   packages.
-- **Automated maintenance hooks** that run `lpm autoremove`, prune snapshots,
-  and clean the cache after each transaction to keep systems tidy.【F:usr/libexec/lpm/hooks/system-maintenance†L1-L49】【F:usr/share/liblpm/hooks/system-maintenance.hook†L1-L10】
+- **Manual maintenance commands** for `lpm autoremove`, snapshot pruning, and
+  cache cleanup when you want to run them.
 - **Init system awareness** that detects packaged systemd/OpenRC/SysV units and
   can auto-enable them when allowed; core init packages (e.g., `systemd` and
   `systemd-libs`) are deliberately excluded from automatic unit management.
