@@ -360,6 +360,17 @@ cp fortran/* "$splitdir/usr/bin/"
 Each invocation writes the package to the current build output directory and is
 reported alongside the primary package when the build completes.【F:src/lpm/app.py†L5075-L5081】
 
+Split package staging in `.lpmbuild` scripts can also use `_pick`, which mirrors
+Arch PKGBUILD semantics by copying a subset of files from the main staging tree
+into the current `$pkgdir`. The helper expects you to `cd "$pkgdir"` and it
+respects both `$SRCROOT` and `$srcdir` for locating sources in the build
+workspace. A minimal split example looks like:
+
+```bash
+cd "$pkgdir"
+_pick soup2 usr/lib/libfoo.so* usr/include/foo
+```
+
 ### 9.3 `lpm genindex`
 
 Generates an `index.json` for a repository directory full of `.zst` archives.
