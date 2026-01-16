@@ -1,0 +1,53 @@
+#!/bin/bash
+# lpmbuild script for LPM filesystem layout
+
+NAME="lpm-filesystem"
+VERSION="1.0.0"
+RELEASE="1"
+ARCH="noarch"
+SUMMARY="Filesystem layout and system users for LPM state"
+URL="https://github.com/BobTheZombie/LPM"
+LICENSE=("MIT")
+
+SOURCE=()
+
+REQUIRES=()
+SUGGESTS=()
+PROVIDES=("lpm-filesystem")
+CONFLICTS=()
+OBSOLETES=()
+
+prepare() {
+    set -euxo pipefail
+}
+
+build() {
+    set -euxo pipefail
+}
+
+staging() {
+    set -euxo pipefail
+
+    install -Dm644 /dev/null "$pkgdir/usr/lib/sysusers.d/lpm.conf"
+    cat > "$pkgdir/usr/lib/sysusers.d/lpm.conf" <<'SYSUSERS'
+# Type Name ID GECOS Home Shell
+u lpm - "LPM service account" /var/lib/lpm /usr/bin/nologin
+g lpm -
+SYSUSERS
+
+    install -Dm644 /dev/null "$pkgdir/usr/lib/tmpfiles.d/lpm.conf"
+    cat > "$pkgdir/usr/lib/tmpfiles.d/lpm.conf" <<'TMPFILES'
+# Type Path Mode User Group Age Argument
+# LPM state directories
+D /var/lib/lpm 0750 lpm lpm -
+D /var/lib/lpm/cache 0750 lpm lpm -
+D /var/lib/lpm/snapshots 0750 lpm lpm -
+f /var/lib/lpm/lock 0640 lpm lpm -
+
+# LPM admin directories
+D /etc/lpm 0755 root root -
+D /etc/lpm/hooks 0755 root root -
+D /etc/lpm/private 0750 root root -
+D /etc/lpm/trust 0755 root root -
+TMPFILES
+}
