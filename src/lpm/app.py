@@ -2931,27 +2931,91 @@ def _remove_installed_package(meta: dict, root: Path, dry_run: bool, conn):
         return
     name = meta["name"]
     manifest_entries = meta.get("manifest", [])
-    # Handle both old list-of-paths and new structured manifest
-    if manifest_entries and isinstance(manifest_entries[0], dict):
-        files = [e["path"] for e in manifest_entries]
-    else:
-        files = manifest_entries
 
+    def normalize_manifest_entries(entries: List[object]) -> Tuple[List[str], Set[str]]:
+        paths: List[str] = []
+        dirs: Set[str] = set()
+        for entry in entries:
+            path = None
+            entry_type = None
+            if isinstance(entry, dict):
+                path = entry.get("path")
+                entry_type = entry.get("type") or entry.get("kind")
+                if entry.get("dir") is True:
+                    entry_type = "dir"
+            else:
+                path = entry
+            if not isinstance(path, str):
+                continue
+            if path.endswith("/") and not entry_type:
+                entry_type = "dir"
+                path = path.rstrip("/")
+            normalized = "/" + path.lstrip("/")
+            if normalized == "/":
+                continue
+            paths.append(normalized)
+            if entry_type in {"dir", "directory"}:
+                dirs.add(normalized)
+        for path in paths:
+            rel = path.strip("/")
+            if not rel:
+                continue
+            parent = Path(rel).parent
+            while parent and str(parent) not in {"", "."}:
+                dirs.add("/" + parent.as_posix())
+                if parent == parent.parent:
+                    break
+                parent = parent.parent
+        return paths, dirs
+
+    files, owned_dirs = normalize_manifest_entries(manifest_entries)
     # Remove deepest paths first (dirs last)
-    files = sorted(files, key=lambda s: s.count("/"), reverse=True)
+    files = sorted({p for p in files if isinstance(p, str)}, key=lambda s: s.count("/"), reverse=True)
 
     for f in progress_bar(files, desc=f"Removing {name}", unit="file", colour="purple"):
         p = root / f.lstrip("/")
         try:
-            if p.is_file() or p.is_symlink():
+            try:
+                st = p.lstat()
+            except FileNotFoundError:
+                continue
+
+            if stat.S_ISLNK(st.st_mode) or stat.S_ISREG(st.st_mode):
                 p.unlink(missing_ok=True)
-            elif p.is_dir():
+            elif stat.S_ISDIR(st.st_mode):
                 try:
                     p.rmdir()
                 except OSError:
                     pass
+            else:
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
         except Exception as e:
             warn(f"rm {p}: {e}")
+
+    if owned_dirs:
+        dirs_to_cleanup = sorted(owned_dirs, key=lambda s: s.count("/"), reverse=True)
+        for dir_rel in dirs_to_cleanup:
+            if not isinstance(dir_rel, str):
+                continue
+            p = root / dir_rel.lstrip("/")
+            current = p
+            while True:
+                if current == root:
+                    break
+                rel = "/" + current.relative_to(root).as_posix()
+                if rel not in owned_dirs:
+                    break
+                try:
+                    current.rmdir()
+                except OSError:
+                    break
+                parent = current.parent
+                if parent == current:
+                    break
+                current = parent
 
     # Stop/disable/init cleanup for services once all files are handled
     if manifest_entries:
