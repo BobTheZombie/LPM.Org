@@ -76,6 +76,62 @@ def _find_absolute_symlinks(stagedir: Path) -> list[tuple[str, str]]:
 def generate_install_script(stagedir: Path) -> str:
     """Return the default embedded install script body."""
 
+    helper_lines = [
+        "# Helper functions for package install scripts.",
+        "#",
+        "# lpm_should_replace <new_full> <old_full> [action]",
+        "#   Returns 0 (true) when content should be replaced during install/upgrade.",
+        "#   Uses the provided action or LPM_INSTALL_ACTION, and falls back to comparing",
+        "#   the new_full/old_full identifiers when no action is supplied.",
+        "#",
+        "# lpm_remove_path <path>",
+        "#   Removes existing files, directories, or symlinks before writing new content.",
+        "#   Uses rm -f for files/links and rm -rf for directories.",
+        "",
+        "lpm_should_replace() {",
+        "  new_full_arg=${1:-${new_full:-}}",
+        "  old_full_arg=${2:-${old_full:-}}",
+        "  action_arg=${3:-${LPM_INSTALL_ACTION:-}}",
+        "",
+        "  if [ -n \"$action_arg\" ]; then",
+        "    case \"$action_arg\" in",
+        "      install)",
+        "        return 0",
+        "        ;;",
+        "      upgrade)",
+        "        if [ -z \"$old_full_arg\" ]; then",
+        "          return 0",
+        "        fi",
+        "        if [ \"$new_full_arg\" != \"$old_full_arg\" ]; then",
+        "          return 0",
+        "        fi",
+        "        ;;",
+        "    esac",
+        "    return 1",
+        "  fi",
+        "",
+        "  if [ -n \"$new_full_arg\" ] && [ -n \"$old_full_arg\" ] && [ \"$new_full_arg\" != \"$old_full_arg\" ]; then",
+        "    return 0",
+        "  fi",
+        "",
+        "  return 1",
+        "}",
+        "",
+        "lpm_remove_path() {",
+        "  target=$1",
+        "  if [ -z \"$target\" ]; then",
+        "    return 1",
+        "  fi",
+        "",
+        "  if [ -L \"$target\" ] || [ -f \"$target\" ]; then",
+        "    rm -f \"$target\"",
+        "  elif [ -d \"$target\" ]; then",
+        "    rm -rf \"$target\"",
+        "  fi",
+        "}",
+        "",
+    ]
+
     stagedir = stagedir.resolve()
     simple_cmds = _build_simple_commands(stagedir)
     ldconfig_cmd = None
@@ -93,9 +149,10 @@ def generate_install_script(stagedir: Path) -> str:
 
     needs_complex = has_gio or bool(absolute_symlinks)
     if not needs_complex:
+        lines = [*helper_lines, *simple_cmds]
         if not simple_cmds:
-            return ":"
-        return "\n".join(simple_cmds)
+            lines.append(":")
+        return "\n".join(lines)
 
     if ldconfig_cmd is not None:
         simple_cmds = [cmd for cmd in simple_cmds if cmd is not ldconfig_cmd]
@@ -113,6 +170,7 @@ def generate_install_script(stagedir: Path) -> str:
         'ROOT="${ROOT:-/}"',
         "",
     ]
+    lines.extend(helper_lines)
 
     if has_gio:
         lines.extend(
