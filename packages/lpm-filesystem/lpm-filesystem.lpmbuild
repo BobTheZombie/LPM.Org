@@ -28,12 +28,7 @@ build() {
 staging() {
     set -euxo pipefail
 
-    install -Dm644 /dev/stdin "$pkgdir/usr/lib/sysusers.d/lpm.conf" <<'SYSUSERS'
-# Type Name  ID  GECOS                Home          Shell
-g lpm  -   -                    -             -
-u lpm  -   "LPM service account" /var/lib/lpm /usr/bin/nologin
-m lpm lpm
-SYSUSERS
+    install -Dm644 usr/lib/sysusers.d/lpm.conf "$pkgdir/usr/lib/sysusers.d/lpm.conf"
 
     install -Dm644 /dev/stdin "$pkgdir/usr/lib/tmpfiles.d/lpm.conf" <<'TMPFILES'
 # Path                  Mode  User Group Age Argument
