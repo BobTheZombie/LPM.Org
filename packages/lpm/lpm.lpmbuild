@@ -14,6 +14,7 @@ SOURCE=(
 )
 
 REQUIRES=(
+  "lpm-filesystem"
   "python"
   "openssl"
   "tar"
@@ -98,4 +99,3 @@ JSON
     install -Dm644 build/build-info.json "$pkgdir/usr/share/lpm/build-info.json"
 
 }
-
