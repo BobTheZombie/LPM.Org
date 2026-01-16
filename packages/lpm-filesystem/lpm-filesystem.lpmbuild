@@ -31,37 +31,38 @@ staging() {
     install -Dm644 /dev/null "$pkgdir/usr/lib/sysusers.d/lpm.conf"
     cat > "$pkgdir/usr/lib/sysusers.d/lpm.conf" <<'SYSUSERS'
 # Type Name ID GECOS Home Shell
+g lpm - -
 u lpm - "LPM service account" /var/lib/lpm /usr/bin/nologin
-g lpm -
+m lpm lpm
 SYSUSERS
 
     install -Dm644 /dev/null "$pkgdir/usr/lib/tmpfiles.d/lpm.conf"
     cat > "$pkgdir/usr/lib/tmpfiles.d/lpm.conf" <<'TMPFILES'
 # Type Path Mode User Group Age Argument
 # LPM state directories
-D /var/lib/lpm 0770 root lpm -
-D /var/lib/lpm/cache 0750 lpm lpm -
-D /var/lib/lpm/snapshots 0750 lpm lpm -
-f /var/lib/lpm/lock 0660 root lpm -
+d /var/lib/lpm 0770 root lpm - -
+d /var/lib/lpm/cache 0770 root lpm - -
+d /var/lib/lpm/snapshots 0770 root lpm - -
+f /var/lib/lpm/lock 0660 root lpm - -
 
 # LPM admin directories
-D /etc/lpm 0755 root root -
-D /etc/lpm/hooks 0755 root root -
-D /etc/lpm/private 0750 root root -
-D /etc/lpm/trust 0755 root root -
+d /etc/lpm 0755 root root - -
+d /etc/lpm/hooks 0755 root root - -
+d /etc/lpm/private 0750 root root - -
+d /etc/lpm/trust 0755 root root - -
 
 # Linker cache/config paths
-f /etc/ld.so.cache 0644 root root -
-d /etc/ld.so.conf.d 0755 root root -
+f /etc/ld.so.cache 0644 root root - -
+d /etc/ld.so.conf.d 0755 root root - -
 
 # Temporary directories
-z /tmp 1777 root root -
-z /var/tmp 1777 root root -
+d /tmp 1777 root root - -
+d /var/tmp 1777 root root - -
 
 # LPM hook directories
-D /usr/share/liblpm 0755 root root -
-D /usr/share/liblpm/hooks 0755 root root -
-D /usr/libexec/lpm 0755 root root -
-D /usr/libexec/lpm/hooks 0755 root root -
+d /usr/share/liblpm 0755 root root - -
+d /usr/share/liblpm/hooks 0755 root root - -
+d /usr/libexec/lpm 0755 root root - -
+d /usr/libexec/lpm/hooks 0755 root root - -
 TMPFILES
 }
