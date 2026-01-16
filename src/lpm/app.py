@@ -5514,6 +5514,15 @@ def installpkg(
         )
         owns_txn = True
 
+    def _replace_path(dest: Path) -> None:
+        try:
+            if dest.is_symlink() or dest.is_file():
+                dest.unlink()
+            elif dest.is_dir():
+                shutil.rmtree(dest)
+        except FileNotFoundError:
+            return
+
     def _install_single(pkg_file: Path) -> PkgMeta:
         # --- Step 1: Validate extension + magic ---
         if pkg_file.suffix != EXT:
@@ -5708,14 +5717,8 @@ def installpkg(
                             continue
 
                         if dest.exists() or dest.is_symlink():
-                            def _remove_dest() -> None:
-                                if dest.is_file() or dest.is_symlink():
-                                    dest.unlink()
-                                elif dest.is_dir():
-                                    shutil.rmtree(dest)
-
                             if replace_all:
-                                _remove_dest()
+                                _replace_path(dest)
                             else:
                                 same = False
                                 try:
@@ -5732,11 +5735,11 @@ def installpkg(
                                         f"[conflict] {rel} exists. [R]eplace / [RA] Replace All / [S]kip / [A]bort? "
                                     ).strip().lower()
                                     if resp in ("r", "replace"):
-                                        _remove_dest()
+                                        _replace_path(dest)
                                         break
                                     elif resp in ("ra", "all", "replace all"):
                                         replace_all = True
-                                        _remove_dest()
+                                        _replace_path(dest)
                                         break
                                     elif resp in ("s", "skip"):
                                         log(f"[skip] {rel}")
@@ -5792,6 +5795,9 @@ def installpkg(
                             install_script_rel = candidate_rel
                             installed_script = candidate_installed
                             break
+
+                    if replace_all and installed_script is not None:
+                        _replace_path(installed_script)
 
                     if install_script_rel is not None and staged_script is not None:
                         try:
