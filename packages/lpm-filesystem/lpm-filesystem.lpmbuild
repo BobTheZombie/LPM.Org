@@ -1,11 +1,11 @@
 #!/bin/bash
-# lpmbuild script for LPM filesystem layout
+# lpmbuild script for the LPM filesystem baseline
 
 NAME="lpm-filesystem"
 VERSION="1.0.0"
 RELEASE="1"
 ARCH="noarch"
-SUMMARY="Filesystem layout and system users for LPM state"
+SUMMARY="Filesystem, sysusers, and tmpfiles definitions for LPM"
 URL="https://github.com/BobTheZombie/LPM"
 LICENSE=("MIT")
 
@@ -28,41 +28,34 @@ build() {
 staging() {
     set -euxo pipefail
 
-    install -Dm644 /dev/null "$pkgdir/usr/lib/sysusers.d/lpm.conf"
-    cat > "$pkgdir/usr/lib/sysusers.d/lpm.conf" <<'SYSUSERS'
-# Type Name ID GECOS Home Shell
-g lpm - -
-u lpm - "LPM service account" /var/lib/lpm /usr/bin/nologin
+    install -Dm644 /dev/stdin "$pkgdir/usr/lib/sysusers.d/lpm.conf" <<'SYSUSERS'
+# Type Name  ID  GECOS                Home          Shell
+g lpm  -   -                    -             -
+u lpm  -   "LPM service account" /var/lib/lpm /usr/bin/nologin
 m lpm lpm
 SYSUSERS
 
-    install -Dm644 /dev/null "$pkgdir/usr/lib/tmpfiles.d/lpm.conf"
-    cat > "$pkgdir/usr/lib/tmpfiles.d/lpm.conf" <<'TMPFILES'
-# Type Path Mode User Group Age Argument
-# LPM state directories
-d /var/lib/lpm 0770 root lpm - -
-d /var/lib/lpm/cache 0770 root lpm - -
-d /var/lib/lpm/snapshots 0770 root lpm - -
-f /var/lib/lpm/lock 0660 root lpm - -
+    install -Dm644 /dev/stdin "$pkgdir/usr/lib/tmpfiles.d/lpm.conf" <<'TMPFILES'
+# Path                  Mode  User Group Age Argument
+# LPM state/config
+d /etc/lpm              0755  root root -   -
+d /var/lib/lpm          0770  root lpm  -   -
+d /var/lib/lpm/cache    0770  root lpm  -   -
+d /var/lib/lpm/snapshots 0770 root lpm -   -
+f /var/lib/lpm/lock     0660  root lpm  -   -
 
-# LPM admin directories
-d /etc/lpm 0755 root root - -
-d /etc/lpm/hooks 0755 root root - -
-d /etc/lpm/private 0750 root root - -
-d /etc/lpm/trust 0755 root root - -
+# LPM hooks/lib paths
+d /usr/share/liblpm         0755 root root - -
+d /usr/share/liblpm/hooks   0755 root root - -
+d /usr/libexec/lpm          0755 root root - -
+d /usr/libexec/lpm/hooks    0755 root root - -
 
-# Linker cache/config paths
-f /etc/ld.so.cache 0644 root root - -
-d /etc/ld.so.conf.d 0755 root root - -
+# Linker cache paths
+d /etc/ld.so.conf.d     0755 root root -   -
+f /etc/ld.so.cache      0644 root root -   -
 
-# Temporary directories
-d /tmp 1777 root root - -
-d /var/tmp 1777 root root - -
-
-# LPM hook directories
-d /usr/share/liblpm 0755 root root - -
-d /usr/share/liblpm/hooks 0755 root root - -
-d /usr/libexec/lpm 0755 root root - -
-d /usr/libexec/lpm/hooks 0755 root root - -
+# Temp directories
+d /tmp                  1777 root root -   -
+d /var/tmp              1777 root root -   -
 TMPFILES
 }
