@@ -39,10 +39,10 @@ SYSUSERS
     cat > "$pkgdir/usr/lib/tmpfiles.d/lpm.conf" <<'TMPFILES'
 # Type Path Mode User Group Age Argument
 # LPM state directories
-D /var/lib/lpm 0750 lpm lpm -
+D /var/lib/lpm 0770 root lpm -
 D /var/lib/lpm/cache 0750 lpm lpm -
 D /var/lib/lpm/snapshots 0750 lpm lpm -
-f /var/lib/lpm/lock 0640 lpm lpm -
+f /var/lib/lpm/lock 0660 root lpm -
 
 # LPM admin directories
 D /etc/lpm 0755 root root -
