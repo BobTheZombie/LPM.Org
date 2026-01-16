@@ -3306,6 +3306,7 @@ def _capture_lpmbuild_metadata(
         _emit_array_line("OBSOLETES", "obsoletes", "replaces"),
         _emit_array_line("RECOMMENDS", "recommends"),
         _emit_array_line("SUGGESTS", "suggests", "optional_depends"),
+        _emit_array_line("REBUILD_WITH", "rebuild_with"),
         _emit_map_line("META_PROVIDES", "meta_provides", "provides_by_package"),
     ]
 
@@ -3331,6 +3332,7 @@ def _capture_lpmbuild_metadata(
             "OBSOLETES",
             "RECOMMENDS",
             "SUGGESTS",
+            "REBUILD_WITH",
         ]
     }
     maps: Dict[str, Dict[str, List[str]]] = {"META_PROVIDES": {}}
@@ -3741,6 +3743,7 @@ def run_lpmbuild(
     executor: Optional[ThreadPoolExecutor] = None,
     cpu_overrides: Optional[CpuOverrides] = None,
     on_built_package: Optional[Callable[[Path, PkgMeta], None]] = None,
+    _rebuild_with_active: bool = False,
 ) -> Tuple[Path, float, int, List[Tuple[Path, PkgMeta]]]:
     script_path = script.resolve()
     script_dir = script_path.parent
@@ -3774,7 +3777,8 @@ def run_lpmbuild(
     if not name or not version:
         die("lpmbuild missing NAME or VERSION")
 
-    building_stack = tuple(_building_stack or ())
+    parent_stack = tuple(_building_stack or ())
+    building_stack = parent_stack
     if name in building_stack:
         cycle = " -> ".join((*building_stack, name))
         die(f"dependency cycle detected: {cycle}")
@@ -3783,6 +3787,12 @@ def run_lpmbuild(
 
     # --- Auto-build dependencies before continuing ---
     fetch_fn = fetcher or _resolve_lpm_attr("fetch_lpmbuild", fetch_lpmbuild)
+
+    def _register_meta_capabilities(_: PkgMeta) -> None:
+        return
+
+    def _refresh_capabilities_from_installed() -> None:
+        return
 
     if build_deps:
         seen: Set[Tuple[str, str]] = set()
@@ -4665,6 +4675,60 @@ def run_lpmbuild(
                 tmp.unlink()
         with contextlib.suppress(Exception):
             helper_path.unlink()
+
+    rebuild_targets = [pkg.strip() for pkg in arr.get("REBUILD_WITH", []) if pkg and pkg.strip()]
+    if rebuild_targets and not _rebuild_with_active and not is_dep:
+        log(
+            f"[lpm] Rebuilding {name} with additional packages: "
+            f"{', '.join(rebuild_targets)}"
+        )
+        total_targets = len(rebuild_targets)
+        for idx, rebuild_dep in enumerate(rebuild_targets, start=1):
+            log(f"[rebuild-with] ({idx}/{total_targets}) building {rebuild_dep}")
+            tmp = Path(f"/tmp/lpm-rebuild-with-{rebuild_dep}.lpmbuild")
+            fetch_fn(rebuild_dep, tmp)
+            built_blob, _, _, split_records = run_lpmbuild(
+                tmp,
+                outdir or script_dir,
+                prompt_install=prompt_install,
+                prompt_default=prompt_default,
+                is_dep=True,
+                build_deps=True,
+                force_rebuild=force_rebuild,
+                fetcher=fetch_fn,
+                _building_stack=building_stack,
+                executor=executor,
+                cpu_overrides=overrides,
+                on_built_package=on_built_package,
+            )
+            if prompt_install:
+                _refresh_capabilities_from_installed()
+            else:
+                reader = _resolve_lpm_attr("read_package_meta", read_package_meta)
+                try:
+                    meta_obj, _ = reader(built_blob)
+                except Exception as exc:
+                    warn(f"[rebuild-with] unable to inspect {built_blob}: {exc}")
+                    meta_obj = None
+                _register_meta_capabilities(meta_obj)
+                for _, split_meta in split_records:
+                    _register_meta_capabilities(split_meta)
+
+        return run_lpmbuild(
+            script_path,
+            outdir=outdir,
+            prompt_install=prompt_install,
+            prompt_default=prompt_default,
+            is_dep=is_dep,
+            build_deps=build_deps,
+            force_rebuild=force_rebuild,
+            fetcher=fetch_fn,
+            _building_stack=parent_stack,
+            executor=executor,
+            cpu_overrides=overrides,
+            on_built_package=on_built_package,
+            _rebuild_with_active=True,
+        )
 
     if maintainer_mode.is_enabled():
         try:
