@@ -54,6 +54,10 @@ D /etc/lpm/trust 0755 root root -
 f /etc/ld.so.cache 0644 root root -
 d /etc/ld.so.conf.d 0755 root root -
 
+# Temporary directories
+z /tmp 1777 root root -
+z /var/tmp 1777 root root -
+
 # LPM hook directories
 D /usr/share/liblpm 0755 root root -
 D /usr/share/liblpm/hooks 0755 root root -
