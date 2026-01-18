@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "crates/lpm-core",
+    "crates/lpm-cli",
+    "crates/lpm-gui",
+]
+resolver = "2"
