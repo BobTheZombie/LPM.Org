@@ -43,13 +43,18 @@ def _content_disposition_filename(header: str | None) -> Optional[str]:
 
 
 def urlread(url: str, timeout: float | None = 10) -> Tuple[bytes, Optional[str]]:
+    max_download = 1 << 30  # 1 GiB hard safety cap
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
             meta_filename = _content_disposition_filename(r.headers.get("content-disposition"))
             final_url = r.geturl()
             total = int(r.headers.get("content-length", 0) or 0)
+            if total > max_download:
+                raise RuntimeError(f"Refusing to download content larger than {max_download} bytes")
             if total == 0:
                 data = r.read()
+                if len(data) > max_download:
+                    raise RuntimeError(f"Refusing to download content larger than {max_download} bytes")
                 return data, meta_filename or final_url
             chunk_size = 1 << 14
             data = bytearray()
@@ -59,6 +64,8 @@ def urlread(url: str, timeout: float | None = 10) -> Tuple[bytes, Optional[str]]
                     if not chunk:
                         break
                     data.extend(chunk)
+                    if len(data) > max_download:
+                        raise RuntimeError(f"Refusing to download content larger than {max_download} bytes")
                     bar.update(len(chunk))
             return bytes(data), meta_filename or final_url
     except urllib.error.URLError as e:
