@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import os
 import tempfile
+import logging
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator, Optional, Union
 
 
 BytesLike = Union[bytes, bytearray, memoryview]
+logger = logging.getLogger(__name__)
 
 
 def _coerce_bytes(data: Union[str, BytesLike], *, encoding: str = "utf-8") -> bytes:
@@ -61,11 +63,9 @@ def enforce_umask(mask: int) -> Iterator[None]:
 
 
 def _current_umask() -> int:
-    """Return the process' current umask without permanently altering it."""
-
-    current = os.umask(0)
-    os.umask(current)
-    return current
+    """Return configured umask used for write-mode calculations."""
+    from . import config
+    return config.UMASK
 
 
 def read_bytes(path: Union[str, Path]) -> bytes:
@@ -88,8 +88,8 @@ def _apply_metadata(
     applied_mode = requested & ~mask
     try:
         os.chmod(tmp_path, applied_mode)
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.debug("failed chmod on temp file %s: %s", tmp_path, exc)
 
     os.replace(tmp_path, target)
 
@@ -98,18 +98,18 @@ def _apply_metadata(
         gid = group if group is not None else -1
         try:
             os.chown(target, uid, gid)
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.debug("failed chown on %s to %s:%s: %s", target, uid, gid, exc)
 
     try:
         os.chmod(target, applied_mode)
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.debug("failed chmod on target %s: %s", target, exc)
 
     try:
         os.utime(target, None)
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.debug("failed utime on target %s: %s", target, exc)
 
     sync_targets = {target.parent}
     for directory in extra_sync:

@@ -57,8 +57,13 @@ def _acquire(lock_path: Path) -> _LockHandle:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
     flags = os.O_RDWR | os.O_CREAT
-    fd = os.open(lock_path, flags, 0o666 & ~config.UMASK)
-    os.chmod(lock_path, 0o666 & ~config.UMASK)
+    mode = 0o666 & ~config.UMASK
+    fd = os.open(lock_path, flags, mode)
+    try:
+        os.chmod(lock_path, mode)
+    except OSError:
+        # Locking still works with the existing permissions; chmod is best-effort.
+        pass
 
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
