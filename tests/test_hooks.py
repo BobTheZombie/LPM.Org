@@ -528,6 +528,36 @@ def test_kernel_modules_install_transaction_hook(tmp_path, monkeypatch, system_h
     assert "grub-mkconfig -o /boot/grub/grub.cfg" in calls
 
 
+def test_kernel_install_hook_makes_existing_initrd_writable(tmp_path, monkeypatch):
+    hook_dir = Path(__file__).resolve().parent.parent / "usr/share/lpm/hooks"
+    monkeypatch.setattr(lpm, "HOOK_DIR", hook_dir)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "log"
+    for name in ("depmod", "mkinitcpio", "bootctl", "grub-mkconfig"):
+        p = bin_dir / name
+        p.write_text(f"#!/bin/sh\necho {name} \"$@\" >> {log}\n")
+        p.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    root = tmp_path / "root"
+    initrd = root / "boot" / "initrd-1.2.4-lpm.img"
+    initrd.parent.mkdir(parents=True, exist_ok=True)
+    initrd.write_text("existing")
+    initrd.chmod(0o444)
+
+    lpm.run_hook(
+        "kernel_install",
+        {
+            "LPM_VERSION": "1.2.4-lpm",
+            "LPM_ROOT": str(root),
+        },
+    )
+
+    assert os.access(initrd, os.W_OK)
+
+
 def test_transaction_manager_uses_temp_targets_before_e2big(monkeypatch, tmp_path):
     hook = Hook(
         name="big-targets",
