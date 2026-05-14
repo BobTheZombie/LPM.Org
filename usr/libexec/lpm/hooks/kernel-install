@@ -61,6 +61,8 @@ def _collect_versions(argv: Iterable[str]) -> List[str]:
 def _run_mkinitcpio(root: Path, version: str) -> None:
     output = root / "boot" / f"initrd-{version}.img"
     output.parent.mkdir(parents=True, exist_ok=True)
+    if output.exists() and not os.access(output, os.W_OK):
+        output.chmod(output.stat().st_mode | 0o200)
     args = ["mkinitcpio"]
     if root != Path("/"):
         args.extend(["-r", str(root)])
