@@ -326,6 +326,24 @@ class LPMBackend:
         args = ["installpkg", *files]
         return self.run_cli(args)
 
+    def create_system_iso(
+        self,
+        output: str,
+        *,
+        source_root: str = "/",
+        volume_id: str = "LPM_PRELOAD",
+    ) -> subprocess.CompletedProcess[str]:
+        args = [
+            "createiso",
+            "--source-root",
+            source_root,
+            "--output",
+            output,
+            "--volume-id",
+            volume_id,
+        ]
+        return self.run_cli(args)
+
 
 # ----------------------------------------------------------------------
 def _format_install_time(timestamp: int | None) -> str:
