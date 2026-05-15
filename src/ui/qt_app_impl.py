@@ -476,6 +476,12 @@ class LPMWindow(QMainWindow):
         self.package_file_input = QLineEdit()
         self.package_file_button = QPushButton("Browse…")
         self.installpkg_button = QPushButton("Run installpkg")
+        iso_out_label = QLabel("System ISO output file:")
+        self.iso_output_input = QLineEdit()
+        self.iso_output_button = QPushButton("Browse…")
+        iso_volume_label = QLabel("ISO volume id:")
+        self.iso_volume_input = QLineEdit("LPM_PRELOAD")
+        self.create_iso_button = QPushButton("Create system ISO")
 
         layout.addWidget(script_label, 0, 0)
         layout.addWidget(self.build_script_input, 0, 1)
@@ -490,6 +496,12 @@ class LPMWindow(QMainWindow):
         layout.addWidget(self.package_file_input, 4, 1)
         layout.addWidget(self.package_file_button, 4, 2)
         layout.addWidget(self.installpkg_button, 5, 0, 1, 3)
+        layout.addWidget(iso_out_label, 6, 0)
+        layout.addWidget(self.iso_output_input, 6, 1)
+        layout.addWidget(self.iso_output_button, 6, 2)
+        layout.addWidget(iso_volume_label, 7, 0)
+        layout.addWidget(self.iso_volume_input, 7, 1, 1, 2)
+        layout.addWidget(self.create_iso_button, 8, 0, 1, 3)
 
     def _build_log_panel(self) -> None:
         layout = QVBoxLayout(self.log_group)
@@ -677,6 +689,8 @@ class LPMWindow(QMainWindow):
         self.buildpkg_button.clicked.connect(self._run_buildpkg)
         self.package_file_button.clicked.connect(self._browse_package_files)
         self.installpkg_button.clicked.connect(self._run_installpkg)
+        self.iso_output_button.clicked.connect(self._browse_iso_output)
+        self.create_iso_button.clicked.connect(self._run_create_iso)
 
     # ------------------------------------------------------------------
     # Worker helpers
@@ -989,6 +1003,30 @@ class LPMWindow(QMainWindow):
             on_result=self._handle_cli_result,
             on_finished=self._refresh_installed,
             status="Installing local packages…",
+        )
+
+    def _browse_iso_output(self) -> None:
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save system ISO image",
+            "lpm-preloaded.iso",
+            "ISO images (*.iso);;All files (*)",
+        )
+        if filename:
+            self.iso_output_input.setText(filename)
+
+    def _run_create_iso(self) -> None:
+        output = self.iso_output_input.text().strip()
+        if not output:
+            QMessageBox.information(self, "createiso", "Choose an output .iso file path.")
+            return
+        volume_id = self.iso_volume_input.text().strip() or "LPM_PRELOAD"
+        self._run_task(
+            self.backend.create_system_iso,
+            output,
+            on_result=self._handle_cli_result,
+            status="Creating system ISO…",
+            volume_id=volume_id,
         )
 
 

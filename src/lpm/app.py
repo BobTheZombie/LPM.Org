@@ -5397,6 +5397,51 @@ def cmd_genindex(a):
     repo_dir = Path(a.repo_dir)
     gen_index(repo_dir, a.base_url, arch_filter=a.arch)
 
+def cmd_createiso(a):
+    source_root = Path(a.source_root or "/").resolve()
+    output = Path(a.output).resolve()
+    volume_id = a.volume_id.strip() if a.volume_id else "LPM_PRELOAD"
+
+    if not source_root.exists() or not source_root.is_dir():
+        die(f"Source root does not exist or is not a directory: {source_root}")
+    if source_root == Path("/"):
+        log("[lpm] Creating system image from / (excluding transient and user-home paths)")
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    xorriso = shutil.which("xorriso")
+    if not xorriso:
+        die("xorriso is required. Install xorriso and try again.")
+
+    exclusions = [
+        "home",
+        "proc",
+        "sys",
+        "dev",
+        "run",
+        "tmp",
+        "mnt",
+        "media",
+        "lost+found",
+    ]
+    exclude_args = [arg for item in exclusions for arg in ("-m", item)]
+    cmd = [
+        xorriso,
+        "-as",
+        "mkisofs",
+        "-R",
+        "-J",
+        "-V",
+        volume_id,
+        "-o",
+        str(output),
+        *exclude_args,
+        str(source_root),
+    ]
+    res = subprocess.run(cmd, check=False)
+    if res.returncode != 0:
+        die(f"ISO creation failed with exit code {res.returncode}")
+    ok(f"Created ISO image at {output}")
+
 def cmd_clean_cache(_):
     if CACHE_DIR.exists():
         for p in CACHE_DIR.iterdir():
@@ -6425,6 +6470,12 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--base-url", dest="base_url", help="base URL for blobs in index (e.g., https://repo.example.com)", default=None)
     sp.add_argument("--arch", help="only include this arch (noarch always included)", default=None)
     sp.set_defaults(func=cmd_genindex)
+
+    sp=sub.add_parser("createiso", help="Create a bootable-style recovery ISO from the system with LPM preloaded")
+    sp.add_argument("--source-root", default="/", help="filesystem root to package (default: /)")
+    sp.add_argument("--output", required=True, help="output .iso file path")
+    sp.add_argument("--volume-id", default="LPM_PRELOAD", help="ISO volume identifier")
+    sp.set_defaults(func=cmd_createiso)
 
     if maintainer_mode.is_enabled():
         sp=sub.add_parser("lpmspec", help="Generate an lpmspec description for Nebula installers")
