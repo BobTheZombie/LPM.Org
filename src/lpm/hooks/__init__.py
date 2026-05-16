@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
@@ -254,6 +255,7 @@ class HookTransactionManager:
         self.root = Path(root)
         self.base_env = dict(base_env or {})
         self.events: List[_TransactionEvent] = []
+        self._lock = threading.RLock()
         self._pre_ran = False
         self._post_ran = False
 
@@ -266,38 +268,43 @@ class HookTransactionManager:
         release: Optional[str],
         paths: Iterable[str],
     ) -> None:
-        op = operation.capitalize()
-        if op not in _VALID_OPS:
-            raise HookError(f"Unsupported operation {operation!r}")
-        cleaned_paths = _dedupe_preserve_order(_normalize_path(p) for p in paths)
-        self.events.append(
-            _TransactionEvent(
-                name=name,
-                operation=op,
-                version=version,
-                release=release,
-                paths=cleaned_paths,
+        with self._lock:
+            op = operation.capitalize()
+            if op not in _VALID_OPS:
+                raise HookError(f"Unsupported operation {operation!r}")
+            cleaned_paths = _dedupe_preserve_order(_normalize_path(p) for p in paths)
+            self.events.append(
+                _TransactionEvent(
+                    name=name,
+                    operation=op,
+                    version=version,
+                    release=release,
+                    paths=cleaned_paths,
+                )
             )
-        )
 
     def ensure_pre_transaction(self) -> None:
-        if not self._pre_ran:
-            self._run_when("PreTransaction")
+        with self._lock:
+            if self._pre_ran:
+                return
             self._pre_ran = True
+        self._run_when("PreTransaction")
 
     def run_post_transaction(self) -> None:
-        if not self._post_ran:
+        with self._lock:
+            if self._post_ran:
+                return
             if not self._pre_ran:
                 # If post is requested without pre, still mark pre as executed so
                 # hooks relying solely on post run correctly.
                 self._pre_ran = True
-            self._run_when("PostTransaction")
             self._post_ran = True
+        self._run_when("PostTransaction")
 
     # ------------------------------------------------------------------
-    def _gather_matches(self, trigger: HookTrigger) -> List[str]:
+    def _gather_matches(self, trigger: HookTrigger, events: Sequence[_TransactionEvent]) -> List[str]:
         matches: List[str] = []
-        for event in self.events:
+        for event in events:
             if event.operation not in trigger.operations:
                 continue
             if trigger.type == "Package":
@@ -316,20 +323,25 @@ class HookTransactionManager:
                             break
         return matches
 
-    def _iter_triggered(self, when: str) -> Iterator[tuple[Hook, List[str]]]:
+    def _iter_triggered(self, when: str, events: Sequence[_TransactionEvent]) -> Iterator[tuple[Hook, List[str]]]:
         for hook in self.hooks.values():
             if hook.action.when != when:
                 continue
             targets: List[str] = []
             for trigger in hook.triggers:
-                matches = self._gather_matches(trigger)
+                matches = self._gather_matches(trigger, events)
                 if matches:
                     targets.extend(matches)
             if targets:
                 yield hook, _dedupe_preserve_order(targets)
 
+    def _snapshot_triggered(self, when: str) -> List[tuple[Hook, List[str]]]:
+        with self._lock:
+            events_snapshot = list(self.events)
+            return list(self._iter_triggered(when, events_snapshot))
+
     def _run_when(self, when: str) -> None:
-        triggered: List[tuple[Hook, List[str]]] = list(self._iter_triggered(when))
+        triggered: List[tuple[Hook, List[str]]] = self._snapshot_triggered(when)
         if not triggered:
             return
         ordered = self._order_by_dependencies(triggered)
