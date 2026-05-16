@@ -33,7 +33,7 @@ if "tqdm" not in sys.modules:
 
 import lpm
 import pytest
-from src.lpm.hooks import Hook, HookAction, HookTransactionManager, load_hooks
+from src.lpm.hooks import Hook, HookAction, HookTransactionManager, HookTrigger, load_hooks
 
 
 def test_python_hook(tmp_path, monkeypatch):
@@ -750,3 +750,75 @@ def test_transaction_manager_failure_handling(tmp_path):
     txn = HookTransactionManager(hooks=hooks, root=root)
     txn.add_package_event(name="failpkg", operation="Install", version="1", release="1", paths=["/tmp/file"])
     txn.ensure_pre_transaction()
+
+
+def test_transaction_manager_thread_safety(monkeypatch):
+    import threading
+
+    hooks = {
+        "pkg-pre": Hook(
+            name="pkg-pre",
+            path=Path("/tmp/pkg-pre.hook"),
+            triggers=[HookTrigger(type="Package", operations={"Install"}, targets=["pkg*"])],
+            action=HookAction(when="PreTransaction", exec=["/bin/true"], needs_targets=True),
+        ),
+        "path-post": Hook(
+            name="path-post",
+            path=Path("/tmp/path-post.hook"),
+            triggers=[HookTrigger(type="Path", operations={"Install"}, targets=["usr/bin/*"])],
+            action=HookAction(when="PostTransaction", exec=["/bin/true"], needs_targets=True),
+        ),
+    }
+    txn = HookTransactionManager(hooks=hooks, root=Path("/"))
+
+    failures = []
+    run_calls = []
+    run_lock = threading.Lock()
+
+    def fake_run_hook(hook, targets):
+        with run_lock:
+            run_calls.append((hook.name, tuple(targets)))
+
+    monkeypatch.setattr(txn, "_run_hook", fake_run_hook)
+
+    workers = []
+
+    def add_event(i):
+        try:
+            txn.add_package_event(
+                name=f"pkg{i}",
+                operation="Install",
+                version="1.0",
+                release="1",
+                paths=[f"/usr/bin/tool{i}", "/usr/bin/tool-common"],
+            )
+        except Exception as exc:  # pragma: no cover - should never happen
+            failures.append(exc)
+
+    for i in range(24):
+        workers.append(threading.Thread(target=add_event, args=(i,)))
+    for _ in range(8):
+        workers.append(threading.Thread(target=lambda: txn.ensure_pre_transaction()))
+        workers.append(threading.Thread(target=lambda: txn.run_post_transaction()))
+
+    for t in workers:
+        t.start()
+    for t in workers:
+        t.join()
+
+    txn.ensure_pre_transaction()
+    txn.run_post_transaction()
+
+    assert failures == []
+
+    pre_calls = [targets for name, targets in run_calls if name == "pkg-pre"]
+    post_calls = [targets for name, targets in run_calls if name == "path-post"]
+
+    assert len(pre_calls) == 1
+    assert len(post_calls) == 1
+
+    expected_pkg_targets = {f"pkg{i}-1.0-1" for i in range(24)}
+    assert set(pre_calls[0]) == expected_pkg_targets
+
+    expected_path_targets = {f"/usr/bin/tool{i}" for i in range(24)} | {"/usr/bin/tool-common"}
+    assert set(post_calls[0]) == expected_path_targets
