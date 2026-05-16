@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -8,6 +9,8 @@ from typing import Optional
 import fcntl
 
 from . import config
+
+_INPROC_TXN_LOCK = threading.RLock()
 
 
 class TransactionLockError(RuntimeError):
@@ -86,13 +89,21 @@ class GlobalTransactionLock:
         self._handle: Optional[_LockHandle] = None
 
     def __enter__(self) -> "GlobalTransactionLock":
-        self._handle = _acquire(self.path)
+        _INPROC_TXN_LOCK.acquire()
+        try:
+            self._handle = _acquire(self.path)
+        except Exception:
+            _INPROC_TXN_LOCK.release()
+            raise
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        if self._handle is not None:
-            self._handle.release()
-            self._handle = None
+        try:
+            if self._handle is not None:
+                self._handle.release()
+                self._handle = None
+        finally:
+            _INPROC_TXN_LOCK.release()
 
 
 def global_transaction_lock(path: Optional[Path] = None) -> GlobalTransactionLock:

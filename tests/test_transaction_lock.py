@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib
 import os
 import sqlite3
+import threading
+import time
 
 import pytest
 
@@ -65,3 +67,35 @@ def test_transaction_context_rejects_when_locked(isolated_state, capsys):
     assert exc.value.code == 2
     captured = capsys.readouterr()
     assert "another transaction is running" in captured.err
+
+
+def test_transaction_lock_serializes_threads_in_process(isolated_state):
+    _, locking, _ = isolated_state
+    entered_second = threading.Event()
+    release_first = threading.Event()
+    done_second = threading.Event()
+
+    def first_holder():
+        with locking.global_transaction_lock():
+            release_first.wait(timeout=2)
+
+    def second_holder():
+        with locking.global_transaction_lock():
+            entered_second.set()
+        done_second.set()
+
+    first = threading.Thread(target=first_holder)
+    second = threading.Thread(target=second_holder)
+
+    first.start()
+    time.sleep(0.05)
+    second.start()
+
+    time.sleep(0.1)
+    assert not entered_second.is_set()
+
+    release_first.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert done_second.is_set()
