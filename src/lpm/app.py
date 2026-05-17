@@ -5746,11 +5746,12 @@ def installpkg(
                 )
 
         row = conn.execute(
-            "SELECT version, release FROM installed WHERE name=?",
+            "SELECT version, release, manifest FROM installed WHERE name=?",
             (meta.name,),
         ).fetchone()
         previous_version = row[0] if row else None
         previous_release = row[1] if row else None
+        previous_manifest = json.loads(row[2]) if row and row[2] else []
 
         if txn is not None:
             if register_event:
@@ -5850,6 +5851,17 @@ def installpkg(
                         )
 
                 with operation_phase(privileged=True):
+                    # Atomic package replace for upgrades: remove all previously-owned
+                    # files before materializing the new payload so stale paths and
+                    # conflict prompts do not leak across versions.
+                    if previous_version is not None and previous_manifest:
+                        for old_entry in previous_manifest:
+                            old_path = old_entry.get("path") if isinstance(old_entry, dict) else None
+                            if not old_path:
+                                continue
+                            dest_old = root / str(old_path).lstrip("/")
+                            _replace_path(dest_old)
+
                     # Move into root w/ conflict handling (same as before) ...
                     replace_all = False
                     for e in mani:
