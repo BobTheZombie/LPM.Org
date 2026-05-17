@@ -5625,6 +5625,7 @@ def installpkg(
     force: bool = False,
     explicit: bool = False,
     allow_fallback: bool = ALLOW_LPMBUILD_FALLBACK,
+    hook_failure_mode: str = HookFailureMode.STRICT,
     hook_transaction: Optional[HookTransactionManager] = None,
     register_event: bool = True,
 ) -> PkgMeta | List[PkgMeta]:
