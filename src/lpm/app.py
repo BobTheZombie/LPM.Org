@@ -235,7 +235,7 @@ from .atomic_io import atomic_replace
 from .fs_ops import operation_phase
 from .privileges import privilege_info, privileged_section, privileges_enabled
 from .resolver import CNF, CDCLSolver
-from .hooks import HookTransactionManager, _ensure_executable, load_hooks
+from .hooks import HookExecutionError, HookFailureMode, HookTransactionManager, _ensure_executable, load_hooks
 from .delta import apply_delta, find_cached_by_sha, file_sha256, zstd_version, version_at_least
 
 # =========================== Protected packages ===============================
@@ -1467,6 +1467,16 @@ def _detect_python_interpreter() -> Optional[str]:
     return None
 
 
+
+
+class AppHookExecutionError(RuntimeError):
+    def __init__(self, *, hook_name: str, hook_path: Path, package_context: str, reason: str):
+        self.hook_name = hook_name
+        self.hook_path = Path(hook_path)
+        self.package_context = package_context
+        self.reason = reason
+        super().__init__(f"Hook {hook_name} failed for {package_context} at {hook_path}: {reason}")
+
 def _detect_python_for_hooks() -> Optional[str]:
     return _detect_python_interpreter()
 
@@ -1492,7 +1502,7 @@ def _shebang_command(script: Path) -> Optional[List[str]]:
     return shlex.split(decoded)
 
 
-def _run_hook_script(script: Path, env: Dict[str, str]):
+def _run_hook_script(script: Path, env: Dict[str, str], *, hook_name: str, package_context: str):
     merged_env = {**os.environ, **env}
     if os.access(script, os.X_OK):
         try:
@@ -1524,7 +1534,7 @@ def _run_hook_script(script: Path, env: Dict[str, str]):
             subprocess.run([*shebang_cmd, str(script)], env=merged_env, check=True)
 
 
-def _run_hook_config(config_path: Path, env: Dict[str, str]) -> None:
+def _run_hook_config(config_path: Path, env: Dict[str, str], *, hook_name: str, package_context: str) -> None:
     merged_env = {**os.environ, **env}
     hooks = load_hooks([config_path.parent])
     hook = hooks.get(config_path.stem)
@@ -1548,7 +1558,7 @@ def _run_hook_config(config_path: Path, env: Dict[str, str]) -> None:
         subprocess.run(exec_cmd, env=merged_env, check=True)
 
 
-def run_hook(hook: str, env: Dict[str,str]):
+def run_hook(hook: str, env: Dict[str,str], *, failure_mode: str = HookFailureMode.STRICT, package_context: Optional[str] = None):
     hook_dir = _resolve_lpm_attr("HOOK_DIR", HOOK_DIR)
     liblpm_dirs = _resolve_lpm_attr("LIBLPM_HOOK_DIRS", LIBLPM_HOOK_DIRS)
     hook_dirs = [hook_dir, *(liblpm_dirs or ())]
@@ -1559,6 +1569,16 @@ def run_hook(hook: str, env: Dict[str,str]):
     seen: set[Path] = set()
 
     hook_names = {hook, hook.replace("_", "-")}
+
+    failures: List[AppHookExecutionError] = []
+
+    def _handle(exc: Exception, hook_name_local: str, hook_path_local: Path) -> None:
+        err = AppHookExecutionError(hook_name=hook_name_local, hook_path=hook_path_local, package_context=package_context or env.get("LPM_PKG", "unknown-package"), reason=str(exc))
+        if failure_mode == HookFailureMode.COLLECT:
+            warn(str(err))
+            failures.append(err)
+            return
+        raise err
 
     for base_dir in hook_dirs:
         if base_dir is None:
@@ -1571,21 +1591,33 @@ def run_hook(hook: str, env: Dict[str,str]):
         for hook_name in hook_names:
             hook_path = path / hook_name
             if hook_path.is_file():
-                _run_hook_script(hook_path, env)
+                try:
+                    _run_hook_script(hook_path, env, hook_name=hook_name, package_context=package_context or env.get("LPM_PKG", "unknown-package"))
+                except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
+                    _handle(exc, hook_name, hook_path)
 
             py_path = hook_path.with_suffix(".py")
             if py_path.is_file():
-                _run_hook_script(py_path, env)
+                try:
+                    _run_hook_script(py_path, env, hook_name=hook_name, package_context=package_context or env.get("LPM_PKG", "unknown-package"))
+                except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
+                    _handle(exc, hook_name, py_path)
 
             hook_path_ext = hook_path.with_suffix(".hook")
             if hook_path_ext.is_file():
-                _run_hook_config(hook_path_ext, env)
+                try:
+                    _run_hook_config(hook_path_ext, env, hook_name=hook_name, package_context=package_context or env.get("LPM_PKG", "unknown-package"))
+                except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
+                    _handle(exc, hook_name, hook_path_ext)
 
             dpath = path / f"{hook_name}.d"
             if dpath.is_dir():
                 for script in sorted(dpath.iterdir()):
                     if script.is_file():
-                        _run_hook_script(script, env)
+                        try:
+                            _run_hook_script(script, env, hook_name=hook_name, package_context=package_context or env.get("LPM_PKG", "unknown-package"))
+                        except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
+                            _handle(exc, hook_name, script)
         
 # =========================== Service File Handling =============================
 def _is_default_root(root: Path) -> bool:
@@ -2821,6 +2853,7 @@ def do_install(
     allow_fallback: bool = ALLOW_LPMBUILD_FALLBACK,
     force_build: bool = False,
     local_overrides: Optional[Mapping[str, Path]] = None,
+    hook_failure_mode: str = HookFailureMode.STRICT,
 ):
     global PROTECTED
     PROTECTED = load_protected()
@@ -2857,6 +2890,7 @@ def do_install(
             hooks=load_hooks(LIBLPM_HOOK_DIRS),
             root=root,
             base_env={"LPM_ROOT": str(root)},
+            failure_mode=hook_failure_mode,
         )
         conn = db()
         try:
@@ -3029,12 +3063,12 @@ def _remove_installed_package(meta: dict, root: Path, dry_run: bool, conn):
     )
 
 
-def do_remove(names: List[str], root: Path, dry: bool, force: bool = False):
+def do_remove(names: List[str], root: Path, dry: bool, force: bool = False, hook_failure_mode: str = HookFailureMode.STRICT):
     global PROTECTED
     PROTECTED = load_protected()
 
     def worker(n: str):
-        removepkg(name=n, root=root, dry_run=dry, force=force)
+        removepkg(name=n, root=root, dry_run=dry, force=force, hook_failure_mode=hook_failure_mode)
 
     max_workers = min(8, len(names))
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -5620,6 +5654,7 @@ def installpkg(
             hooks=load_hooks(LIBLPM_HOOK_DIRS),
             root=root,
             base_env={"LPM_ROOT": str(root)},
+            failure_mode=hook_failure_mode,
         )
         owns_txn = True
 
@@ -5741,7 +5776,7 @@ def installpkg(
             if previous_release is not None:
                 hook_env["LPM_PREVIOUS_RELEASE"] = previous_release
 
-            run_hook("pre_install", dict(hook_env))
+            run_hook("pre_install", dict(hook_env), failure_mode=hook_failure_mode, package_context=meta.name)
 
             tmp_root = Path(tempfile.mkdtemp(prefix=f"lpm-{meta.name}-", dir="/tmp"))
             try:
@@ -5989,10 +6024,10 @@ def installpkg(
             finally:
                 shutil.rmtree(tmp_root, ignore_errors=True)
 
-            run_hook("post_install", dict(hook_env))
+            run_hook("post_install", dict(hook_env), failure_mode=hook_failure_mode, package_context=meta.name)
 
             if previous_version is not None:
-                run_hook("post_upgrade", dict(hook_env))
+                run_hook("post_upgrade", dict(hook_env), failure_mode=hook_failure_mode, package_context=meta.name)
 
             # New: init system service integration
             with operation_phase(privileged=True):
@@ -6016,6 +6051,7 @@ def removepkg(
     force: bool = False,
     hook_transaction: Optional[HookTransactionManager] = None,
     register_event: bool = True,
+    hook_failure_mode: str = HookFailureMode.STRICT,
 ):
     global PROTECTED
     PROTECTED = load_protected()
@@ -6028,6 +6064,7 @@ def removepkg(
             hooks=load_hooks(LIBLPM_HOOK_DIRS),
             root=root,
             base_env={"LPM_ROOT": str(root)},
+            failure_mode=hook_failure_mode,
         )
         owns_txn = True
 
@@ -6075,9 +6112,9 @@ def removepkg(
         txn.ensure_pre_transaction()
 
     with transaction(conn, f"remove {name}", dry_run):
-        run_hook("pre_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)})
+        run_hook("pre_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)}, failure_mode=hook_failure_mode, package_context=name)
         _remove_installed_package(meta, root, dry_run, conn)
-        run_hook("post_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)})
+        run_hook("post_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)}, failure_mode=hook_failure_mode, package_context=name)
 
     if not dry_run and is_meta_package:
         installed_after = db_installed(conn)
