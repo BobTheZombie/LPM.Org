@@ -5523,6 +5523,7 @@ def cmd_fileinstall(a):
             verify=a.verify,
             force=a.force,
             explicit=True,
+            hook_failure_mode=getattr(a, "hook_failure_mode", HookFailureMode.STRICT),
         )
 
     max_workers = min(8, len(files))
