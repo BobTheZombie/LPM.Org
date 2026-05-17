@@ -259,3 +259,49 @@ def test_installpkg_replace_all_option(tmp_path, monkeypatch):
     assert (root / "etc" / "foo").read_text() == "package foo\n"
     assert (root / "etc" / "bar").read_text() == "package bar\n"
     assert os.stat(root / "etc" / "foo").st_ino != foo_inode_before
+
+
+def test_installpkg_upgrade_is_atomic_replace(tmp_path, monkeypatch):
+    lpm = _import_lpm(tmp_path, monkeypatch)
+    root = tmp_path / "root-atomic-upgrade"
+
+    def build_pkg(version: str, payloads: dict[str, str]) -> Path:
+        staged = tmp_path / f"stage-atomic-{version}"
+        for rel, content in payloads.items():
+            target = staged / rel.lstrip("/")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
+        manifest = lpm.collect_manifest(staged)
+        meta = lpm.PkgMeta(name="atomicpkg", version=version, release="1", arch="noarch")
+        (staged / ".lpm-meta.json").write_text(json.dumps(dataclasses.asdict(meta)))
+        (staged / ".lpm-manifest.json").write_text(json.dumps(manifest))
+        out = tmp_path / f"atomicpkg-{version}.zst"
+        with out.open("wb") as f:
+            cctx = lpm.zstd.ZstdCompressor()
+            with cctx.stream_writer(f) as compressor:
+                with tarfile.open(fileobj=compressor, mode="w|") as tf:
+                    for child in staged.iterdir():
+                        tf.add(child, arcname=child.name)
+        shutil.rmtree(staged)
+        return out
+
+    pkg_v1 = build_pkg("1", {"/etc/old.conf": "old
+", "/etc/common.conf": "v1
+"})
+    pkg_v2 = build_pkg("2", {"/etc/new.conf": "new
+", "/etc/common.conf": "v2
+"})
+
+    lpm.installpkg(pkg_v1, root=root, dry_run=False, verify=False, force=False, explicit=True)
+
+    def fail_on_prompt(prompt: str) -> str:
+        raise AssertionError(f"Unexpected conflict prompt: {prompt}")
+
+    monkeypatch.setattr("builtins.input", fail_on_prompt)
+    lpm.installpkg(pkg_v2, root=root, dry_run=False, verify=False, force=False, explicit=True)
+
+    assert not (root / "etc" / "old.conf").exists()
+    assert (root / "etc" / "new.conf").read_text() == "new
+"
+    assert (root / "etc" / "common.conf").read_text() == "v2
+"
