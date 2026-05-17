@@ -35,6 +35,8 @@ __all__ = [
     "HookAction",
     "HookTransactionManager",
     "HookError",
+    "HookExecutionError",
+    "HookFailureMode",
     "load_hooks",
 ]
 
@@ -74,6 +76,23 @@ _WHEN_MAP = {value.lower(): value for value in _VALID_WHEN}
 
 class HookError(RuntimeError):
     pass
+
+
+class HookFailureMode:
+    STRICT = "strict"
+    COLLECT = "collect"
+
+
+class HookExecutionError(HookError):
+    def __init__(self, *, hook_name: str, hook_path: Path, package_context: str, command: Sequence[str], reason: str):
+        self.hook_name = hook_name
+        self.hook_path = Path(hook_path)
+        self.package_context = package_context
+        self.command = list(command)
+        self.reason = reason
+        super().__init__(
+            f"Hook {hook_name} failed for {package_context} at {hook_path}: {reason}"
+        )
 
 
 def _iter_hook_files(paths: Sequence[Path]) -> Iterator[Path]:
@@ -250,11 +269,14 @@ class HookTransactionManager:
         hooks: Mapping[str, Hook],
         root: Path,
         base_env: Optional[Mapping[str, str]] = None,
+        failure_mode: str = HookFailureMode.STRICT,
     ) -> None:
         self.hooks = dict(hooks)
         self.root = Path(root)
         self.base_env = dict(base_env or {})
         self.events: List[_TransactionEvent] = []
+        self.failure_mode = failure_mode
+        self.failures: List[HookExecutionError] = []
         self._lock = threading.RLock()
         self._pre_ran = False
         self._post_ran = False
@@ -408,6 +430,7 @@ class HookTransactionManager:
                 return
         else:
             argv = base_argv
+        package_context = ", ".join(sorted({e.name for e in self.events})) or "transaction"
         try:
             with privileged_section():
                 subprocess.run(argv, check=True, env=env)
@@ -425,11 +448,28 @@ class HookTransactionManager:
                     targets=targets,
                 )
                 return
-            raise
+            self._handle_failure(HookExecutionError(
+                hook_name=hook.name,
+                hook_path=hook.path,
+                package_context=package_context,
+                command=argv,
+                reason=str(exc),
+            ))
         except subprocess.CalledProcessError as exc:
-            logger.error("Hook %s failed: %s", hook.name, exc)
-            if action.abort_on_fail:
-                raise
+            self._handle_failure(HookExecutionError(
+                hook_name=hook.name,
+                hook_path=hook.path,
+                package_context=package_context,
+                command=argv,
+                reason=f"exit={exc.returncode}",
+            ))
+
+    def _handle_failure(self, error: HookExecutionError) -> None:
+        if self.failure_mode == HookFailureMode.COLLECT:
+            self.failures.append(error)
+            logger.error("%s", error)
+            return
+        raise error
 
 
 def _should_use_temp_targets(

@@ -33,7 +33,7 @@ if "tqdm" not in sys.modules:
 
 import lpm
 import pytest
-from src.lpm.hooks import Hook, HookAction, HookTransactionManager, HookTrigger, load_hooks
+from src.lpm.hooks import Hook, HookAction, HookExecutionError, HookTransactionManager, HookTrigger, load_hooks
 
 
 def test_python_hook(tmp_path, monkeypatch):
@@ -822,3 +822,72 @@ def test_transaction_manager_thread_safety(monkeypatch):
 
     expected_path_targets = {f"/usr/bin/tool{i}" for i in range(24)} | {"/usr/bin/tool-common"}
     assert set(post_calls[0]) == expected_path_targets
+
+
+def test_run_hook_collect_mode_records_failures(tmp_path, monkeypatch):
+    hook_dir = tmp_path / "hooks"
+    hook_dir.mkdir()
+    monkeypatch.setattr(lpm, "HOOK_DIR", hook_dir)
+    d = hook_dir / "pre_install.d"
+    d.mkdir()
+    bad = d / "bad.sh"
+    bad.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
+    bad.chmod(0o755)
+
+    lpm.run_hook(
+        "pre_install",
+        {"LPM_PKG": "demo"},
+        failure_mode=lpm.HookFailureMode.COLLECT,
+        package_context="demo",
+    )
+
+
+def test_run_hook_strict_mode_raises(tmp_path, monkeypatch):
+    hook_dir = tmp_path / "hooks"
+    hook_dir.mkdir()
+    monkeypatch.setattr(lpm, "HOOK_DIR", hook_dir)
+    d = hook_dir / "pre_remove.d"
+    d.mkdir()
+    bad = d / "bad.sh"
+    bad.write_text("#!/bin/sh\nexit 9\n", encoding="utf-8")
+    bad.chmod(0o755)
+
+    with pytest.raises(lpm.AppHookExecutionError):
+        lpm.run_hook("pre_remove", {"LPM_PKG": "demo"}, package_context="demo")
+
+
+def test_transaction_collect_mode_records_failures(tmp_path):
+    script = tmp_path / "bad.sh"
+    script.write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
+    script.chmod(0o755)
+    hook = Hook(
+        name="bad",
+        path=tmp_path / "bad.hook",
+        triggers=[HookTrigger(type="Package", operations={"Install"}, targets=["*"])],
+        action=HookAction(when="PostTransaction", exec=[str(script)]),
+    )
+    manager = HookTransactionManager(
+        hooks={hook.name: hook},
+        root=tmp_path,
+        failure_mode=lpm.HookFailureMode.COLLECT,
+    )
+    manager.add_package_event(name="demo", operation="Install", version="1", release="1", paths=["/usr/bin/demo"])
+    manager.run_post_transaction()
+    assert len(manager.failures) == 1
+    assert manager.failures[0].hook_name == "bad"
+
+
+def test_transaction_strict_mode_raises(tmp_path):
+    script = tmp_path / "bad.sh"
+    script.write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
+    script.chmod(0o755)
+    hook = Hook(
+        name="bad",
+        path=tmp_path / "bad.hook",
+        triggers=[HookTrigger(type="Package", operations={"Remove"}, targets=["*"])],
+        action=HookAction(when="PostTransaction", exec=[str(script)]),
+    )
+    manager = HookTransactionManager(hooks={hook.name: hook}, root=tmp_path)
+    manager.add_package_event(name="demo", operation="Remove", version="1", release="1", paths=["/usr/bin/demo"])
+    with pytest.raises(HookExecutionError):
+        manager.run_post_transaction()
