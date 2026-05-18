@@ -3131,9 +3131,7 @@ def do_upgrade(targets: List[str], root: Path, dry: bool, verify: bool, force: b
     # Cleanup services before upgrade
     if upgrades:
         def svc_worker(p: PkgMeta):
-            cur = u.installed.get(p.name)
-            if cur:
-                remove_service_files(p.name, Path(DEFAULT_ROOT), cur.get("manifest"))
+            _cleanup_upgrade_service_files(p, root, u.installed, dry_run=dry)
 
         max_workers = min(8, len(upgrades))
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -3144,6 +3142,15 @@ def do_upgrade(targets: List[str], root: Path, dry: bool, verify: bool, force: b
 
     do_install(upgrades, root, dry, verify, force=force, explicit=explicit_names)
 
+
+def _cleanup_upgrade_service_files(
+    pkg: PkgMeta, root: Path, installed: Mapping[str, dict], *, dry_run: bool
+) -> None:
+    cur = installed.get(pkg.name)
+    if dry_run or not cur:
+        return
+    with _privileged_default_root_mutation(root, dry_run=dry_run):
+        remove_service_files(pkg.name, root, cur.get("manifest"))
 
 def _compute_needed_set(installed: Dict[str, dict]) -> Set[str]:
     needed: Set[str] = {n for n, m in installed.items() if m.get("explicit")}
@@ -4752,7 +4759,7 @@ def run_lpmbuild(
     return out, duration, phase_count, split_records
 
 # =========================== CLI commands =====================================
-_PRIVILEGED_COMMANDS = {"install", "installpkg", "remove", "upgrade", "rollback"}
+_PRIVILEGED_COMMANDS = {"install", "installpkg", "remove", "upgrade", "upgradepkg", "rollback"}
 def cmd_repolist(_):
     for r in sorted(list_repos(), key=lambda x:x.priority):
         print(f"{r.name:15} {r.url} (prio {r.priority})")
@@ -4961,9 +4968,7 @@ def cmd_upgrade(a):
                 snapshot_id = row[0]
 
             def svc_worker(p: PkgMeta):
-                cur = u.installed.get(p.name)
-                if cur:
-                    remove_service_files(p.name, Path(DEFAULT_ROOT), cur.get("manifest"))
+                _cleanup_upgrade_service_files(p, root, u.installed, dry_run=dry)
 
             max_workers = min(8, len(upgrades))
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -6401,30 +6406,35 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true")
     sp.set_defaults(func=cmd_autoremove)
 
-    sp=sub.add_parser("upgrade", help="Upgrade packages (targets or all)")
-    sp.add_argument("names", nargs="*")
-    sp.add_argument("--root")
-    sp.add_argument("--dry-run", action="store_true")
-    sp.add_argument("--no-verify", action="store_true", help="skip signature verification (DANGEROUS)")
-    sp.add_argument(
-        "--no-delta",
-        action="store_true",
-        help="disable use of delta packages (overrides configuration)",
-    )
-    sp.add_argument(
-        "--allow-fallback",
-        dest="allow_fallback",
-        action="store_true",
-        help="enable GitLab .lpmbuild fallback when the resolver cannot find packages",
-    )
-    sp.add_argument(
-        "--no-fallback",
-        dest="allow_fallback",
-        action="store_false",
-        help="disable GitLab .lpmbuild fallback (overrides configuration)",
-    )
-    sp.add_argument("--force", action="store_true", help="override protected package list for install/upgrade")
-    sp.set_defaults(func=cmd_upgrade, allow_fallback=None)
+    def add_upgrade_subparser(name: str, help_text: str):
+        sp = sub.add_parser(name, help=help_text)
+        sp.add_argument("names", nargs="*")
+        sp.add_argument("--root")
+        sp.add_argument("--dry-run", action="store_true")
+        sp.add_argument("--no-verify", action="store_true", help="skip signature verification (DANGEROUS)")
+        sp.add_argument(
+            "--no-delta",
+            action="store_true",
+            help="disable use of delta packages (overrides configuration)",
+        )
+        sp.add_argument(
+            "--allow-fallback",
+            dest="allow_fallback",
+            action="store_true",
+            help="enable GitLab .lpmbuild fallback when the resolver cannot find packages",
+        )
+        sp.add_argument(
+            "--no-fallback",
+            dest="allow_fallback",
+            action="store_false",
+            help="disable GitLab .lpmbuild fallback (overrides configuration)",
+        )
+        sp.add_argument("--force", action="store_true", help="override protected package list for install/upgrade")
+        sp.set_defaults(func=cmd_upgrade, allow_fallback=None)
+        return sp
+
+    add_upgrade_subparser("upgrade", "Upgrade packages (targets or all)")
+    add_upgrade_subparser("upgradepkg", "Alias for upgrade; upgrade packages (targets or all)")
 
     sp=sub.add_parser("list", help="List installed packages"); sp.set_defaults(func=cmd_list_installed)
     sp=sub.add_parser("files", help="List files installed by package"); sp.add_argument("name"); sp.set_defaults(func=cmd_files)

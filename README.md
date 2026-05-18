@@ -248,6 +248,7 @@ installations at the generated `index.json` files.
 - `lpm remove NAME... [--root PATH] [--dry-run] [--force]`
 - `lpm autoremove [--root PATH] [--dry-run]` – uninstall orphaned dependencies.
 - `lpm upgrade [NAME ...] [--root PATH] [--dry-run] [--no-verify] [--allow-fallback|--no-fallback] [--force]`
+- `lpm upgradepkg [NAME ...] [--root PATH] [--dry-run] [--no-verify] [--allow-fallback|--no-fallback] [--force]` – alias for `upgrade`.
 - `lpm list` – list installed packages.
 - `lpm files NAME` – list files that belong to an installed package.
 - `lpm verify [--root PATH]` – verify that installed files exist.
@@ -339,6 +340,8 @@ contents and runs common maintenance commands based on what it finds:
   – install from local package files.
 - `lpm removepkg NAME... [--root PATH] [--dry-run] [--force]` – remove installed
   packages by name.
+- `lpm upgradepkg [NAME ...] [--root PATH] [--dry-run] [--no-verify] [--allow-fallback|--no-fallback] [--force]`
+  – alias for repository-backed `upgrade`.
 
 #### Symlink manifest digests
 
