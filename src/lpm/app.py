@@ -5862,8 +5862,8 @@ def installpkg(
                             dest_old = root / str(old_path).lstrip("/")
                             _replace_path(dest_old)
 
-                    # Move into root w/ conflict handling (same as before) ...
-                    replace_all = False
+                    # Atomic installs must replace existing files to avoid partial or half-updated payloads.
+                    replace_all = True
                     for e in mani:
                         rel = e["path"].lstrip("/")
                         src = tmp_root / rel
@@ -5875,38 +5875,7 @@ def installpkg(
                             continue
 
                         if dest.exists() or dest.is_symlink():
-                            if replace_all:
-                                _replace_path(dest)
-                            else:
-                                same = False
-                                try:
-                                    if dest.is_file() and sha256sum(dest) == e["sha256"]:
-                                        same = True
-                                except Exception:
-                                    pass
-                                if same:
-                                    log(f"[skip] {rel} already up-to-date")
-                                    continue
-
-                                while True:
-                                    resp = input(
-                                        f"[conflict] {rel} exists. [R]eplace / [RA] Replace All / [S]kip / [A]bort? "
-                                    ).strip().lower()
-                                    if resp in ("r", "replace"):
-                                        _replace_path(dest)
-                                        break
-                                    elif resp in ("ra", "all", "replace all"):
-                                        replace_all = True
-                                        _replace_path(dest)
-                                        break
-                                    elif resp in ("s", "skip"):
-                                        log(f"[skip] {rel}")
-                                        src.unlink(missing_ok=True)
-                                        continue
-                                    elif resp in ("a", "abort"):
-                                        die(f"Aborted install due to conflict at {rel}")
-                                    else:
-                                        print("Please enter R, RA, S, or A.")
+                            _replace_path(dest)
 
                         if not src.exists() and not src.is_symlink():
                             continue
