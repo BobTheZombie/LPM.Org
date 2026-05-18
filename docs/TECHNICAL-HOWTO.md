@@ -229,7 +229,10 @@ $ sudo lpm removepkg hello --dry-run
 
 ## 6. Upgrading Systems
 
-### 6.1 `lpm upgrade [NAME ...]`
+### 6.1 `lpm upgrade [NAME ...]` / `lpm upgradepkg [NAME ...]`
+
+`lpm upgradepkg` is a compatibility alias for the repository-backed `lpm upgrade` command.
+Both commands accept the same package-name arguments and upgrade flags.
 
 When invoked without package names, `lpm upgrade` refreshes every installed
 package to the latest available version by generating version constraints such as
@@ -244,6 +247,9 @@ $ sudo lpm upgrade
 
 # Upgrade only openssl and curl, allowing fallback script fetches
 $ sudo lpm upgrade openssl curl --allow-fallback
+
+# Same behavior through the compatibility alias
+$ sudo lpm upgradepkg openssl curl --allow-fallback
 ```
 
 ## 7. Snapshotting and History
