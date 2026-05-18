@@ -1640,6 +1640,11 @@ def _is_default_root(root: Path) -> bool:
     return any(root_resolved == candidate for candidate in candidates)
 
 
+def _require_privileged_default_root(root: Path, action: str, target: str) -> None:
+    if _is_default_root(root) and os.geteuid() != 0 and not privileges_enabled():
+        die(f"{action} requires root privileges when {target} the default root")
+
+
 SYSTEMD_UNIT_GLOB_PATTERNS = [
     "*.service",
     "*.socket",
@@ -5642,9 +5647,7 @@ def installpkg(
     PROTECTED = load_protected()
 
     root = Path(root)
-    if _is_default_root(root):
-        if os.geteuid() != 0 and not privileges_enabled():
-            die("installpkg requires root privileges when installing to the default root")
+    _require_privileged_default_root(root, "installpkg", "installing to")
 
     is_single_path = isinstance(file, Path)
     files: List[Path] = [Path(file)] if is_single_path else [Path(f) for f in file]
@@ -6040,6 +6043,7 @@ def removepkg(
     PROTECTED = load_protected()
 
     root = Path(root)
+    _require_privileged_default_root(root, "removepkg", "removing from")
     txn = hook_transaction
     owns_txn = False
     if txn is None and not dry_run:
