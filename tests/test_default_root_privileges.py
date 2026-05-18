@@ -39,3 +39,89 @@ def test_removepkg_non_default_root_skips_privilege_requirement(monkeypatch, tmp
 
     # Should not fail privilege check for non-default roots.
     lpm.removepkg("demo", root=tmp_path)
+
+
+def test_installpkg_default_root_uses_privileged_section_when_available(monkeypatch, tmp_path):
+    calls = []
+
+    @lpm.contextlib.contextmanager
+    def fake_privileged_section():
+        calls.append("enter")
+        yield
+        calls.append("exit")
+
+    pkg = tmp_path / f"demo{lpm.EXT}"
+    pkg.write_bytes(b"\x28\xb5\x2f\xfdpayload")
+    meta = lpm.PkgMeta(name="demo", version="1.0")
+
+    monkeypatch.setattr(lpm, "_is_default_root", lambda root: True)
+    monkeypatch.setattr(lpm.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(lpm, "privileges_enabled", lambda: True)
+    monkeypatch.setattr(lpm, "privileged_section", fake_privileged_section)
+    monkeypatch.setattr(lpm, "load_protected", lambda: ["demo"])
+    monkeypatch.setattr(lpm, "read_package_meta", lambda _pkg: (meta, []))
+
+    assert lpm.installpkg(pkg, root=Path(lpm.DEFAULT_ROOT), verify=False) is meta
+    assert calls == ["enter", "exit"]
+
+
+def test_installpkg_default_root_dry_run_does_not_use_privileged_section(monkeypatch, tmp_path):
+    calls = []
+
+    @lpm.contextlib.contextmanager
+    def fake_privileged_section():
+        calls.append("enter")
+        yield
+        calls.append("exit")
+
+    pkg = tmp_path / f"demo{lpm.EXT}"
+    pkg.write_bytes(b"\x28\xb5\x2f\xfdpayload")
+    meta = lpm.PkgMeta(name="demo", version="1.0")
+
+    monkeypatch.setattr(lpm, "_is_default_root", lambda root: True)
+    monkeypatch.setattr(lpm.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(lpm, "privileges_enabled", lambda: True)
+    monkeypatch.setattr(lpm, "privileged_section", fake_privileged_section)
+    monkeypatch.setattr(lpm, "load_protected", lambda: [])
+    monkeypatch.setattr(lpm, "read_package_meta", lambda _pkg: (meta, []))
+
+    assert lpm.installpkg(pkg, root=Path(lpm.DEFAULT_ROOT), dry_run=True, verify=False) is meta
+    assert calls == []
+
+
+def test_removepkg_default_root_uses_privileged_section_when_available(monkeypatch):
+    calls = []
+
+    @lpm.contextlib.contextmanager
+    def fake_privileged_section():
+        calls.append("enter")
+        yield
+        calls.append("exit")
+
+    monkeypatch.setattr(lpm, "_is_default_root", lambda root: True)
+    monkeypatch.setattr(lpm.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(lpm, "privileges_enabled", lambda: True)
+    monkeypatch.setattr(lpm, "privileged_section", fake_privileged_section)
+    monkeypatch.setattr(lpm, "load_protected", lambda: ["demo"])
+
+    lpm.removepkg("demo", root=Path(lpm.DEFAULT_ROOT))
+    assert calls == ["enter", "exit"]
+
+
+def test_removepkg_default_root_dry_run_does_not_use_privileged_section(monkeypatch):
+    calls = []
+
+    @lpm.contextlib.contextmanager
+    def fake_privileged_section():
+        calls.append("enter")
+        yield
+        calls.append("exit")
+
+    monkeypatch.setattr(lpm, "_is_default_root", lambda root: True)
+    monkeypatch.setattr(lpm.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(lpm, "privileges_enabled", lambda: True)
+    monkeypatch.setattr(lpm, "privileged_section", fake_privileged_section)
+    monkeypatch.setattr(lpm, "load_protected", lambda: ["demo"])
+
+    lpm.removepkg("demo", root=Path(lpm.DEFAULT_ROOT), dry_run=True)
+    assert calls == []
