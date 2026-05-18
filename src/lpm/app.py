@@ -1645,6 +1645,15 @@ def _require_privileged_default_root(root: Path, action: str, target: str) -> No
         die(f"{action} requires root privileges when {target} the default root")
 
 
+@contextlib.contextmanager
+def _privileged_default_root_mutation(root: Path, dry_run: bool):
+    if not dry_run and _is_default_root(root) and privileges_enabled():
+        with privileged_section():
+            yield
+    else:
+        yield
+
+
 SYSTEMD_UNIT_GLOB_PATTERNS = [
     "*.service",
     "*.socket",
@@ -5652,382 +5661,383 @@ def installpkg(
     is_single_path = isinstance(file, Path)
     files: List[Path] = [Path(file)] if is_single_path else [Path(f) for f in file]
 
-    txn = hook_transaction
-    owns_txn = False
-    if txn is None and not dry_run:
-        txn = HookTransactionManager(
-            hooks=load_hooks(LIBLPM_HOOK_DIRS),
-            root=root,
-            base_env={"LPM_ROOT": str(root)},
-            failure_mode=hook_failure_mode,
-        )
-        owns_txn = True
+    with _privileged_default_root_mutation(root, dry_run):
+        txn = hook_transaction
+        owns_txn = False
+        if txn is None and not dry_run:
+            txn = HookTransactionManager(
+                hooks=load_hooks(LIBLPM_HOOK_DIRS),
+                root=root,
+                base_env={"LPM_ROOT": str(root)},
+                failure_mode=hook_failure_mode,
+            )
+            owns_txn = True
 
-    def _replace_path(dest: Path) -> None:
-        try:
-            if dest.is_symlink() or dest.is_file():
-                dest.unlink()
-            elif dest.is_dir():
-                shutil.rmtree(dest)
-        except FileNotFoundError:
-            return
+        def _replace_path(dest: Path) -> None:
+            try:
+                if dest.is_symlink() or dest.is_file():
+                    dest.unlink()
+                elif dest.is_dir():
+                    shutil.rmtree(dest)
+            except FileNotFoundError:
+                return
 
-    def _install_single(pkg_file: Path) -> PkgMeta:
-        # --- Step 1: Validate extension + magic ---
-        if pkg_file.suffix != EXT:
-            die(f"{pkg_file.name} is not a {EXT} package")
-        try:
-            with pkg_file.open("rb") as f:
-                magic = f.read(4)
-            if magic != b"\x28\xb5\x2f\xfd":
-                die(f"{pkg_file.name} is not a valid {EXT} (bad magic header)")
-        except Exception as e:
-            die(f"Cannot read {pkg_file}: {e}")
+        def _install_single(pkg_file: Path) -> PkgMeta:
+            # --- Step 1: Validate extension + magic ---
+            if pkg_file.suffix != EXT:
+                die(f"{pkg_file.name} is not a {EXT} package")
+            try:
+                with pkg_file.open("rb") as f:
+                    magic = f.read(4)
+                if magic != b"\x28\xb5\x2f\xfd":
+                    die(f"{pkg_file.name} is not a valid {EXT} (bad magic header)")
+            except Exception as e:
+                die(f"Cannot read {pkg_file}: {e}")
 
-        # --- Step 2: Signature verification ---
-        sig = pkg_file.with_suffix(pkg_file.suffix + ".sig")
-        if verify:
-            if not sig.exists():
-                die(f"Missing signature: {sig}")
-            verify_signature(pkg_file, sig)
+            # --- Step 2: Signature verification ---
+            sig = pkg_file.with_suffix(pkg_file.suffix + ".sig")
+            if verify:
+                if not sig.exists():
+                    die(f"Missing signature: {sig}")
+                verify_signature(pkg_file, sig)
 
-            # --- Step 3: Read metadata ---
-        meta, mani = read_package_meta(pkg_file)
-        if not meta:
-            die(f"Invalid package: {pkg_file.name} (no metadata)")
-        ok(f"Valid package: {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
+                # --- Step 3: Read metadata ---
+            meta, mani = read_package_meta(pkg_file)
+            if not meta:
+                die(f"Invalid package: {pkg_file.name} (no metadata)")
+            ok(f"Valid package: {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
 
-        if not arch_compatible(meta.arch, ARCH):
-            die(f"Incompatible architecture: {meta.arch} (host: {ARCH})")
+            if not arch_compatible(meta.arch, ARCH):
+                die(f"Incompatible architecture: {meta.arch} (host: {ARCH})")
 
-        # --- Step 3b: Protected package guard ---
-        if meta.name in PROTECTED and not force:
-            warn(f"{meta.name} is protected (from {PROTECTED_FILE}) and cannot be installed/upgraded without --force")
-            return meta
-
-        # --- Step 3c: Meta-package handler ---
-        # If package has REQUIRES but no manifest payload → treat as meta-package
-        if not mani or all(e["path"].startswith("/.lpm") for e in mani):
-            if meta.requires:
-                log(f"[meta] {meta.name} is a meta-package, resolving deps: {', '.join(meta.requires)}")
-                u = build_universe()
-                try:
-                    plan = solve(meta.requires, u)
-                except ResolutionError as e:
-                    raise ResolutionError(f"{meta.name}: {e}")
-                do_install(plan, root, dry_run, verify, force, explicit=set(), allow_fallback=allow_fallback)
-                ok(f"Installed meta-package {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
+            # --- Step 3b: Protected package guard ---
+            if meta.name in PROTECTED and not force:
+                warn(f"{meta.name} is protected (from {PROTECTED_FILE}) and cannot be installed/upgraded without --force")
                 return meta
 
+            # --- Step 3c: Meta-package handler ---
+            # If package has REQUIRES but no manifest payload → treat as meta-package
+            if not mani or all(e["path"].startswith("/.lpm") for e in mani):
+                if meta.requires:
+                    log(f"[meta] {meta.name} is a meta-package, resolving deps: {', '.join(meta.requires)}")
+                    u = build_universe()
+                    try:
+                        plan = solve(meta.requires, u)
+                    except ResolutionError as e:
+                        raise ResolutionError(f"{meta.name}: {e}")
+                    do_install(plan, root, dry_run, verify, force, explicit=set(), allow_fallback=allow_fallback)
+                    ok(f"Installed meta-package {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
+                    return meta
 
-        manifest_paths = _normalize_manifest_paths(mani)
 
-        # --- Step 4: Dry-run ---
-        if dry_run:
-            log(f"[dry-run] Would install {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
-            for e in mani:
-                print(f" -> {e['path']} ({e['size']} bytes)")
-            return meta
+            manifest_paths = _normalize_manifest_paths(mani)
 
-        # --- Step 5: Transaction (unchanged below) ---
-        conn = db()
-        installed_state: Dict[str, dict] = {}
-        if meta.obsoletes:
-            installed_state = db_installed(conn)
-            matched_obsoletes = _resolve_obsoletes_against_installed(
-                meta.obsoletes, installed_state
-            )
-            pending_obsoletes = [
-                obsolete
-                for obsolete in sorted(matched_obsoletes)
-                if obsolete != meta.name
-            ]
-            if pending_obsoletes:
-                warn(
-                    "[lpm] Obsoletes detected during install, but automatic removal is disabled. "
-                    f"Remove manually if desired: {', '.join(pending_obsoletes)}"
-                )
-
-        row = conn.execute(
-            "SELECT version, release, manifest FROM installed WHERE name=?",
-            (meta.name,),
-        ).fetchone()
-        previous_version = row[0] if row else None
-        previous_release = row[1] if row else None
-        previous_manifest = json.loads(row[2]) if row and row[2] else []
-
-        if txn is not None:
-            if register_event:
-                operation = "Upgrade" if row else "Install"
-                txn.add_package_event(
-                    name=meta.name,
-                    operation=operation,
-                    version=meta.version,
-                    release=meta.release,
-                    paths=manifest_paths,
-                )
-
-            txn.ensure_pre_transaction()
-
-        with transaction(conn, f"install {meta.name}", dry_run):
-
-            hook_env = {
-                "LPM_PKG": meta.name,
-                "LPM_VERSION": meta.version,
-                "LPM_RELEASE": meta.release,
-                "LPM_ROOT": str(root),
-            }
-            if previous_version is not None:
-                hook_env["LPM_PREVIOUS_VERSION"] = previous_version
-            if previous_release is not None:
-                hook_env["LPM_PREVIOUS_RELEASE"] = previous_release
-
-            run_hook("pre_install", dict(hook_env), failure_mode=hook_failure_mode, package_context=meta.name)
-
-            tmp_root = Path(tempfile.mkdtemp(prefix=f"lpm-{meta.name}-", dir="/tmp"))
-            try:
-                manifest = extract_tar(pkg_file, tmp_root)
-
-                # Validate manifest files
+            # --- Step 4: Dry-run ---
+            if dry_run:
+                log(f"[dry-run] Would install {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
                 for e in mani:
-                    f = tmp_root / e["path"].lstrip("/")
-                    if not f.exists() and not f.is_symlink():
-                        die(f"Manifest missing file: {e['path']}")
+                    print(f" -> {e['path']} ({e['size']} bytes)")
+                return meta
 
-                    expected_hash = e.get("sha256")
-                    if f.is_symlink() or "link" in e:
-                        try:
-                            target = os.readlink(f)
-                        except OSError:
+            # --- Step 5: Transaction (unchanged below) ---
+            conn = db()
+            installed_state: Dict[str, dict] = {}
+            if meta.obsoletes:
+                installed_state = db_installed(conn)
+                matched_obsoletes = _resolve_obsoletes_against_installed(
+                    meta.obsoletes, installed_state
+                )
+                pending_obsoletes = [
+                    obsolete
+                    for obsolete in sorted(matched_obsoletes)
+                    if obsolete != meta.name
+                ]
+                if pending_obsoletes:
+                    warn(
+                        "[lpm] Obsoletes detected during install, but automatic removal is disabled. "
+                        f"Remove manually if desired: {', '.join(pending_obsoletes)}"
+                    )
+
+            row = conn.execute(
+                "SELECT version, release, manifest FROM installed WHERE name=?",
+                (meta.name,),
+            ).fetchone()
+            previous_version = row[0] if row else None
+            previous_release = row[1] if row else None
+            previous_manifest = json.loads(row[2]) if row and row[2] else []
+
+            if txn is not None:
+                if register_event:
+                    operation = "Upgrade" if row else "Install"
+                    txn.add_package_event(
+                        name=meta.name,
+                        operation=operation,
+                        version=meta.version,
+                        release=meta.release,
+                        paths=manifest_paths,
+                    )
+
+                txn.ensure_pre_transaction()
+
+            with transaction(conn, f"install {meta.name}", dry_run):
+
+                hook_env = {
+                    "LPM_PKG": meta.name,
+                    "LPM_VERSION": meta.version,
+                    "LPM_RELEASE": meta.release,
+                    "LPM_ROOT": str(root),
+                }
+                if previous_version is not None:
+                    hook_env["LPM_PREVIOUS_VERSION"] = previous_version
+                if previous_release is not None:
+                    hook_env["LPM_PREVIOUS_RELEASE"] = previous_release
+
+                run_hook("pre_install", dict(hook_env), failure_mode=hook_failure_mode, package_context=meta.name)
+
+                tmp_root = Path(tempfile.mkdtemp(prefix=f"lpm-{meta.name}-", dir="/tmp"))
+                try:
+                    manifest = extract_tar(pkg_file, tmp_root)
+
+                    # Validate manifest files
+                    for e in mani:
+                        f = tmp_root / e["path"].lstrip("/")
+                        if not f.exists() and not f.is_symlink():
                             die(f"Manifest missing file: {e['path']}")
 
-                        expected_target = e.get("link")
-                        if expected_target is not None and target != expected_target:
-                            die(f"Link mismatch for {e['path']}: expected {expected_target}, got {target}")
-
-                        link_hash = hashlib.sha256(target.encode()).hexdigest()
-                        payload_hash = None
-
-                        payload_candidate: Optional[Path]
-                        if target.startswith("/"):
-                            payload_candidate = tmp_root / target.lstrip("/")
-                        else:
-                            payload_candidate = f.parent / target
-
-                        resolved_payload: Optional[Path] = None
-                        if payload_candidate is not None:
+                        expected_hash = e.get("sha256")
+                        if f.is_symlink() or "link" in e:
                             try:
-                                resolved_payload = payload_candidate.resolve()
-                            except (FileNotFoundError, RuntimeError, OSError):
-                                resolved_payload = None
+                                target = os.readlink(f)
+                            except OSError:
+                                die(f"Manifest missing file: {e['path']}")
 
-                        if resolved_payload is not None:
-                            try:
-                                resolved_payload.relative_to(tmp_root)
-                            except ValueError:
-                                resolved_payload = None
+                            expected_target = e.get("link")
+                            if expected_target is not None and target != expected_target:
+                                die(f"Link mismatch for {e['path']}: expected {expected_target}, got {target}")
 
-                        if (
-                            resolved_payload is not None
-                            and resolved_payload.exists()
-                            and resolved_payload.is_file()
-                        ):
-                            payload_hash = sha256sum(resolved_payload)
+                            link_hash = hashlib.sha256(target.encode()).hexdigest()
+                            payload_hash = None
 
-                        actual_hash: Optional[str] = None
-                        if payload_hash is not None and (
-                            expected_hash is None or expected_hash == payload_hash
-                        ):
-                            actual_hash = payload_hash
-                        elif expected_hash == link_hash:
-                            actual_hash = link_hash
-                        elif payload_hash is not None:
-                            actual_hash = payload_hash
+                            payload_candidate: Optional[Path]
+                            if target.startswith("/"):
+                                payload_candidate = tmp_root / target.lstrip("/")
+                            else:
+                                payload_candidate = f.parent / target
+
+                            resolved_payload: Optional[Path] = None
+                            if payload_candidate is not None:
+                                try:
+                                    resolved_payload = payload_candidate.resolve()
+                                except (FileNotFoundError, RuntimeError, OSError):
+                                    resolved_payload = None
+
+                            if resolved_payload is not None:
+                                try:
+                                    resolved_payload.relative_to(tmp_root)
+                                except ValueError:
+                                    resolved_payload = None
+
+                            if (
+                                resolved_payload is not None
+                                and resolved_payload.exists()
+                                and resolved_payload.is_file()
+                            ):
+                                payload_hash = sha256sum(resolved_payload)
+
+                            actual_hash: Optional[str] = None
+                            if payload_hash is not None and (
+                                expected_hash is None or expected_hash == payload_hash
+                            ):
+                                actual_hash = payload_hash
+                            elif expected_hash == link_hash:
+                                actual_hash = link_hash
+                            elif payload_hash is not None:
+                                actual_hash = payload_hash
+                            else:
+                                actual_hash = link_hash
                         else:
-                            actual_hash = link_hash
-                    else:
-                        actual_hash = sha256sum(f)
+                            actual_hash = sha256sum(f)
 
-                    if expected_hash is not None and actual_hash != expected_hash:
-                        die(
-                            f"Hash mismatch for {e['path']}: expected {expected_hash}, got {actual_hash}"
-                        )
+                        if expected_hash is not None and actual_hash != expected_hash:
+                            die(
+                                f"Hash mismatch for {e['path']}: expected {expected_hash}, got {actual_hash}"
+                            )
 
-                with operation_phase(privileged=True):
-                    # Atomic package replace for upgrades: remove all previously-owned
-                    # files before materializing the new payload so stale paths and
-                    # conflict prompts do not leak across versions.
-                    if previous_version is not None and previous_manifest:
-                        for old_entry in previous_manifest:
-                            old_path = old_entry.get("path") if isinstance(old_entry, dict) else None
-                            if not old_path:
+                    with operation_phase(privileged=True):
+                        # Atomic package replace for upgrades: remove all previously-owned
+                        # files before materializing the new payload so stale paths and
+                        # conflict prompts do not leak across versions.
+                        if previous_version is not None and previous_manifest:
+                            for old_entry in previous_manifest:
+                                old_path = old_entry.get("path") if isinstance(old_entry, dict) else None
+                                if not old_path:
+                                    continue
+                                dest_old = root / str(old_path).lstrip("/")
+                                _replace_path(dest_old)
+
+                        # Atomic installs must replace existing files to avoid partial or half-updated payloads.
+                        replace_all = True
+                        for e in mani:
+                            rel = e["path"].lstrip("/")
+                            src = tmp_root / rel
+                            dest = root / rel
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+
+                            if src.is_dir():
+                                dest.mkdir(parents=True, exist_ok=True)
                                 continue
-                            dest_old = root / str(old_path).lstrip("/")
-                            _replace_path(dest_old)
 
-                    # Atomic installs must replace existing files to avoid partial or half-updated payloads.
-                    replace_all = True
-                    for e in mani:
-                        rel = e["path"].lstrip("/")
-                        src = tmp_root / rel
-                        dest = root / rel
-                        dest.parent.mkdir(parents=True, exist_ok=True)
+                            if dest.exists() or dest.is_symlink():
+                                _replace_path(dest)
 
-                        if src.is_dir():
-                            dest.mkdir(parents=True, exist_ok=True)
-                            continue
+                            if not src.exists() and not src.is_symlink():
+                                continue
 
-                        if dest.exists() or dest.is_symlink():
-                            _replace_path(dest)
+                            if src.is_symlink():
+                                target = os.readlink(src)
+                                tmp_link = dest.with_name(f".{dest.name}.link")
+                                try:
+                                    if tmp_link.exists() or tmp_link.is_symlink():
+                                        tmp_link.unlink()
+                                except PermissionError:
+                                    die(f"Permission denied while handling {dest}")
+                                tmp_link.symlink_to(target)
+                                tmp_link.rename(dest)
+                            else:
+                                tmp_dest = dest.with_name(f".{dest.name}.tmp")
+                                if tmp_dest.exists():
+                                    tmp_dest.unlink()
+                                shutil.move(str(src), str(tmp_dest))
+                                tmp_dest.rename(dest)
 
-                        if not src.exists() and not src.is_symlink():
-                            continue
+                            if "mode" in e:
+                                dest.chmod(e["mode"])
 
-                        if src.is_symlink():
-                            target = os.readlink(src)
-                            tmp_link = dest.with_name(f".{dest.name}.link")
+                            if "uid" in e and "gid" in e:
+                                try:
+                                    os.chown(dest, e["uid"], e["gid"])
+                                except PermissionError:
+                                    warn(f"Permission denied setting ownership for {dest}")
+
+                        # Handle install scripts
+                        install_script_rel = None
+                        staged_script = None
+                        installed_script = None
+                        for candidate_rel in ("/.lpm-install.sh", "/.lpm/install.sh"):
+                            candidate_path = tmp_root / candidate_rel.lstrip("/")
+                            candidate_installed = root / candidate_rel.lstrip("/")
+                            if candidate_path.exists():
+                                install_script_rel = candidate_rel
+                                staged_script = candidate_path
+                                installed_script = candidate_installed
+                                break
+                            if candidate_installed.exists():
+                                install_script_rel = candidate_rel
+                                installed_script = candidate_installed
+                                break
+
+                        if replace_all and installed_script is not None:
+                            _replace_path(installed_script)
+
+                        if install_script_rel is not None and staged_script is not None:
                             try:
-                                if tmp_link.exists() or tmp_link.is_symlink():
-                                    tmp_link.unlink()
-                            except PermissionError:
-                                die(f"Permission denied while handling {dest}")
-                            tmp_link.symlink_to(target)
-                            tmp_link.rename(dest)
-                        else:
-                            tmp_dest = dest.with_name(f".{dest.name}.tmp")
-                            if tmp_dest.exists():
-                                tmp_dest.unlink()
-                            shutil.move(str(src), str(tmp_dest))
-                            tmp_dest.rename(dest)
-
-                        if "mode" in e:
-                            dest.chmod(e["mode"])
-
-                        if "uid" in e and "gid" in e:
-                            try:
-                                os.chown(dest, e["uid"], e["gid"])
-                            except PermissionError:
-                                warn(f"Permission denied setting ownership for {dest}")
-
-                    # Handle install scripts
-                    install_script_rel = None
-                    staged_script = None
-                    installed_script = None
-                    for candidate_rel in ("/.lpm-install.sh", "/.lpm/install.sh"):
-                        candidate_path = tmp_root / candidate_rel.lstrip("/")
-                        candidate_installed = root / candidate_rel.lstrip("/")
-                        if candidate_path.exists():
-                            install_script_rel = candidate_rel
-                            staged_script = candidate_path
-                            installed_script = candidate_installed
-                            break
-                        if candidate_installed.exists():
-                            install_script_rel = candidate_rel
-                            installed_script = candidate_installed
-                            break
-
-                    if replace_all and installed_script is not None:
-                        _replace_path(installed_script)
-
-                    if install_script_rel is not None and staged_script is not None:
-                        try:
-                            staged_script.chmod(staged_script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-                        except OSError:
-                            pass
-                        staged_script.rename(installed_script)
-                        mani.append(
-                            {
-                                "path": install_script_rel,
-                                "mode": installed_script.stat().st_mode,
-                                "uid": installed_script.stat().st_uid,
-                                "gid": installed_script.stat().st_gid,
-                                "sha256": sha256sum(installed_script),
-                            }
-                        )
-
-                    # Handle delta generation
-                    if staged_script is not None and installed_script is not None:
-                        try:
-                            generate_deltas(pkg_file, meta, mani, staged_script, installed_script)
-                        except Exception as e:
-                            warn(f"Delta generation failed: {e}")
-                            try:
-                                for candidate in (installed_script, staged_script):
-                                    candidate.unlink()
-                            except FileNotFoundError:
+                                staged_script.chmod(staged_script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                            except OSError:
                                 pass
-                            if install_script_rel is not None:
+                            staged_script.rename(installed_script)
+                            mani.append(
+                                {
+                                    "path": install_script_rel,
+                                    "mode": installed_script.stat().st_mode,
+                                    "uid": installed_script.stat().st_uid,
+                                    "gid": installed_script.stat().st_gid,
+                                    "sha256": sha256sum(installed_script),
+                                }
+                            )
+
+                        # Handle delta generation
+                        if staged_script is not None and installed_script is not None:
+                            try:
+                                generate_deltas(pkg_file, meta, mani, staged_script, installed_script)
+                            except Exception as e:
+                                warn(f"Delta generation failed: {e}")
+                                try:
+                                    for candidate in (installed_script, staged_script):
+                                        candidate.unlink()
+                                except FileNotFoundError:
+                                    pass
+                                if install_script_rel is not None:
+                                    mani = [e for e in mani if e["path"] != install_script_rel]
+
+                        if install_script_rel is not None and installed_script is not None and installed_script.exists():
+                            install_action = "upgrade" if previous_version is not None else "install"
+                            install_env = {**os.environ, **hook_env, "LPM_INSTALL_ACTION": install_action}
+                            new_full = f"{meta.version}-{meta.release}"
+                            old_full = (
+                                f"{previous_version}-{previous_release}"
+                                if previous_version is not None and previous_release is not None
+                                else ""
+                            )
+                            try:
+                                subprocess.run(
+                                    [str(installed_script), install_action, new_full, old_full],
+                                    env=install_env,
+                                    check=True,
+                                )
+                            finally:
+                                with contextlib.suppress(FileNotFoundError):
+                                    installed_script.unlink()
                                 mani = [e for e in mani if e["path"] != install_script_rel]
 
-                    if install_script_rel is not None and installed_script is not None and installed_script.exists():
-                        install_action = "upgrade" if previous_version is not None else "install"
-                        install_env = {**os.environ, **hook_env, "LPM_INSTALL_ACTION": install_action}
-                        new_full = f"{meta.version}-{meta.release}"
-                        old_full = (
-                            f"{previous_version}-{previous_release}"
-                            if previous_version is not None and previous_release is not None
-                            else ""
-                        )
-                        try:
-                            subprocess.run(
-                                [str(installed_script), install_action, new_full, old_full],
-                                env=install_env,
-                                check=True,
-                            )
-                        finally:
-                            with contextlib.suppress(FileNotFoundError):
-                                installed_script.unlink()
-                            mani = [e for e in mani if e["path"] != install_script_rel]
+                    # Update DB
+                    conn.execute(
+                        "REPLACE INTO installed(name,version,release,arch,provides,symbols,requires,manifest,explicit,install_time) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            meta.name,
+                            meta.version,
+                            meta.release,
+                            meta.arch,
+                            json.dumps([meta.name] + meta.provides),
+                            json.dumps(meta.symbols),
+                            json.dumps(meta.requires),
+                            json.dumps(mani),
+                            1 if explicit else 0,
+                            int(time.time()),
+                        ),
+                    )
+                    action = "upgrade" if previous_version is not None else "install"
+                    conn.execute(
+                        "INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
+                        (
+                            int(time.time()),
+                            action,
+                            meta.name,
+                            previous_version,
+                            meta.version,
+                            json.dumps(dataclasses.asdict(meta)),
+                        ),
+                    )
+                finally:
+                    shutil.rmtree(tmp_root, ignore_errors=True)
 
-                # Update DB
-                conn.execute(
-                    "REPLACE INTO installed(name,version,release,arch,provides,symbols,requires,manifest,explicit,install_time) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        meta.name,
-                        meta.version,
-                        meta.release,
-                        meta.arch,
-                        json.dumps([meta.name] + meta.provides),
-                        json.dumps(meta.symbols),
-                        json.dumps(meta.requires),
-                        json.dumps(mani),
-                        1 if explicit else 0,
-                        int(time.time()),
-                    ),
-                )
-                action = "upgrade" if previous_version is not None else "install"
-                conn.execute(
-                    "INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
-                    (
-                        int(time.time()),
-                        action,
-                        meta.name,
-                        previous_version,
-                        meta.version,
-                        json.dumps(dataclasses.asdict(meta)),
-                    ),
-                )
-            finally:
-                shutil.rmtree(tmp_root, ignore_errors=True)
+                run_hook("post_install", dict(hook_env), failure_mode=hook_failure_mode, package_context=meta.name)
 
-            run_hook("post_install", dict(hook_env), failure_mode=hook_failure_mode, package_context=meta.name)
+                if previous_version is not None:
+                    run_hook("post_upgrade", dict(hook_env), failure_mode=hook_failure_mode, package_context=meta.name)
 
-            if previous_version is not None:
-                run_hook("post_upgrade", dict(hook_env), failure_mode=hook_failure_mode, package_context=meta.name)
+                # New: init system service integration
+                with operation_phase(privileged=True):
+                    handle_service_files(meta.name, root, mani)
 
-            # New: init system service integration
-            with operation_phase(privileged=True):
-                handle_service_files(meta.name, root, mani)
+            ok(f"Installed {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
+            return meta
 
-        ok(f"Installed {meta.name}-{meta.version}-{meta.release}.{meta.arch}")
-        return meta
+        results = [_install_single(pkg_file) for pkg_file in files]
 
-    results = [_install_single(pkg_file) for pkg_file in files]
+        if txn is not None and owns_txn:
+            txn.run_post_transaction()
 
-    if txn is not None and owns_txn:
-        txn.run_post_transaction()
-
-    return results[0] if is_single_path else results
+        return results[0] if is_single_path else results
 
 
 def removepkg(
@@ -6044,99 +6054,100 @@ def removepkg(
 
     root = Path(root)
     _require_privileged_default_root(root, "removepkg", "removing from")
-    txn = hook_transaction
-    owns_txn = False
-    if txn is None and not dry_run:
-        txn = HookTransactionManager(
-            hooks=load_hooks(LIBLPM_HOOK_DIRS),
-            root=root,
-            base_env={"LPM_ROOT": str(root)},
-            failure_mode=hook_failure_mode,
-        )
-        owns_txn = True
-
-    if name in PROTECTED and not force:
-        warn(f"{name} is protected (from {PROTECTED_FILE}) and cannot be removed without --force")
-        return
-
-    conn = db()
-    cur = conn.execute(
-        "SELECT version, release, manifest, requires, explicit FROM installed WHERE name=?",
-        (name,),
-    )
-    row = cur.fetchone()
-    if not row:
-        warn(f"{name} not installed")
-        return
-
-    version, release, manifest_json, requires_json, explicit_int = row
-    manifest = json.loads(manifest_json) if manifest_json else []
-    requires = json.loads(requires_json) if requires_json else []
-    explicit = bool(explicit_int)
-    meta = {
-        "name": name,
-        "version": version,
-        "release": release,
-        "manifest": manifest,
-        "requires": requires,
-        "explicit": explicit,
-    }
-
-    manifest_paths = _normalize_manifest_paths(manifest)
-    is_meta_package = not manifest_paths and bool(requires)
-    meta_requires = requires
-
-    if txn is not None and register_event and not dry_run:
-        txn.add_package_event(
-            name=name,
-            operation="Remove",
-            version=version,
-            release=release,
-            paths=manifest_paths,
-        )
-
-    if txn is not None and not dry_run:
-        txn.ensure_pre_transaction()
-
-    with transaction(conn, f"remove {name}", dry_run):
-        run_hook("pre_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)}, failure_mode=hook_failure_mode, package_context=name)
-        _remove_installed_package(meta, root, dry_run, conn)
-        run_hook("post_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)}, failure_mode=hook_failure_mode, package_context=name)
-
-    if not dry_run and is_meta_package:
-        installed_after = db_installed(conn)
-        needed = _compute_needed_set(installed_after)
-        candidates = {req.split()[0] for req in meta_requires}
-        auto_remove = []
-        for cand in sorted(candidates):
-            dep_meta = installed_after.get(cand)
-            if not dep_meta:
-                continue
-            if dep_meta.get("explicit"):
-                continue
-            if cand in needed:
-                continue
-            auto_remove.append(cand)
-
-        if auto_remove:
-            log(
-                f"[lpm] Autoremoving dependencies no longer needed after {name}: "
-                + ", ".join(auto_remove)
+    with _privileged_default_root_mutation(root, dry_run):
+        txn = hook_transaction
+        owns_txn = False
+        if txn is None and not dry_run:
+            txn = HookTransactionManager(
+                hooks=load_hooks(LIBLPM_HOOK_DIRS),
+                root=root,
+                base_env={"LPM_ROOT": str(root)},
+                failure_mode=hook_failure_mode,
             )
-            for dep in auto_remove:
-                removepkg(
-                    name=dep,
-                    root=root,
-                    dry_run=dry_run,
-                    force=force,
-                    hook_transaction=txn,
-                    register_event=register_event,
+            owns_txn = True
+
+        if name in PROTECTED and not force:
+            warn(f"{name} is protected (from {PROTECTED_FILE}) and cannot be removed without --force")
+            return
+
+        conn = db()
+        cur = conn.execute(
+            "SELECT version, release, manifest, requires, explicit FROM installed WHERE name=?",
+            (name,),
+        )
+        row = cur.fetchone()
+        if not row:
+            warn(f"{name} not installed")
+            return
+
+        version, release, manifest_json, requires_json, explicit_int = row
+        manifest = json.loads(manifest_json) if manifest_json else []
+        requires = json.loads(requires_json) if requires_json else []
+        explicit = bool(explicit_int)
+        meta = {
+            "name": name,
+            "version": version,
+            "release": release,
+            "manifest": manifest,
+            "requires": requires,
+            "explicit": explicit,
+        }
+
+        manifest_paths = _normalize_manifest_paths(manifest)
+        is_meta_package = not manifest_paths and bool(requires)
+        meta_requires = requires
+
+        if txn is not None and register_event and not dry_run:
+            txn.add_package_event(
+                name=name,
+                operation="Remove",
+                version=version,
+                release=release,
+                paths=manifest_paths,
+            )
+
+        if txn is not None and not dry_run:
+            txn.ensure_pre_transaction()
+
+        with transaction(conn, f"remove {name}", dry_run):
+            run_hook("pre_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)}, failure_mode=hook_failure_mode, package_context=name)
+            _remove_installed_package(meta, root, dry_run, conn)
+            run_hook("post_remove", {"LPM_PKG": name, "LPM_ROOT": str(root)}, failure_mode=hook_failure_mode, package_context=name)
+
+        if not dry_run and is_meta_package:
+            installed_after = db_installed(conn)
+            needed = _compute_needed_set(installed_after)
+            candidates = {req.split()[0] for req in meta_requires}
+            auto_remove = []
+            for cand in sorted(candidates):
+                dep_meta = installed_after.get(cand)
+                if not dep_meta:
+                    continue
+                if dep_meta.get("explicit"):
+                    continue
+                if cand in needed:
+                    continue
+                auto_remove.append(cand)
+
+            if auto_remove:
+                log(
+                    f"[lpm] Autoremoving dependencies no longer needed after {name}: "
+                    + ", ".join(auto_remove)
                 )
+                for dep in auto_remove:
+                    removepkg(
+                        name=dep,
+                        root=root,
+                        dry_run=dry_run,
+                        force=force,
+                        hook_transaction=txn,
+                        register_event=register_event,
+                    )
 
-    if txn is not None and owns_txn and not dry_run:
-        txn.run_post_transaction()
+        if txn is not None and owns_txn and not dry_run:
+            txn.run_post_transaction()
 
-    ok(f"Removed {name}-{version}")
+        ok(f"Removed {name}-{version}")
 
     
 def cmd_protected(a):
