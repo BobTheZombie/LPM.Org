@@ -334,6 +334,9 @@ contents and runs common maintenance commands based on what it finds:
 
   ensures that `system-base` advertises `glibc` and `virtual(libc)` while still
   depending on the real `glibc` package.【F:src/lpm/app.py†L3628-L3659】
+- `lpm rebuild NAME [--outdir PATH] [--no-deps] [--install-default y|n] [--force-rebuild]`
+  – rebuild the named installed package and all installed packages that depend
+  on it transitively.
 - `lpm genindex REPO_DIR [--base-url URL] [--arch ARCH]` – generate an
   `index.json` for a directory of packages.
 - `lpm installpkg FILE... [--root PATH] [--dry-run] [--verify] [--force]`
@@ -342,6 +345,15 @@ contents and runs common maintenance commands based on what it finds:
   packages by name.
 - `lpm upgradepkg [NAME ...] [--root PATH] [--dry-run] [--no-verify] [--allow-fallback|--no-fallback] [--force]`
   – alias for repository-backed `upgrade`.
+
+Example rebuild workflow:
+
+```bash
+lpm rebuild libxml2
+```
+
+This rebuilds `libxml2` first, then rebuilds every currently installed package
+that depends on `libxml2` (directly or transitively).
 
 #### Symlink manifest digests
 

@@ -5446,6 +5446,106 @@ def cmd_buildpkg(a):
         die(f"Build failed for {a.script}")
 
 
+def _reverse_dependents_from_installed(conn: sqlite3.Connection) -> Dict[str, Set[str]]:
+    rows = list(conn.execute("SELECT name,requires FROM installed ORDER BY name"))
+    installed: Dict[str, Dict[str, object]] = {}
+    for name, requires in rows:
+        req_list: List[str] = []
+        if requires:
+            try:
+                loaded = json.loads(requires)
+                if isinstance(loaded, list):
+                    req_list = [str(item) for item in loaded if item]
+            except Exception:
+                req_list = []
+        installed[name] = {"requires": req_list, "provides": []}
+
+    providers = _installed_provider_map(installed)
+    reverse: Dict[str, Set[str]] = {}
+    for pkg_name, meta in installed.items():
+        for req in meta.get("requires", []) or []:
+            try:
+                expr = parse_dep_expr(req)
+            except Exception:
+                continue
+            matched = _match_dep_expr_against_installed(expr, installed, providers)
+            for dep_name in matched:
+                reverse.setdefault(dep_name, set()).add(pkg_name)
+    return reverse
+
+
+def _resolve_local_lpmbuild_script(pkg_name: str) -> Path:
+    return Path("packages") / pkg_name / f"{pkg_name}.lpmbuild"
+
+
+def cmd_rebuild(a):
+    conn = db()
+    rows = list(conn.execute("SELECT name FROM installed ORDER BY name"))
+    installed_names = {row[0] for row in rows}
+    reverse = _reverse_dependents_from_installed(conn)
+    conn.close()
+
+    if a.name not in installed_names:
+        die(f"Package is not installed: {a.name}")
+
+    levels: Dict[str, int] = {a.name: 0}
+    queue: deque[str] = deque([a.name])
+    while queue:
+        cur = queue.popleft()
+        for dep in sorted(reverse.get(cur, set())):
+            if dep in levels:
+                continue
+            levels[dep] = levels[cur] + 1
+            queue.append(dep)
+
+    closure = sorted(levels.keys())
+    subset_edges: Dict[str, Set[str]] = {
+        pkg: set(sorted(reverse.get(pkg, set()) & set(closure))) for pkg in closure
+    }
+
+    indegree: Dict[str, int] = {pkg: 0 for pkg in closure}
+    for pkg in closure:
+        for child in subset_edges[pkg]:
+            indegree[child] += 1
+    zero = sorted([pkg for pkg, deg in indegree.items() if deg == 0], key=lambda n: (levels[n], n))
+    topo: List[str] = []
+    while zero:
+        node = zero.pop(0)
+        topo.append(node)
+        for child in sorted(subset_edges[node]):
+            indegree[child] -= 1
+            if indegree[child] == 0:
+                zero.append(child)
+                zero.sort(key=lambda n: (levels[n], n))
+    if len(topo) != len(closure):
+        cycle_members = sorted([pkg for pkg, deg in indegree.items() if deg > 0])
+        die("Cycle detected in rebuild dependency graph: " + ", ".join(cycle_members))
+
+    missing: List[Tuple[str, Path]] = []
+    scripts: Dict[str, Path] = {}
+    for pkg in topo:
+        script = _resolve_local_lpmbuild_script(pkg)
+        if not script.exists():
+            missing.append((pkg, script))
+            continue
+        scripts[pkg] = script
+    if missing:
+        formatted = ", ".join([f"{pkg} ({path})" for pkg, path in missing])
+        die(f"Missing .lpmbuild scripts for rebuild targets: {formatted}")
+
+    total = len(topo)
+    for idx, pkg in enumerate(topo, start=1):
+        print(f"[rebuild {idx}/{total}] {pkg}")
+        run_lpmbuild(
+            scripts[pkg],
+            a.outdir,
+            build_deps=not a.no_deps,
+            force_rebuild=a.force_rebuild,
+            prompt_default=a.install_default,
+        )
+    ok(f"Rebuilt packages ({total}): {', '.join(topo)}")
+
+
 def cmd_genindex(a):
     repo_dir = Path(a.repo_dir)
     gen_index(repo_dir, a.base_url, arch_filter=a.arch)
@@ -6509,6 +6609,19 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--install-default", choices=["y", "n"], help="default answer for install prompt")
     sp.add_argument("--python-pip", metavar="SPEC", help="build a package from a Python distribution fetched via pip")
     sp.set_defaults(func=cmd_buildpkg)
+
+    sp=sub.add_parser("rebuild", help="Rebuild an installed package and all installed reverse dependencies")
+    sp.add_argument("name", help="installed package name to rebuild from")
+    sp.add_argument("--outdir", default=Path.cwd(), type=Path)
+    sp.add_argument("--no-deps", action="store_true", help="do not fetch or build dependencies")
+    sp.add_argument("--install-default", choices=["y", "n"], help="default answer for install prompt")
+    sp.add_argument(
+        "--force-rebuild",
+        action="store_true",
+        default=True,
+        help="rebuild the target package and all reverse dependencies even if already available",
+    )
+    sp.set_defaults(func=cmd_rebuild)
 
     sp=sub.add_parser("genindex", help=f"Generate index.json for a repo directory of {EXT} files")
     sp.add_argument("repo_dir", help=f"directory containing {EXT} files")
