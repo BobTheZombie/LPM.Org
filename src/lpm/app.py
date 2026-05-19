@@ -664,7 +664,21 @@ def satisfies(ver: str, cons: str) -> bool:
     return True
     
 def arch_compatible(pkg_arch: str, want_arch: str) -> bool:
-    return pkg_arch == "noarch" or pkg_arch == want_arch
+    pkg_norm = (pkg_arch or "").strip().lower()
+    want_norm = (want_arch or "").strip().lower()
+
+    host_arch = (os.uname().machine if hasattr(os, "uname") else "")
+    host_norm = (host_arch or "").strip().lower()
+
+    universal_arches = {"noarch", "any", "none"}
+
+    if pkg_norm in universal_arches:
+        return True
+
+    if want_norm in universal_arches:
+        return pkg_norm == host_norm
+
+    return pkg_norm == want_norm
 
 # =========================== Dep grammar (AND/OR + atoms) =====================
 TOK_RE = re.compile(r"\s*(\(|\)|\|\||\||,|>=|<=|==|=|>|<|~=?|\w[\w\-\._+]*)")
