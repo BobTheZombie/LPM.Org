@@ -1,0 +1,6 @@
+# Runtime dependencies for the LPM CLI.
+packaging
+# Progress feedback for downloads and operations.
+tqdm
+# Compression support for .zst packages.
+zstandard
