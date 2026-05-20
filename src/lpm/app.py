@@ -1137,26 +1137,35 @@ def _remove_universe_candidate(u: Universe, meta: PkgMeta) -> None:
         u.providers.pop(token, None)
 
 
-def _first_missing_dependency(u: Universe, expr: DepExpr) -> Optional[DepExpr]:
+def _first_missing_dependency(
+    u: Universe,
+    expr: DepExpr,
+    installed: Mapping[str, dict],
+    installed_providers: Mapping[str, Set[str]],
+) -> Optional[DepExpr]:
     """Return the first dependency sub-expression without providers, if any."""
 
     if expr.kind == "atom":
-        return None if providers_for(u, expr.atom) else expr
+        if providers_for(u, expr.atom):
+            return None
+        if _match_dep_expr_against_installed(expr, installed, installed_providers):
+            return None
+        return expr
 
     if expr.kind == "or":
         parts = flatten_or(expr)
         for part in parts:
-            if _first_missing_dependency(u, part) is None:
+            if _first_missing_dependency(u, part, installed, installed_providers) is None:
                 return None
         for part in parts:
-            missing = _first_missing_dependency(u, part)
+            missing = _first_missing_dependency(u, part, installed, installed_providers)
             if missing is not None:
                 return missing
         return expr
 
     if expr.kind == "and":
         for part in flatten_and(expr):
-            missing = _first_missing_dependency(u, part)
+            missing = _first_missing_dependency(u, part, installed, installed_providers)
             if missing is not None:
                 return missing
         return None
@@ -1177,6 +1186,7 @@ def prune_universe_missing_providers(
 
     disqualified: Dict[Tuple[str, str], str] = {}
     terminal: Dict[str, List[str]] = {}
+    installed_providers = _installed_provider_map(u.installed)
 
     changed = True
     while changed:
@@ -1199,7 +1209,9 @@ def prune_universe_missing_providers(
                         expr = parse_dep_expr(req)
                     except Exception:
                         continue
-                    missing = _first_missing_dependency(u, expr)
+                    missing = _first_missing_dependency(
+                        u, expr, u.installed, installed_providers
+                    )
                     if missing is not None:
                         reason = (
                             f"No provider for dependency '{dep_expr_to_str(missing)}' "
@@ -1257,6 +1269,7 @@ def encode_resolution(
     disqualified, terminal = prune_universe_missing_providers(
         u, include_build_requires
     )
+    installed_providers = _installed_provider_map(u.installed)
 
     cnf = CNF()
     var_of: Dict[Tuple[str,str],int] = {}
@@ -1316,6 +1329,8 @@ def encode_resolution(
                 for part in flatten_and(e):
                     disj = expr_to_cnf_disj(u, part, cnf, var_of)
                     if not disj:
+                        if _match_dep_expr_against_installed(part, u.installed, installed_providers):
+                            continue
                         part_label = dep_expr_to_str(part)
                         raise ResolutionError(
                             f"No provider for dependency '{part_label}' required by {p.name}-{p.version}"
@@ -1324,6 +1339,8 @@ def encode_resolution(
             else:
                 disj = expr_to_cnf_disj(u, e, cnf, var_of)
                 if not disj:
+                    if _match_dep_expr_against_installed(e, u.installed, installed_providers):
+                        continue
                     req_label = dep_expr_to_str(e)
                     raise ResolutionError(
                         f"No provider for dependency '{req_label}' required by {p.name}-{p.version}"
@@ -1370,6 +1387,8 @@ def encode_resolution(
             for part in flatten_and(g):
                 disj = expr_to_cnf_disj(u, part, cnf, var_of)
                 if not disj:
+                    if _match_dep_expr_against_installed(part, u.installed, installed_providers):
+                        continue
                     part_label = dep_expr_to_str(part)
                     reason = None
                     if part.kind == "atom" and part.atom:
@@ -1383,6 +1402,8 @@ def encode_resolution(
         else:
             disj = expr_to_cnf_disj(u, g, cnf, var_of)
             if not disj:
+                if _match_dep_expr_against_installed(g, u.installed, installed_providers):
+                    continue
                 reason = None
                 if g.kind == "atom" and g.atom:
                     reason = _format_reasons(g.atom.name)
