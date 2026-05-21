@@ -1426,6 +1426,81 @@ def encode_resolution(
 def solve(
     goals: List[str], universe: Universe, *, include_build_requires: bool = False
 ) -> List[PkgMeta]:
+    def _summarize_unsat_packages(packages: List[str]) -> str:
+        pkg_set = set(packages)
+        conflicts: Set[Tuple[str, str]] = set()
+        dep_edges: Dict[str, Set[str]] = {name: set() for name in pkg_set}
+
+        for name in pkg_set:
+            for candidate in universe.candidates_by_name.get(name, []):
+                # detect conflicts/obsoletes among the unsat core packages
+                for expr_text in list(candidate.conflicts) + list(candidate.obsoletes):
+                    if not expr_text:
+                        continue
+                    try:
+                        expr = parse_dep_expr(expr_text)
+                    except Exception:
+                        continue
+                    parts = flatten_and(expr) if expr.kind == "and" else [expr]
+                    for part in parts:
+                        if part.kind != "atom" or not part.atom:
+                            continue
+                        for provider in providers_for(universe, part.atom):
+                            if provider.name in pkg_set and provider.name != name:
+                                pair = tuple(sorted((name, provider.name)))
+                                conflicts.add(pair)
+
+                # build dependency graph over the unsat packages
+                for req in _iter_requires(candidate, include_build_requires):
+                    if not req:
+                        continue
+                    try:
+                        expr = parse_dep_expr(req)
+                    except Exception:
+                        continue
+                    parts = flatten_and(expr) if expr.kind == "and" else [expr]
+                    for part in parts:
+                        if part.kind != "atom" or not part.atom:
+                            continue
+                        for provider in providers_for(universe, part.atom):
+                            if provider.name in pkg_set and provider.name != name:
+                                dep_edges[name].add(provider.name)
+
+        cycle: List[str] = []
+        visited: Set[str] = set()
+        stack: List[str] = []
+        onstack: Set[str] = set()
+
+        def dfs(node: str) -> bool:
+            visited.add(node)
+            stack.append(node)
+            onstack.add(node)
+            for nxt in dep_edges.get(node, ()):
+                if nxt not in visited:
+                    if dfs(nxt):
+                        return True
+                elif nxt in onstack:
+                    idx = stack.index(nxt)
+                    cycle.extend(stack[idx:] + [nxt])
+                    return True
+            stack.pop()
+            onstack.discard(node)
+            return False
+
+        for node in sorted(pkg_set):
+            if node not in visited and dfs(node):
+                break
+
+        details: List[str] = []
+        if conflicts:
+            pairs = [f"{a} ↔ {b}" for a, b in sorted(conflicts)]
+            details.append("conflicts: " + ", ".join(pairs))
+        if cycle:
+            details.append("dependency cycle: " + " -> ".join(cycle))
+        if not details:
+            return ""
+        return " (" + "; ".join(details) + ")"
+
     goal_exprs = [parse_dep_expr(s) for s in goals]
     (
         cnf,
@@ -1462,8 +1537,9 @@ def solve(
     inv: Dict[int,Tuple[str,str]] = {v:k for k,v in var_of.items()}
     if not res.sat:
         names = sorted({inv.get(abs(l))[0] for l in (res.unsat_core or []) if abs(l) in inv})
+        details = _summarize_unsat_packages(names)
         raise ResolutionError(
-            "Unsatisfiable dependency set involving: " + ", ".join(names)
+            "Unsatisfiable dependency set involving: " + ", ".join(names) + details
         )
     chosen: Dict[str,PkgMeta] = {}
     for vid,val in res.assign.items():

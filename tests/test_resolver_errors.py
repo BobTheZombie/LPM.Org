@@ -55,3 +55,47 @@ def test_build_requires_checked_when_enabled():
 
     solved = solve(["builder"], clean_universe)
     assert [p.name for p in solved] == ["builder"]
+
+
+def test_unsat_conflict_details_include_conflicting_pair():
+    universe = Universe(
+        candidates_by_name={},
+        providers={},
+        installed={},
+        pins={},
+        holds=set(),
+    )
+    a = PkgMeta(name="A", version="1.0", conflicts=["B"])
+    b = PkgMeta(name="B", version="1.0")
+    register_universe_candidate(universe, a)
+    register_universe_candidate(universe, b)
+
+    with pytest.raises(ResolutionError) as excinfo:
+        solve(["A", "B"], universe)
+
+    msg = str(excinfo.value)
+    assert "Unsatisfiable dependency set involving: A, B" in msg
+    assert "conflicts: A ↔ B" in msg
+
+
+def test_unsat_details_include_dependency_cycle():
+    universe = Universe(
+        candidates_by_name={},
+        providers={},
+        installed={},
+        pins={},
+        holds=set(),
+    )
+    a = PkgMeta(name="A", version="1.0", requires=["B"])
+    b = PkgMeta(name="B", version="1.0", requires=["C"])
+    c = PkgMeta(name="C", version="1.0", requires=["A"], conflicts=["B"])
+    register_universe_candidate(universe, a)
+    register_universe_candidate(universe, b)
+    register_universe_candidate(universe, c)
+
+    with pytest.raises(ResolutionError) as excinfo:
+        solve(["A", "B"], universe)
+
+    msg = str(excinfo.value)
+    assert "Unsatisfiable dependency set involving" in msg
+    assert "dependency cycle:" in msg
