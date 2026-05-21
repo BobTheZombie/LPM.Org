@@ -237,6 +237,7 @@ from .privileges import privilege_info, privileged_section, privileges_enabled
 from .resolver import CNF, CDCLSolver
 from .hooks import HookExecutionError, HookFailureMode, HookTransactionManager, _ensure_executable, load_hooks
 from .delta import apply_delta, find_cached_by_sha, file_sha256, zstd_version, version_at_least
+from . import bootstrap
 
 # =========================== Protected packages ===============================
 PROTECTED_FILE = Path("/etc/lpm/protected.json")
@@ -6701,6 +6702,12 @@ def _run_sysconfig(root: Path) -> None:
     )
 
 
+
+
+def cmd_bootstrap(args)->int:
+    return bootstrap.run_bootstrap(args)
+
+
 def build_parser()->argparse.ArgumentParser:
     p=argparse.ArgumentParser(prog="lpm", description="Linux Package Manager with SAT solver, signatures, and .lpmbuild")
     p.add_argument(
@@ -6927,6 +6934,24 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--force", action="store_true", help="override protected package list")
     sp.set_defaults(func=cmd_fileremove)
+
+    sp=sub.add_parser("bootstrap", help="Bootstrap a new target system")
+    sp.add_argument("--target")
+    sp.add_argument("--hostname")
+    sp.add_argument("--timezone")
+    sp.add_argument("--locale")
+    sp.add_argument("--keymap")
+    sp.add_argument("--bootloader")
+    sp.add_argument("--kernel")
+    sp.add_argument("--config")
+    sp.add_argument("--resume", action="store_true")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--verbose", action="store_true")
+    sp.add_argument("--force", action="store_true")
+    sp.add_argument("--efi-dir")
+    sp.add_argument("--boot-device")
+    sp.add_argument("--network")
+    sp.set_defaults(func=cmd_bootstrap)
 
     sp = sub.add_parser("protected", help="Show or edit protected package list")
     sp.add_argument("action", choices=["list", "add", "remove"])
