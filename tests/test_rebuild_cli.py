@@ -78,6 +78,7 @@ def test_rebuild_parser_wiring_and_upgradepkg_alias_intact():
     assert rebuild.name == "libxml2"
     assert rebuild.no_deps is True
     assert rebuild.install_default == "n"
+    assert rebuild.cycle_policy == "fail"
 
     upgrade_alias = parser.parse_args(["upgradepkg", "demo", "--no-delta"])
     assert upgrade_alias.func is lpm.cmd_upgrade
@@ -114,3 +115,72 @@ def test_rebuild_order_is_deterministic(monkeypatch, tmp_path):
 
     assert first == ["libxml2", "alpha", "zeta"]
     assert second == first
+
+
+def test_rebuild_cycle_group_is_deterministic_with_policy_group(monkeypatch, tmp_path, capsys):
+    _prepare_db(
+        monkeypatch,
+        tmp_path,
+        [
+            ("base", json.dumps([])),
+            ("alpha", json.dumps(["base", "beta"])),
+            ("beta", json.dumps(["base", "gamma"])),
+            ("gamma", json.dumps(["beta"])),
+        ],
+    )
+    for pkg in ("base", "alpha", "beta", "gamma"):
+        p = tmp_path / "packages" / pkg
+        p.mkdir(parents=True)
+        (p / f"{pkg}.lpmbuild").write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    calls = []
+
+    def fake_run(script, _outdir, **_kwargs):
+        calls.append(Path(script).parent.name)
+        return (tmp_path / "dummy.lpm", 0.0, 1, [])
+
+    monkeypatch.setattr(lpm, "run_lpmbuild", fake_run)
+    args = lpm.build_parser().parse_args(["rebuild", "base", "--cycle-policy", "group"])
+    lpm.cmd_rebuild(args)
+    output = capsys.readouterr().out
+    assert "[rebuild cycle-group] beta, gamma" in output
+    assert calls == ["base", "beta", "gamma", "alpha"]
+
+
+def test_rebuild_self_cycle_group_with_policy_group(monkeypatch, tmp_path, capsys):
+    _prepare_db(
+        monkeypatch,
+        tmp_path,
+        [("solo", json.dumps(["solo"]))],
+    )
+    p = tmp_path / "packages" / "solo"
+    p.mkdir(parents=True)
+    (p / "solo.lpmbuild").write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(lpm, "run_lpmbuild", lambda *_args, **_kwargs: (tmp_path / "dummy.lpm", 0.0, 1, []))
+    args = lpm.build_parser().parse_args(["rebuild", "solo", "--cycle-policy", "group"])
+    lpm.cmd_rebuild(args)
+    output = capsys.readouterr().out
+    assert "[rebuild cycle-group] solo" in output
+
+
+def test_rebuild_cycle_policy_defaults_to_fail(monkeypatch, tmp_path):
+    _prepare_db(
+        monkeypatch,
+        tmp_path,
+        [
+            ("base", json.dumps([])),
+            ("alpha", json.dumps(["base", "beta"])),
+            ("beta", json.dumps(["alpha"])),
+        ],
+    )
+    for pkg in ("base", "alpha", "beta"):
+        p = tmp_path / "packages" / pkg
+        p.mkdir(parents=True)
+        (p / f"{pkg}.lpmbuild").write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    args = lpm.build_parser().parse_args(["rebuild", "base"])
+    with pytest.raises(SystemExit):
+        lpm.cmd_rebuild(args)

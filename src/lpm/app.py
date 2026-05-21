@@ -5611,6 +5611,106 @@ def _resolve_local_lpmbuild_script(pkg_name: str) -> Path:
     return Path("packages") / pkg_name / f"{pkg_name}.lpmbuild"
 
 
+def _order_rebuild_targets(
+    root_name: str,
+    reverse: Dict[str, Set[str]],
+    cycle_policy: str = "fail",
+) -> Tuple[List[str], List[List[str]]]:
+    levels: Dict[str, int] = {root_name: 0}
+    queue: deque[str] = deque([root_name])
+    while queue:
+        cur = queue.popleft()
+        for dep in sorted(reverse.get(cur, set())):
+            if dep in levels:
+                continue
+            levels[dep] = levels[cur] + 1
+            queue.append(dep)
+
+    closure = sorted(levels.keys())
+    closure_set = set(closure)
+    subset_edges: Dict[str, Set[str]] = {
+        pkg: (reverse.get(pkg, set()) & closure_set) for pkg in closure
+    }
+
+    index_map = {pkg: idx for idx, pkg in enumerate(closure)}
+    indices: Dict[str, int] = {}
+    lowlink: Dict[str, int] = {}
+    stack: List[str] = []
+    on_stack: Set[str] = set()
+    next_index = 0
+    sccs: List[List[str]] = []
+
+    def strongconnect(node: str) -> None:
+        nonlocal next_index
+        indices[node] = next_index
+        lowlink[node] = next_index
+        next_index += 1
+        stack.append(node)
+        on_stack.add(node)
+        for child in sorted(subset_edges[node]):
+            if child not in indices:
+                strongconnect(child)
+                lowlink[node] = min(lowlink[node], lowlink[child])
+            elif child in on_stack:
+                lowlink[node] = min(lowlink[node], indices[child])
+        if lowlink[node] == indices[node]:
+            component: List[str] = []
+            while True:
+                member = stack.pop()
+                on_stack.remove(member)
+                component.append(member)
+                if member == node:
+                    break
+            sccs.append(sorted(component))
+
+    for pkg in closure:
+        if pkg not in indices:
+            strongconnect(pkg)
+
+    cycle_groups = [
+        group
+        for group in sccs
+        if len(group) > 1 or (len(group) == 1 and group[0] in subset_edges[group[0]])
+    ]
+    cycle_groups.sort(key=lambda g: g[0])
+    if cycle_groups and cycle_policy == "fail":
+        return [], cycle_groups
+
+    component_of: Dict[str, int] = {}
+    components = sorted(sccs, key=lambda g: g[0])
+    for comp_id, group in enumerate(components):
+        for member in group:
+            component_of[member] = comp_id
+
+    comp_indegree: Dict[int, int] = {i: 0 for i in range(len(components))}
+    comp_edges: Dict[int, Set[int]] = {i: set() for i in range(len(components))}
+    for src in closure:
+        src_comp = component_of[src]
+        for dst in sorted(subset_edges[src]):
+            dst_comp = component_of[dst]
+            if src_comp == dst_comp or dst_comp in comp_edges[src_comp]:
+                continue
+            comp_edges[src_comp].add(dst_comp)
+            comp_indegree[dst_comp] += 1
+
+    zero = sorted(
+        [cid for cid, deg in comp_indegree.items() if deg == 0],
+        key=lambda cid: (min(levels[n] for n in components[cid]), components[cid][0], index_map[components[cid][0]]),
+    )
+    ordered: List[str] = []
+    while zero:
+        cid = zero.pop(0)
+        ordered.extend(components[cid])
+        for dst_cid in sorted(comp_edges[cid], key=lambda c: (components[c][0], c)):
+            comp_indegree[dst_cid] -= 1
+            if comp_indegree[dst_cid] == 0:
+                zero.append(dst_cid)
+                zero.sort(
+                    key=lambda c: (min(levels[n] for n in components[c]), components[c][0], index_map[components[c][0]])
+                )
+    return ordered, cycle_groups
+
+
 def cmd_rebuild(a):
     conn = db()
     rows = list(conn.execute("SELECT name FROM installed ORDER BY name"))
@@ -5621,38 +5721,16 @@ def cmd_rebuild(a):
     if a.name not in installed_names:
         die(f"Package is not installed: {a.name}")
 
-    levels: Dict[str, int] = {a.name: 0}
-    queue: deque[str] = deque([a.name])
-    while queue:
-        cur = queue.popleft()
-        for dep in sorted(reverse.get(cur, set())):
-            if dep in levels:
-                continue
-            levels[dep] = levels[cur] + 1
-            queue.append(dep)
-
-    closure = sorted(levels.keys())
-    subset_edges: Dict[str, Set[str]] = {
-        pkg: set(sorted(reverse.get(pkg, set()) & set(closure))) for pkg in closure
-    }
-
-    indegree: Dict[str, int] = {pkg: 0 for pkg in closure}
-    for pkg in closure:
-        for child in subset_edges[pkg]:
-            indegree[child] += 1
-    zero = sorted([pkg for pkg, deg in indegree.items() if deg == 0], key=lambda n: (levels[n], n))
-    topo: List[str] = []
-    while zero:
-        node = zero.pop(0)
-        topo.append(node)
-        for child in sorted(subset_edges[node]):
-            indegree[child] -= 1
-            if indegree[child] == 0:
-                zero.append(child)
-                zero.sort(key=lambda n: (levels[n], n))
-    if len(topo) != len(closure):
-        cycle_members = sorted([pkg for pkg, deg in indegree.items() if deg > 0])
-        die("Cycle detected in rebuild dependency graph: " + ", ".join(cycle_members))
+    topo, cycle_groups = _order_rebuild_targets(a.name, reverse, cycle_policy=a.cycle_policy)
+    if cycle_groups and a.cycle_policy == "fail":
+        groups = "; ".join(", ".join(group) for group in cycle_groups)
+        die(
+            "Cycle detected in rebuild dependency graph. "
+            f"Use --cycle-policy group to continue. Cycle groups: {groups}"
+        )
+    if cycle_groups and a.cycle_policy == "group":
+        for group in cycle_groups:
+            print(f"[rebuild cycle-group] {', '.join(group)}")
 
     missing: List[Tuple[str, Path]] = []
     scripts: Dict[str, Path] = {}
@@ -6748,6 +6826,12 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--outdir", default=Path.cwd(), type=Path)
     sp.add_argument("--no-deps", action="store_true", help="do not fetch or build dependencies")
     sp.add_argument("--install-default", choices=["y", "n"], help="default answer for install prompt")
+    sp.add_argument(
+        "--cycle-policy",
+        choices=["fail", "group"],
+        default="fail",
+        help="how to handle reverse-dependency cycles (default: fail)",
+    )
     sp.add_argument(
         "--force-rebuild",
         action="store_true",
