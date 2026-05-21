@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any, Dict, Iterable, Optional
+
+from lpm.chroot import ChrootMountState, mount_chroot_api, umount_chroot_api
+from typing import Any, Dict, Optional
 
 import tomllib
 
@@ -137,39 +138,15 @@ def completed_stages(state: Dict[str, Any]) -> set[str]:
     return {str(s) for s in raw if isinstance(s, str)}
 
 
-def _run_command(cfg: BootstrapConfig, cmd: Iterable[str]) -> None:
-    pretty = " ".join(cmd)
-    if cfg.dry_run:
-        print(f"[bootstrap][dry-run] shell: {pretty}")
-        return
-    subprocess.run(list(cmd), check=True)
-
-
-def _mount_api(cfg: BootstrapConfig, source: str, rel_target: str, mounts: list[Path]) -> None:
-    mountpoint = cfg.target / rel_target.lstrip("/")
-    if cfg.dry_run:
-        print(f"[bootstrap][dry-run] mount --bind {source} {mountpoint}")
-        mounts.append(mountpoint)
-        return
-    mountpoint.mkdir(parents=True, exist_ok=True)
-    _run_command(cfg, ["mount", "--bind", source, str(mountpoint)])
-    mounts.append(mountpoint)
-
-
-def _unmount_api(cfg: BootstrapConfig, mountpoint: Path) -> None:
-    if cfg.dry_run:
-        print(f"[bootstrap][dry-run] umount {mountpoint}")
-        return
-    _run_command(cfg, ["umount", str(mountpoint)])
-
-
-def _run_stage(cfg: BootstrapConfig, stage: Stage, api_mounts: list[Path]) -> None:
+def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState) -> None:
     _log(cfg, f"running stage={stage.value}")
     if stage == Stage.VALIDATE and not cfg.target.exists() and not cfg.dry_run:
         raise FileNotFoundError(f"target does not exist: {cfg.target}")
     if stage == Stage.PREPARE_DIRS:
-        for rel in ("proc", "sys", "dev"):
-            _mount_api(cfg, f"/{rel}", rel, api_mounts)
+        if cfg.dry_run:
+            print("[bootstrap][dry-run] mount chroot api filesystems")
+        else:
+            mount_chroot_api(cfg.target, mount_state)
     if stage == Stage.SEED_LPM:
         if cfg.dry_run:
             print("[bootstrap][dry-run] package plan: seed lpm into target")
@@ -181,20 +158,20 @@ def run_bootstrap(args: Any) -> int:
     cfg = load_config(args)
     state = load_state(cfg)
     done = completed_stages(state)
-    api_mounts: list[Path] = []
+    mount_state = ChrootMountState()
 
     try:
         for stage in STAGES:
             if cfg.resume and stage.value in done:
                 _log(cfg, f"skip completed stage={stage.value}")
                 continue
-            _run_stage(cfg, stage, api_mounts)
+            _run_stage(cfg, stage, mount_state)
             done.add(stage.value)
             save_state(cfg, {"completed_stages": sorted(done)})
         return 0
     finally:
-        for mountpoint in reversed(api_mounts):
+        if not cfg.dry_run:
             try:
-                _unmount_api(cfg, mountpoint)
+                umount_chroot_api(cfg.target, mount_state)
             except Exception as exc:
-                print(f"[bootstrap] warning: failed to unmount {mountpoint}: {exc}")
+                print(f"[bootstrap] warning: failed to unmount API mounts: {exc}")
