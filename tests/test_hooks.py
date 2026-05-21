@@ -385,6 +385,42 @@ def test_update_grub_hook_runs_mkconfig_for_install(
     assert all(not call.startswith("update-grub") for call in calls)
 
 
+def test_update_grub_hook_uses_target_paths_for_bootstrap(tmp_path, monkeypatch, system_hook_dir):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "grub-target.log"
+    for name in ("grub-install", "grub-mkconfig", "update-grub", "mount"):
+        script = bin_dir / name
+        script.write_text(f"#!/bin/sh\necho {name} \"$@\" >> {log}\n", encoding="utf-8")
+        script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    root = tmp_path / "root"
+    (root / "etc").mkdir(parents=True, exist_ok=True)
+    (root / "etc" / "fstab").write_text("UUID=FAKE /boot/efi vfat defaults 0 1\n", encoding="utf-8")
+
+    hooks = load_hooks([system_hook_dir])
+    txn = HookTransactionManager(hooks=hooks, root=root)
+    txn.add_package_event(
+        name="grub2",
+        operation="Install",
+        version="2.06",
+        release="1",
+        paths=["/usr/share/grub"],
+    )
+    txn.ensure_pre_transaction()
+    txn.run_post_transaction()
+
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert all(not call.startswith("mount ") for call in calls)
+    assert any(f"--efi-directory {root / 'boot/efi'}" in call for call in calls)
+    assert any(f"--boot-directory {root / 'boot'}" in call for call in calls)
+    assert any("--no-nvram" in call and "--removable" in call for call in calls)
+    assert any(f"grub-mkconfig -o {root / 'boot/grub/grub.cfg'}" in call for call in calls)
+    assert all(not call.startswith("update-grub") for call in calls)
+    assert all(" /boot/" not in f" {call} " for call in calls)
+
+
 def test_systemd_daemon_reload_runs_only_for_real_root(
     tmp_path, monkeypatch, system_hook_dir
 ):
@@ -454,8 +490,9 @@ def test_kernel_install_hook(tmp_path, monkeypatch):
     mkinitcpio_call = f"mkinitcpio -r {root} -k {version} -g {root / 'boot' / f'initrd-{version}.img'}"
     assert depmod_call in calls
     assert mkinitcpio_call in calls
-    assert "bootctl update" in calls
-    assert "grub-mkconfig -o /boot/grub/grub.cfg" in calls
+    assert "bootctl update" not in calls
+    assert f"grub-mkconfig -o {root / 'boot/grub/grub.cfg'}" in calls
+    assert all(" /boot/" not in f" {call} " for call in calls)
 
 
 def test_kernel_install_transaction_hook(tmp_path, monkeypatch, system_hook_dir):
@@ -489,8 +526,9 @@ def test_kernel_install_transaction_hook(tmp_path, monkeypatch, system_hook_dir)
     mkinitcpio_call = f"mkinitcpio -r {root} -k {version} -g {root / 'boot' / f'initrd-{version}.img'}"
     assert depmod_call in calls
     assert mkinitcpio_call in calls
-    assert "bootctl update" in calls
-    assert "grub-mkconfig -o /boot/grub/grub.cfg" in calls
+    assert "bootctl update" not in calls
+    assert f"grub-mkconfig -o {root / 'boot/grub/grub.cfg'}" in calls
+    assert all(" /boot/" not in f" {call} " for call in calls)
 
 
 def test_kernel_modules_install_transaction_hook(tmp_path, monkeypatch, system_hook_dir):
@@ -524,8 +562,9 @@ def test_kernel_modules_install_transaction_hook(tmp_path, monkeypatch, system_h
     mkinitcpio_call = f"mkinitcpio -r {root} -k {version} -g {root / 'boot' / f'initrd-{version}.img'}"
     assert depmod_call in calls
     assert mkinitcpio_call in calls
-    assert "bootctl update" in calls
-    assert "grub-mkconfig -o /boot/grub/grub.cfg" in calls
+    assert "bootctl update" not in calls
+    assert f"grub-mkconfig -o {root / 'boot/grub/grub.cfg'}" in calls
+    assert all(" /boot/" not in f" {call} " for call in calls)
 
 
 def test_kernel_install_hook_makes_existing_initrd_writable(tmp_path, monkeypatch):
