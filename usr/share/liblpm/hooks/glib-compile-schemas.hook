@@ -4,6 +4,7 @@ Operation = Install
 Operation = Upgrade
 Operation = Remove
 Target = usr/share/glib-2.0/schemas/*.xml
+Target = usr/share/glib-2.0/schemas/*.override
 
 [Action]
 When = PostTransaction

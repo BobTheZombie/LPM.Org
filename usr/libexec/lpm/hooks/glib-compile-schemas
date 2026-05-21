@@ -17,7 +17,7 @@ def _iter_schema_dirs(root: Path, targets: Iterable[str]) -> List[Path]:
         if not rel:
             continue
         path = root / rel
-        if path.suffix.lower() != ".xml":
+        if path.suffix.lower() not in {".xml", ".override"}:
             continue
         parent = path.parent
         if parent in seen or not parent.is_dir():
