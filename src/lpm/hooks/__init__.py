@@ -408,7 +408,7 @@ class HookTransactionManager:
                 "LPM_HOOK_NAME": hook.name,
                 "LPM_HOOK_PATH": str(hook.path),
                 "LPM_HOOK_WHEN": action.when,
-                "LPM_ROOT": str(self.root),
+                "LPM_ROOT": str(self.root.resolve()),
             }
         )
         if action.needs_targets:

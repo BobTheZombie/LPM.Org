@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-ROOT = Path(os.environ.get("LPM_ROOT", "/"))
+ROOT = Path(os.environ.get("LPM_ROOT", "/")).resolve()
 
 
 @dataclass
@@ -34,9 +34,9 @@ def _desired_mount_point() -> str:
 
 def _efi_directory() -> Path:
     mount_point = Path(_desired_mount_point())
-    if mount_point.is_absolute():
+    if mount_point.is_absolute() and ROOT == Path("/"):
         return mount_point
-    return ROOT / mount_point
+    return ROOT / mount_point.relative_to("/") if mount_point.is_absolute() else ROOT / mount_point
 
 
 def _iter_fstab_entries() -> list[FstabEntry]:
@@ -71,6 +71,9 @@ def _find_efi_fstab_entry() -> FstabEntry | None:
 
 
 def _ensure_efi_mounted(efi_dir: Path) -> bool:
+    if ROOT != Path("/"):
+        efi_dir.mkdir(parents=True, exist_ok=True)
+        return True
     if os.path.ismount(str(efi_dir)):
         return True
 
@@ -95,20 +98,16 @@ def _run_grub_install(efi_dir: Path) -> None:
     if not _ensure_efi_mounted(efi_dir):
         return
 
-    subprocess.run(
-        [
-            grub_install,
-            "--target=x86_64-efi",
-            "--efi-directory",
-            str(efi_dir),
-            "--bootloader-id=Lumin",
-        ],
-        check=False,
-    )
-
-
-def _is_real_root() -> bool:
-    return ROOT == Path("/")
+    args = [
+        grub_install,
+        "--target=x86_64-efi",
+        "--efi-directory",
+        str(efi_dir),
+        "--bootloader-id=Lumin",
+    ]
+    if ROOT != Path("/"):
+        args.extend(["--boot-directory", str(ROOT / "boot"), "--no-nvram", "--removable"])
+    subprocess.run(args, check=False)
 
 
 def _grub_cfg_path() -> Path:
@@ -117,7 +116,7 @@ def _grub_cfg_path() -> Path:
 
 def _run_update_grub(*, grub_cfg_existed: bool) -> None:
     update_grub = shutil.which("update-grub")
-    if grub_cfg_existed and update_grub:
+    if ROOT == Path("/") and grub_cfg_existed and update_grub:
         subprocess.run([update_grub], check=False)
         return
 
@@ -131,8 +130,6 @@ def _run_update_grub(*, grub_cfg_existed: bool) -> None:
 
 
 def main() -> None:
-    if not _is_real_root():
-        return
     efi_dir = _efi_directory()
     grub_cfg = _grub_cfg_path()
     grub_cfg_existed = grub_cfg.exists()

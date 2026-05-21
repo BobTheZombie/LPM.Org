@@ -90,7 +90,7 @@ def main(argv: List[str] | None = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
 
-    root = Path(os.environ.get("LPM_ROOT", "/"))
+    root = Path(os.environ.get("LPM_ROOT", "/")).resolve()
     _log(f"Using root: {root}")
     versions = _collect_versions(argv)
     if versions:
@@ -116,13 +116,17 @@ def main(argv: List[str] | None = None) -> None:
         _log("No actions to perform; exiting")
         return
 
-    if shutil.which("bootctl"):
+    if root == Path("/") and shutil.which("bootctl"):
         _run_command(["bootctl", "update"], check=False)
+    elif root != Path("/"):
+        _log("Skipping systemd-boot update in target root to avoid host EFI variable changes")
     else:
         _log("Skipping systemd-boot update; bootctl not found")
 
+    grub_cfg = root / "boot/grub/grub.cfg"
     if shutil.which("grub-mkconfig"):
-        _run_command(["grub-mkconfig", "-o", "/boot/grub/grub.cfg"], check=False)
+        grub_cfg.parent.mkdir(parents=True, exist_ok=True)
+        _run_command(["grub-mkconfig", "-o", str(grub_cfg)], check=False)
     else:
         _log("Skipping GRUB configuration update; grub-mkconfig not found")
 
