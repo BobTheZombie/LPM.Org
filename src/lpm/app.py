@@ -5551,9 +5551,25 @@ def cmd_buildpkg(a):
     if not a.script:
         die("buildpkg requires a .lpmbuild script or --python-pip")
 
-    script_path = Path(a.script)
+    raw_script = Path(a.script)
+    script_path = raw_script
     if not script_path.exists():
-        die(f".lpmbuild script not found: {script_path}")
+        candidate_name = raw_script.name
+        if candidate_name.endswith(".lpmbuild"):
+            candidate_name = candidate_name[:-len(".lpmbuild")]
+
+        local_candidate = _resolve_local_lpmbuild_script(candidate_name)
+        if local_candidate.exists():
+            script_path = local_candidate
+            ok(f"Resolved local lpmbuild script: {script_path}")
+        else:
+            fetched_script = Path(f"/tmp/lpm-{candidate_name}.lpmbuild")
+            fetch_fn = _resolve_lpm_attr("fetch_lpmbuild", fetch_lpmbuild)
+            try:
+                script_path = fetch_fn(candidate_name, fetched_script)
+                ok(f"Resolved repository lpmbuild script: {script_path}")
+            except Exception:
+                die(f".lpmbuild script not found: {raw_script}")
 
     run_lpmbuild_fn = _resolve_lpm_attr("run_lpmbuild", run_lpmbuild)
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
