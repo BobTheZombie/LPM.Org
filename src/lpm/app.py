@@ -5713,8 +5713,30 @@ def _order_rebuild_targets(
 
 def cmd_rebuild(a):
     conn = db()
-    rows = list(conn.execute("SELECT name FROM installed ORDER BY name"))
-    installed_names = {row[0] for row in rows}
+    rows = list(
+        conn.execute(
+            "SELECT name,version,conflicts,obsoletes,provides FROM installed ORDER BY name"
+        )
+    )
+    installed_meta: Dict[str, dict] = {}
+    for name, version, conflicts_raw, obsoletes_raw, provides_raw in rows:
+        def _decode_list(raw: Any) -> List[str]:
+            if isinstance(raw, str):
+                try:
+                    parsed = json.loads(raw)
+                except Exception:
+                    return [raw] if raw else []
+                if isinstance(parsed, list):
+                    return [str(item) for item in parsed if item]
+            return []
+
+        installed_meta[name] = {
+            "version": version or "",
+            "conflicts": _decode_list(conflicts_raw),
+            "obsoletes": _decode_list(obsoletes_raw),
+            "provides": _decode_list(provides_raw),
+        }
+    installed_names = set(installed_meta.keys())
     reverse = _reverse_dependents_from_installed(conn)
     conn.close()
 
@@ -5731,6 +5753,29 @@ def cmd_rebuild(a):
     if cycle_groups and a.cycle_policy == "group":
         for group in cycle_groups:
             print(f"[rebuild cycle-group] {', '.join(group)}")
+
+    providers = _installed_provider_map(installed_meta)
+    conflict_pairs: Set[Tuple[str, str]] = set()
+    for pkg in topo:
+        meta = installed_meta.get(pkg, {})
+        for raw in (meta.get("conflicts", []) or []) + (meta.get("obsoletes", []) or []):
+            if not raw:
+                continue
+            try:
+                expr = parse_dep_expr(raw)
+            except Exception:
+                warn(f"Invalid rebuild conflict expression in {pkg}: {raw}")
+                continue
+            for matched_pkg in _match_dep_expr_against_installed(expr, installed_meta, providers):
+                if matched_pkg not in topo or matched_pkg == pkg:
+                    continue
+                conflict_pairs.add(tuple(sorted((pkg, matched_pkg))))
+    if conflict_pairs and a.conflict_policy == "fail":
+        formatted = ", ".join(f"{left} <-> {right}" for left, right in sorted(conflict_pairs))
+        die(f"Rebuild preflight failed: conflicting targets detected: {formatted}")
+    if conflict_pairs and a.conflict_policy == "skip":
+        for left, right in sorted(conflict_pairs):
+            warn(f"Skipping conflicting pair due to --conflict-policy=skip: {left} <-> {right}")
 
     missing: List[Tuple[str, Path]] = []
     scripts: Dict[str, Path] = {}
@@ -6837,6 +6882,12 @@ def build_parser()->argparse.ArgumentParser:
         action="store_true",
         default=True,
         help="rebuild the target package and all reverse dependencies even if already available",
+    )
+    sp.add_argument(
+        "--conflict-policy",
+        choices=["fail", "skip"],
+        default="fail",
+        help="how to handle rebuild target conflicts detected during preflight (default: fail)",
     )
     sp.set_defaults(func=cmd_rebuild)
 

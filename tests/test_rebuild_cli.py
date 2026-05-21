@@ -12,8 +12,20 @@ from lpm import app as lpm
 def _prepare_db(monkeypatch, tmp_path, rows):
     db_path = tmp_path / "rebuild.db"
     conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE installed (name TEXT, requires TEXT)")
-    conn.executemany("INSERT INTO installed(name, requires) VALUES (?, ?)", rows)
+    conn.execute(
+        "CREATE TABLE installed (name TEXT, version TEXT, requires TEXT, conflicts TEXT, obsoletes TEXT, provides TEXT)"
+    )
+    normalized = []
+    for row in rows:
+        if len(row) == 2:
+            name, requires = row
+            normalized.append((name, "1.0.0", requires, json.dumps([]), json.dumps([]), json.dumps([name])))
+        else:
+            normalized.append(row)
+    conn.executemany(
+        "INSERT INTO installed(name, version, requires, conflicts, obsoletes, provides) VALUES (?, ?, ?, ?, ?, ?)",
+        normalized,
+    )
     conn.commit()
     conn.close()
     monkeypatch.setattr(lpm, "db", lambda: sqlite3.connect(db_path))
@@ -79,6 +91,7 @@ def test_rebuild_parser_wiring_and_upgradepkg_alias_intact():
     assert rebuild.no_deps is True
     assert rebuild.install_default == "n"
     assert rebuild.cycle_policy == "fail"
+    assert rebuild.conflict_policy == "fail"
 
     upgrade_alias = parser.parse_args(["upgradepkg", "demo", "--no-delta"])
     assert upgrade_alias.func is lpm.cmd_upgrade
@@ -184,3 +197,45 @@ def test_rebuild_cycle_policy_defaults_to_fail(monkeypatch, tmp_path):
     args = lpm.build_parser().parse_args(["rebuild", "base"])
     with pytest.raises(SystemExit):
         lpm.cmd_rebuild(args)
+
+
+def test_rebuild_preflight_conflict_pair_fails(monkeypatch, tmp_path, capsys):
+    _prepare_db(
+        monkeypatch,
+        tmp_path,
+        [
+            ("base", "1.0.0", json.dumps([]), json.dumps([]), json.dumps([]), json.dumps(["base"])),
+            ("alpha", "1.0.0", json.dumps(["base"]), json.dumps(["beta"]), json.dumps([]), json.dumps(["alpha"])),
+            ("beta", "1.0.0", json.dumps(["alpha"]), json.dumps([]), json.dumps([]), json.dumps(["beta"])),
+        ],
+    )
+    for pkg in ("base", "alpha", "beta"):
+        p = tmp_path / "packages" / pkg
+        p.mkdir(parents=True)
+        (p / f"{pkg}.lpmbuild").write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    args = lpm.build_parser().parse_args(["rebuild", "base"])
+    with pytest.raises(SystemExit):
+        lpm.cmd_rebuild(args)
+    assert "alpha <-> beta" in capsys.readouterr().err
+
+
+def test_rebuild_preflight_conflict_expression_matches_provider(monkeypatch, tmp_path, capsys):
+    _prepare_db(
+        monkeypatch,
+        tmp_path,
+        [
+            ("base", "1.0.0", json.dumps([]), json.dumps([]), json.dumps([]), json.dumps(["base"])),
+            ("provider", "2.0.0", json.dumps(["base"]), json.dumps([]), json.dumps([]), json.dumps(["provider", "virtual-lib=2.0.0"])),
+            ("consumer", "1.0.0", json.dumps(["provider"]), json.dumps(["virtual-lib>=1.5"]), json.dumps([]), json.dumps(["consumer"])),
+        ],
+    )
+    for pkg in ("base", "provider", "consumer"):
+        p = tmp_path / "packages" / pkg
+        p.mkdir(parents=True)
+        (p / f"{pkg}.lpmbuild").write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    args = lpm.build_parser().parse_args(["rebuild", "base"])
+    with pytest.raises(SystemExit):
+        lpm.cmd_rebuild(args)
+    assert "consumer <-> provider" in capsys.readouterr().err
