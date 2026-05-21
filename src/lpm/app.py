@@ -3348,6 +3348,11 @@ def _capture_lpmbuild_metadata(
         '      for x in "${ref[@]}"; do printf "%s\\0" "$x"; done',
         '      printf "\n"',
         '      return',
+        '    elif declare -p "$n" 2>/dev/null | grep -q "declare -A"; then',
+        '      declare -n ref="$n"',
+        '      for k in "${!ref[@]}"; do printf "%s=>%s\\0" "$k" "${ref[$k]}"; done',
+        '      printf "\n"',
+        '      return',
         '    elif [[ ${!n+x} == x ]]; then',
         '      declare -n ref="$n"',
         '      if [[ -n "${ref}" ]]; then printf "%s\\0" "${ref}"; fi',
@@ -3427,6 +3432,21 @@ def _capture_lpmbuild_metadata(
 
     i = 0
     n = len(data)
+
+    def _normalize_dep_entry(entry: str) -> str:
+        if "=>" not in entry:
+            return entry
+        name, version = entry.split("=>", 1)
+        dep_name = name.strip()
+        dep_version = version.strip()
+        if not dep_name:
+            return entry
+        if not dep_version:
+            return dep_name
+        if dep_version.startswith(("<=", ">=", "==", "=", "<", ">", "~", "~=")):
+            return f"{dep_name}{dep_version}"
+        return f"{dep_name}>={dep_version}"
+
     while i < n:
         if data.startswith(b"__SCALAR__ ", i):
             j = data.find(b"\n", i)
@@ -3447,6 +3467,8 @@ def _capture_lpmbuild_metadata(
                 for chunk in data[start:end].split(b"\0")
                 if chunk
             ]
+            if canonical in {"REQUIRES", "BUILD_REQUIRES"}:
+                elements = [_normalize_dep_entry(element) for element in elements]
             arrays.setdefault(canonical, []).extend(elements)
             i = end + 1
         elif data.startswith(b"__MAP__ ", i):
