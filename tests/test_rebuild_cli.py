@@ -199,6 +199,34 @@ def test_rebuild_cycle_policy_defaults_to_fail(monkeypatch, tmp_path):
         lpm.cmd_rebuild(args)
 
 
+def test_rebuild_cycle_preflight_fail_reports_deterministic_groups(monkeypatch, tmp_path, capsys):
+    _prepare_db(
+        monkeypatch,
+        tmp_path,
+        [
+            ("root", json.dumps([])),
+            ("b", json.dumps(["root", "c"])),
+            ("c", json.dumps(["root", "b"])),
+            ("x", json.dumps(["root", "y"])),
+            ("y", json.dumps(["root", "x"])),
+        ],
+    )
+    for pkg in ("root", "b", "c", "x", "y"):
+        p = tmp_path / "packages" / pkg
+        p.mkdir(parents=True)
+        (p / f"{pkg}.lpmbuild").write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(lpm, "run_lpmbuild", lambda *_args, **_kwargs: pytest.fail("run_lpmbuild should not be called"))
+    args = lpm.build_parser().parse_args(["rebuild", "root"])
+    with pytest.raises(SystemExit):
+        lpm.cmd_rebuild(args)
+
+    err = capsys.readouterr().err
+    assert "Cycle detected in rebuild dependency graph." in err
+    assert "Cycle groups: b, c; x, y" in err
+
+
 def test_rebuild_preflight_conflict_pair_fails(monkeypatch, tmp_path, capsys):
     _prepare_db(
         monkeypatch,
@@ -239,3 +267,52 @@ def test_rebuild_preflight_conflict_expression_matches_provider(monkeypatch, tmp
     with pytest.raises(SystemExit):
         lpm.cmd_rebuild(args)
     assert "consumer <-> provider" in capsys.readouterr().err
+
+
+def test_rebuild_conflict_preflight_detects_closure_only(monkeypatch, tmp_path):
+    _prepare_db(
+        monkeypatch,
+        tmp_path,
+        [
+            ("base", "1.0.0", json.dumps([]), json.dumps([]), json.dumps([]), json.dumps(["base"])),
+            ("alpha", "1.0.0", json.dumps(["base"]), json.dumps(["beta"]), json.dumps([]), json.dumps(["alpha"])),
+            ("beta", "1.0.0", json.dumps(["base"]), json.dumps([]), json.dumps([]), json.dumps(["beta"])),
+            ("outside", "1.0.0", json.dumps([]), json.dumps(["beta"]), json.dumps([]), json.dumps(["outside"])),
+        ],
+    )
+    for pkg in ("base", "alpha", "beta", "outside"):
+        p = tmp_path / "packages" / pkg
+        p.mkdir(parents=True)
+        (p / f"{pkg}.lpmbuild").write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(lpm, "run_lpmbuild", lambda *_args, **_kwargs: pytest.fail("run_lpmbuild should not be called"))
+    args = lpm.build_parser().parse_args(["rebuild", "base"])
+    with pytest.raises(SystemExit):
+        lpm.cmd_rebuild(args)
+
+
+def test_rebuild_conflict_failure_details_are_sorted(monkeypatch, tmp_path, capsys):
+    _prepare_db(
+        monkeypatch,
+        tmp_path,
+        [
+            ("base", "1.0.0", json.dumps([]), json.dumps([]), json.dumps([]), json.dumps(["base"])),
+            ("zeta", "1.0.0", json.dumps(["base"]), json.dumps(["alpha"]), json.dumps([]), json.dumps(["zeta"])),
+            ("alpha", "1.0.0", json.dumps(["base"]), json.dumps(["beta"]), json.dumps([]), json.dumps(["alpha"])),
+            ("beta", "1.0.0", json.dumps(["base"]), json.dumps(["zeta"]), json.dumps([]), json.dumps(["beta"])),
+        ],
+    )
+    for pkg in ("base", "alpha", "beta", "zeta"):
+        p = tmp_path / "packages" / pkg
+        p.mkdir(parents=True)
+        (p / f"{pkg}.lpmbuild").write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(lpm, "run_lpmbuild", lambda *_args, **_kwargs: pytest.fail("run_lpmbuild should not be called"))
+    args = lpm.build_parser().parse_args(["rebuild", "base"])
+    with pytest.raises(SystemExit):
+        lpm.cmd_rebuild(args)
+
+    err = capsys.readouterr().err
+    assert "alpha <-> beta, alpha <-> zeta, beta <-> zeta" in err
