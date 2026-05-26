@@ -168,6 +168,27 @@ def generate_chroot_command(target: Path, command: list[str]) -> list[str]:
     return ["chroot", str(target), *command]
 
 
+def generate_lpm_root_install_command(target: Path, packages: list[str]) -> list[str]:
+    if not packages:
+        raise ValueError("at least one package is required for lpm root install")
+    return ["lpm", "--root", str(target), "install", *packages]
+
+
+def _bootstrap_packages(cfg: BootstrapConfig, kernel: str, network_backend: str, bootloader: str) -> list[str]:
+    raw = getattr(cfg, "base_packages", None)
+    if isinstance(raw, str):
+        custom = [p.strip() for p in raw.split(",") if p.strip()]
+        if custom:
+            return custom
+    if isinstance(raw, (list, tuple)):
+        custom = [str(p).strip() for p in raw if str(p).strip()]
+        if custom:
+            return custom
+    pkgs = ["basesystem", kernel, bootloader]
+    if network_backend in {"NetworkManager", "iwd"}:
+        pkgs.append("NetworkManager")
+    return pkgs
+
 def _as_path(value: Any) -> Optional[Path]:
     if value in (None, ""):
         return None
@@ -269,7 +290,7 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
     if stage == Stage.VALIDATE:
         if not cfg.target.exists() and not cfg.dry_run:
             raise FileNotFoundError(f"target does not exist: {cfg.target}")
-        missing = [tool for tool in ("dnf", "chroot", "mount", "umount") if shutil.which(tool) is None]
+        missing = [tool for tool in ("lpm", "chroot", "mount", "umount") if shutil.which(tool) is None]
         if missing:
             raise RuntimeError(f"missing required tools: {', '.join(missing)}")
         if boot_mode not in {"uefi", "bios"}:
@@ -305,8 +326,7 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
             subprocess.run(["cp", "-a", f"{src_root}/.", str(dst_root)], check=True)
 
     elif stage == Stage.INSTALL_BASE:
-        base_pkgs = ["basesystem", "kernel", kernel, "grub", "NetworkManager"]
-        cmd = ["dnf", "-y", "--installroot", str(cfg.target), "install", *base_pkgs]
+        cmd = generate_lpm_root_install_command(cfg.target, _bootstrap_packages(cfg, kernel, network_backend, bootloader))
         if cfg.dry_run:
             print(f"[bootstrap][dry-run] {' '.join(cmd)}")
         else:

@@ -44,3 +44,30 @@ def test_state_tracking_dry_run(tmp_path: Path) -> None:
 def test_grub_install_requires_boot_device_for_bios() -> None:
     with pytest.raises(ValueError):
         bootstrap.grub_install_command("bios", None, None)
+
+
+def test_generate_lpm_root_install_command() -> None:
+    cmd = bootstrap.generate_lpm_root_install_command(Path('/mnt'), ['basesystem', 'linux'])
+    assert cmd == ['lpm', '--root', '/mnt', 'install', 'basesystem', 'linux']
+
+
+def test_generate_lpm_root_install_command_requires_packages() -> None:
+    with pytest.raises(ValueError):
+        bootstrap.generate_lpm_root_install_command(Path('/mnt'), [])
+
+
+def test_install_base_uses_lpm_not_dnf(monkeypatch, tmp_path: Path) -> None:
+    cfg = bootstrap.BootstrapConfig(target=tmp_path, bootloader='grub', kernel='linux')
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, check=True, **kwargs):
+        calls.append(list(cmd))
+        class Result:
+            returncode = 0
+        return Result()
+
+    monkeypatch.setattr(bootstrap.subprocess, 'run', fake_run)
+    bootstrap._run_stage(cfg, bootstrap.Stage.INSTALL_BASE, bootstrap.ChrootMountState())
+    assert calls
+    assert calls[0][0] == 'lpm'
+    assert 'dnf' not in calls[0]
