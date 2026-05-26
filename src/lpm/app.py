@@ -7001,6 +7001,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--manifest", help="path to package manifest input")
     sp.add_argument("--cache-dir", default=CACHE_DIR, help="package cache directory")
     sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--mount-api", action="store_true", help="mount /proc,/sys,/dev in target root during install")
     sp.add_argument("--verbose", action="store_true")
     sp.set_defaults(func=cmd_installroot)
 
