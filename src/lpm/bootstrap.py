@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -19,6 +21,7 @@ class Stage(str, Enum):
     VALIDATE = "validate"
     PREPARE_DIRS = "prepare-dirs"
     SEED_LPM = "seed-lpm"
+    RESOLVE_BUILD_PLAN = "resolve-build-plan"
     INSTALL_BASE = "install-base"
     CONFIGURE_SYSTEM = "configure-system"
     GENERATE_INITRAMFS = "generate-initramfs"
@@ -30,6 +33,7 @@ STAGES: list[Stage] = [
     Stage.VALIDATE,
     Stage.PREPARE_DIRS,
     Stage.SEED_LPM,
+    Stage.RESOLVE_BUILD_PLAN,
     Stage.INSTALL_BASE,
     Stage.CONFIGURE_SYSTEM,
     Stage.GENERATE_INITRAMFS,
@@ -55,6 +59,10 @@ class BootstrapConfig:
     efi_dir: Optional[Path] = None
     boot_device: Optional[str] = None
     network: Optional[str] = None
+    plan_file: Optional[Path] = None
+    lpmbuild_root: Optional[Path] = None
+    include_packages: tuple[str, ...] = ()
+    exclude_packages: tuple[str, ...] = ()
 
     @property
     def state_path(self) -> Path:
@@ -174,20 +182,116 @@ def generate_lpm_root_install_command(target: Path, packages: list[str]) -> list
     return ["lpm", "--root", str(target), "install", *packages]
 
 
-def _bootstrap_packages(cfg: BootstrapConfig, kernel: str, network_backend: str, bootloader: str) -> list[str]:
+def _parse_pkg_list(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return tuple(p.strip() for p in value.split(",") if p.strip())
+    if isinstance(value, (list, tuple)):
+        return tuple(str(p).strip() for p in value if str(p).strip())
+    return ()
+
+
+def _bootstrap_packages(cfg: BootstrapConfig, kernel: str, network_backend: str, bootloader: str, state: Dict[str, Any]) -> list[str]:
+    resolution = state.get("plan_resolution") if isinstance(state, dict) else None
+    if isinstance(resolution, dict):
+        resolved = resolution.get("package_order")
+        if isinstance(resolved, list):
+            pkgs = [str(p).strip() for p in resolved if str(p).strip()]
+            if pkgs:
+                return pkgs
+
     raw = getattr(cfg, "base_packages", None)
-    if isinstance(raw, str):
-        custom = [p.strip() for p in raw.split(",") if p.strip()]
-        if custom:
-            return custom
-    if isinstance(raw, (list, tuple)):
-        custom = [str(p).strip() for p in raw if str(p).strip()]
-        if custom:
-            return custom
+    custom = list(_parse_pkg_list(raw))
+    if custom:
+        return custom
+
     pkgs = ["basesystem", kernel, bootloader]
     if network_backend in {"NetworkManager", "iwd"}:
         pkgs.append("NetworkManager")
     return pkgs
+
+
+def _extract_depends_from_lpmbuild(script_path: Path) -> list[str]:
+    text = script_path.read_text(encoding="utf-8")
+    matches = re.findall(r"(?m)^\s*depends\s*=\s*\(([^)]*)\)", text)
+    deps: list[str] = []
+    for raw in matches:
+        deps.extend(re.findall(r"[\"']([^\"']+)[\"']", raw))
+    return [d.strip() for d in deps if d.strip()]
+
+
+def _resolve_from_lpmbuild_root(root: Path) -> list[str]:
+    scripts = sorted(root.glob("**/*.lpmbuild"))
+    graph: dict[str, set[str]] = {}
+    indegree: dict[str, int] = defaultdict(int)
+    reverse: dict[str, set[str]] = defaultdict(set)
+    names: set[str] = set()
+
+    for script in scripts:
+        name = script.stem
+        names.add(name)
+        deps = [d for d in _extract_depends_from_lpmbuild(script) if d in names or (root / d / f"{d}.lpmbuild").exists()]
+        graph[name] = set(deps)
+
+    for pkg, deps in graph.items():
+        indegree[pkg] = len(deps)
+        for dep in deps:
+            reverse[dep].add(pkg)
+
+    queue = deque(sorted(pkg for pkg in graph if indegree[pkg] == 0))
+    order: list[str] = []
+    while queue:
+        cur = queue.popleft()
+        order.append(cur)
+        for nxt in sorted(reverse.get(cur, set())):
+            indegree[nxt] -= 1
+            if indegree[nxt] == 0:
+                queue.append(nxt)
+
+    if len(order) != len(graph):
+        unresolved = sorted(set(graph) - set(order))
+        raise ValueError(f"cycle or unresolved dependency in lpmbuild metadata: {', '.join(unresolved)}")
+    return order
+
+
+def _resolve_build_plan(cfg: BootstrapConfig, state: Dict[str, Any]) -> Dict[str, Any]:
+    if not cfg.plan_file and not cfg.lpmbuild_root and not cfg.include_packages and not cfg.exclude_packages:
+        return {}
+
+    package_order: list[str] = []
+    source = ""
+    if cfg.plan_file:
+        payload = json.loads(cfg.plan_file.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            raw = payload.get("package_order") or payload.get("packages") or []
+        else:
+            raw = payload
+        if not isinstance(raw, list):
+            raise ValueError("plan file must be a list or contain package_order/packages list")
+        package_order = [str(p).strip() for p in raw if str(p).strip()]
+        source = f"plan-file:{cfg.plan_file}"
+    elif cfg.lpmbuild_root:
+        package_order = _resolve_from_lpmbuild_root(cfg.lpmbuild_root)
+        source = f"lpmbuild-root:{cfg.lpmbuild_root}"
+
+    include = set(cfg.include_packages)
+    exclude = set(cfg.exclude_packages)
+    if include:
+        package_order = [p for p in package_order if p in include]
+    if exclude:
+        package_order = [p for p in package_order if p not in exclude]
+
+    if not package_order:
+        raise ValueError("resolved build plan produced an empty package list")
+
+    return {
+        "source": source,
+        "package_order": package_order,
+        "include_packages": sorted(include),
+        "exclude_packages": sorted(exclude),
+    }
+
 
 def _as_path(value: Any) -> Optional[Path]:
     if value in (None, ""):
@@ -233,6 +337,10 @@ def load_config(cli_args: Any) -> BootstrapConfig:
         efi_dir=_as_path(pick("efi_dir")),
         boot_device=pick("boot_device"),
         network=pick("network"),
+        plan_file=_as_path(pick("plan_file")),
+        lpmbuild_root=_as_path(pick("lpmbuild_root")),
+        include_packages=_parse_pkg_list(pick("include_packages")),
+        exclude_packages=_parse_pkg_list(pick("exclude_packages")),
     )
 
 
@@ -268,7 +376,7 @@ def completed_stages(state: Dict[str, Any]) -> set[str]:
     return {str(s) for s in raw if isinstance(s, str)}
 
 
-def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState) -> None:
+def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState, state: Dict[str, Any]) -> Dict[str, Any]:
     _log(cfg, f"running stage={stage.value}")
     boot_mode = "uefi" if cfg.efi_dir else "bios"
     kernel = cfg.kernel or "linux"
@@ -325,8 +433,14 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
             dst_root.mkdir(parents=True, exist_ok=True)
             subprocess.run(["cp", "-a", f"{src_root}/.", str(dst_root)], check=True)
 
+    elif stage == Stage.RESOLVE_BUILD_PLAN:
+        resolution = _resolve_build_plan(cfg, state)
+        if resolution:
+            state["plan_resolution"] = resolution
+            _log(cfg, f"resolved plan source={resolution['source']} packages={len(resolution['package_order'])}")
+
     elif stage == Stage.INSTALL_BASE:
-        cmd = generate_lpm_root_install_command(cfg.target, _bootstrap_packages(cfg, kernel, network_backend, bootloader))
+        cmd = generate_lpm_root_install_command(cfg.target, _bootstrap_packages(cfg, kernel, network_backend, bootloader, state))
         if cfg.dry_run:
             print(f"[bootstrap][dry-run] {' '.join(cmd)}")
         else:
@@ -358,8 +472,10 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
             subprocess.run(chroot_cmd, check=True)
 
     elif stage == Stage.FINAL_CHECK:
-        summary = verify_bootstrap(cfg.target, kernel, boot_mode, package_count=0, devices=devices)
+        pkgs = _bootstrap_packages(cfg, kernel, network_backend, bootloader, state)
+        summary = verify_bootstrap(cfg.target, kernel, boot_mode, package_count=len(pkgs), devices=devices)
         print(json.dumps(summary, sort_keys=True))
+    return state
 
 
 def run_bootstrap(args: Any) -> int:
@@ -374,9 +490,10 @@ def run_bootstrap(args: Any) -> int:
             if cfg.resume and stage.value in done:
                 _log(cfg, f"skip completed stage={stage.value}")
                 continue
-            _run_stage(cfg, stage, mount_state)
+            state = _run_stage(cfg, stage, mount_state, state)
             done.add(stage.value)
-            save_state(cfg, {"completed_stages": sorted(done)})
+            state["completed_stages"] = sorted(done)
+            save_state(cfg, state)
         return 0
     finally:
         if not cfg.dry_run:
