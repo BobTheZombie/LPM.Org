@@ -238,6 +238,7 @@ from .resolver import CNF, CDCLSolver
 from .hooks import HookExecutionError, HookFailureMode, HookTransactionManager, _ensure_executable, load_hooks
 from .delta import apply_delta, find_cached_by_sha, file_sha256, zstd_version, version_at_least
 from . import bootstrap
+from . import chroot_helpers
 
 # =========================== Protected packages ===============================
 PROTECTED_FILE = Path("/etc/lpm/protected.json")
@@ -6724,6 +6725,22 @@ def cmd_bootstrap(args)->int:
     return bootstrap.run_bootstrap(args)
 
 
+def cmd_bootstrap_chroot(args) -> int:
+    return chroot_helpers.run_bootstrap_chroot(args)
+
+
+def cmd_installroot(args) -> int:
+    return chroot_helpers.run_installroot(args)
+
+
+def cmd_buildgen(args) -> int:
+    return chroot_helpers.run_buildgen(args)
+
+
+def cmd_buildchroot(args) -> int:
+    return chroot_helpers.run_buildchroot(args)
+
+
 def build_parser()->argparse.ArgumentParser:
     p=argparse.ArgumentParser(prog="lpm", description="Linux Package Manager with SAT solver, signatures, and .lpmbuild")
     p.add_argument(
@@ -6968,6 +6985,41 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--boot-device")
     sp.add_argument("--network")
     sp.set_defaults(func=cmd_bootstrap)
+
+    sp=sub.add_parser("bootstrap-chroot", help="Bootstrap a chroot target root")
+    sp.add_argument("--root", required=True, help="target root path")
+    sp.add_argument("--package", dest="packages", action="append", default=[], help="package name (repeatable)")
+    sp.add_argument("--manifest", help="path to package manifest input")
+    sp.add_argument("--cache-dir", default=CACHE_DIR, help="package cache directory")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--verbose", action="store_true")
+    sp.set_defaults(func=cmd_bootstrap_chroot)
+
+    sp=sub.add_parser("installroot", help="Install packages into a target root")
+    sp.add_argument("--root", required=True, help="target root path")
+    sp.add_argument("--package", dest="packages", action="append", default=[], help="package name (repeatable)")
+    sp.add_argument("--manifest", help="path to package manifest input")
+    sp.add_argument("--cache-dir", default=CACHE_DIR, help="package cache directory")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--verbose", action="store_true")
+    sp.set_defaults(func=cmd_installroot)
+
+    sp=sub.add_parser("buildgen", help="Generate build artifacts for chroot builds")
+    sp.add_argument("--root", required=True, help="target root path")
+    sp.add_argument("--source", required=True, help="path to .lpmbuild source")
+    sp.add_argument("--output-dir", default=str(Path.cwd()), help="output directory")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--verbose", action="store_true")
+    sp.set_defaults(func=cmd_buildgen)
+
+    sp=sub.add_parser("buildchroot", help="Build package(s) within a target chroot")
+    sp.add_argument("--root", required=True, help="target root path")
+    sp.add_argument("--source", required=True, help="path to .lpmbuild source")
+    sp.add_argument("--cache-dir", default=CACHE_DIR, help="package cache directory")
+    sp.add_argument("--output-dir", default=str(Path.cwd()), help="output directory")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--verbose", action="store_true")
+    sp.set_defaults(func=cmd_buildchroot)
 
     sp = sub.add_parser("protected", help="Show or edit protected package list")
     sp.add_argument("action", choices=["list", "add", "remove"])
