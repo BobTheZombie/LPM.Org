@@ -168,6 +168,22 @@ def generate_chroot_command(target: Path, command: list[str]) -> list[str]:
     return ["chroot", str(target), *command]
 
 
+def generate_installroot_command(
+    target: Path,
+    packages: list[str],
+    releasever: str | None,
+    repos: list[str] | None,
+) -> list[str]:
+    cmd = ["dnf", "-y", "--installroot", str(target)]
+    if releasever:
+        cmd.extend(["--releasever", releasever])
+    if repos:
+        for repo in repos:
+            cmd.extend(["--repo", repo])
+    cmd.extend(["install", *packages])
+    return cmd
+
+
 def _as_path(value: Any) -> Optional[Path]:
     if value in (None, ""):
         return None
@@ -306,7 +322,7 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
 
     elif stage == Stage.INSTALL_BASE:
         base_pkgs = ["basesystem", "kernel", kernel, "grub", "NetworkManager"]
-        cmd = ["dnf", "-y", "--installroot", str(cfg.target), "install", *base_pkgs]
+        cmd = generate_installroot_command(cfg.target, base_pkgs, releasever=None, repos=None)
         if cfg.dry_run:
             print(f"[bootstrap][dry-run] {' '.join(cmd)}")
         else:
