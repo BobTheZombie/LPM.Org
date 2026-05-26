@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
@@ -248,17 +249,97 @@ def completed_stages(state: Dict[str, Any]) -> set[str]:
 
 def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState) -> None:
     _log(cfg, f"running stage={stage.value}")
-    if stage == Stage.VALIDATE and not cfg.target.exists() and not cfg.dry_run:
-        raise FileNotFoundError(f"target does not exist: {cfg.target}")
-    if stage == Stage.PREPARE_DIRS:
+    boot_mode = "uefi" if cfg.efi_dir else "bios"
+    kernel = cfg.kernel or "linux"
+    hostname = cfg.hostname or "localhost"
+    locale = cfg.locale or "en_US.UTF-8"
+    keymap = cfg.keymap or "us"
+    timezone = cfg.timezone or "UTC"
+    network_backend = cfg.network or "NetworkManager"
+    bootloader = cfg.bootloader or "grub"
+    devices: dict[str, str] = {}
+    if cfg.boot_device:
+        parts = [part.strip() for part in str(cfg.boot_device).split(",") if part.strip()]
+        for part in parts:
+            if "=" in part:
+                k, v = part.split("=", 1)
+                devices[k.strip().lower()] = v.strip()
+            elif "root" not in devices:
+                devices["root"] = part
+    if stage == Stage.VALIDATE:
+        if not cfg.target.exists() and not cfg.dry_run:
+            raise FileNotFoundError(f"target does not exist: {cfg.target}")
+        missing = [tool for tool in ("dnf", "chroot", "mount", "umount") if shutil.which(tool) is None]
+        if missing:
+            raise RuntimeError(f"missing required tools: {', '.join(missing)}")
+        if boot_mode not in {"uefi", "bios"}:
+            raise ValueError(f"unsupported boot mode: {boot_mode}")
+        if boot_mode == "uefi" and cfg.efi_dir is None:
+            raise ValueError("UEFI mode requires --efi-dir")
+        if "root" not in devices and not cfg.dry_run:
+            raise ValueError("boot device mapping must include root=DEVICE")
+        if boot_mode == "uefi" and "efi" not in devices:
+            _log(cfg, "warning: missing efi=DEVICE mapping; fstab/verification will omit EFI UUID")
+
+    elif stage == Stage.PREPARE_DIRS:
+        dirs = [cfg.target / "etc", cfg.target / "var", cfg.target / "usr", cfg.target / "boot"]
+        if boot_mode == "uefi" and cfg.efi_dir is not None:
+            dirs.append(cfg.target / cfg.efi_dir.relative_to("/") if cfg.efi_dir.is_absolute() else cfg.target / cfg.efi_dir)
+        for d in dirs:
+            if cfg.dry_run:
+                print(f"[bootstrap][dry-run] mkdir -p {d}")
+            else:
+                d.mkdir(parents=True, exist_ok=True)
         if cfg.dry_run:
             print("[bootstrap][dry-run] mount chroot api filesystems")
         else:
             mount_chroot_api(cfg.target, mount_state)
-    if stage == Stage.SEED_LPM and cfg.dry_run:
-        print("[bootstrap][dry-run] package plan: seed lpm into target")
-    if stage == Stage.INSTALL_BASE and cfg.dry_run:
-        print("[bootstrap][dry-run] package plan: install base system")
+
+    elif stage == Stage.SEED_LPM:
+        src_root = Path(__file__).resolve().parents[1]
+        dst_root = cfg.target / "usr/lib/lpm"
+        if cfg.dry_run:
+            print(f"[bootstrap][dry-run] seed lpm from {src_root} to {dst_root}")
+        else:
+            dst_root.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["cp", "-a", f"{src_root}/.", str(dst_root)], check=True)
+
+    elif stage == Stage.INSTALL_BASE:
+        base_pkgs = ["basesystem", "kernel", kernel, "grub", "NetworkManager"]
+        cmd = ["dnf", "-y", "--installroot", str(cfg.target), "install", *base_pkgs]
+        if cfg.dry_run:
+            print(f"[bootstrap][dry-run] {' '.join(cmd)}")
+        else:
+            subprocess.run(cmd, check=True)
+
+    elif stage == Stage.CONFIGURE_SYSTEM:
+        if cfg.dry_run:
+            print("[bootstrap][dry-run] write system identity/network/fstab")
+        else:
+            write_system_identity(cfg.target, hostname, locale, keymap, timezone)
+            write_network_config(cfg.target, backend=network_backend, use_iwd=(network_backend == "iwd"))
+            generate_fstab(cfg.target, boot_mode, cfg.efi_dir, devices)
+
+    elif stage == Stage.GENERATE_INITRAMFS:
+        if cfg.dry_run:
+            print("[bootstrap][dry-run] generate mkinitcpio and run mkinitcpio -P in chroot")
+        else:
+            generate_mkinitcpio(cfg.target, kernel)
+            subprocess.run(generate_chroot_command(cfg.target, ["mkinitcpio", "-P"]), check=True)
+
+    elif stage == Stage.INSTALL_BOOTLOADER:
+        if bootloader != "grub":
+            raise ValueError(f"unsupported bootloader: {bootloader}")
+        cmd = grub_install_command(boot_mode, cfg.efi_dir, devices.get("boot") or cfg.boot_device)
+        chroot_cmd = generate_chroot_command(cfg.target, cmd)
+        if cfg.dry_run:
+            print(f"[bootstrap][dry-run] {' '.join(chroot_cmd)}")
+        else:
+            subprocess.run(chroot_cmd, check=True)
+
+    elif stage == Stage.FINAL_CHECK:
+        summary = verify_bootstrap(cfg.target, kernel, boot_mode, package_count=0, devices=devices)
+        print(json.dumps(summary, sort_keys=True))
 
 
 def run_bootstrap(args: Any) -> int:
