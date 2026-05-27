@@ -79,3 +79,48 @@ def test_buildchroot_missing_script_fails(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="Missing .lpmbuild scripts for build targets"):
         chroot_helpers.run_buildchroot(args)
+
+
+def test_buildchroot_installs_built_packages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    script = tmp_path / "packages" / "demo" / "demo.lpmbuild"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("# demo\n", encoding="utf-8")
+
+    out = tmp_path / "out"
+    out.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "package_order": ["demo"],
+        "packages": [{"name": "demo", "script": str(script), "depends": []}],
+    }
+    (out / "build-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    built_blob = tmp_path / "cache" / "demo-1-any.zst"
+
+    from lpm import app as lpm_app
+
+    def fake_run_lpmbuild(*_args, **_kwargs):
+        built_blob.parent.mkdir(parents=True, exist_ok=True)
+        built_blob.write_text("blob", encoding="utf-8")
+        return built_blob, 0.0, built_blob.stat().st_size, []
+
+    install_calls: list[list[str]] = []
+
+    def fake_run_root_install(_root: Path, packages: list[str], *, dry_run: bool = False):
+        install_calls.append(list(packages))
+        return {"returncode": 0, "dry_run": dry_run}
+
+    monkeypatch.setattr(lpm_app, "run_lpmbuild", fake_run_lpmbuild)
+    monkeypatch.setattr(chroot_helpers, "_run_root_install", fake_run_root_install)
+
+    args = Namespace(
+        root=str(tmp_path / "root"),
+        source=str(tmp_path / "packages"),
+        cache_dir=str(tmp_path / "cache"),
+        output_dir=str(out),
+        dry_run=False,
+        verbose=False,
+    )
+    rc = chroot_helpers.run_buildchroot(args)
+    assert rc == 0
+    assert install_calls == [["demo"]]
+    assert (out / "repo" / built_blob.name).exists()
