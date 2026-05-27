@@ -237,10 +237,18 @@ def run_buildchroot(args: Any) -> int:
 
     staged_repo = output_dir / "repo"
     staged_repo.mkdir(parents=True, exist_ok=True)
+    built_package_names: list[str] = []
     for idx, pkg in enumerate(packages, start=1):
         name = str(pkg.get("name", ""))
         script = Path(str(pkg.get("script", "")))
         print(f"[buildchroot {idx}/{len(packages)}] {name}")
         blob, _elapsed, _size, _splits = lpm_app.run_lpmbuild(script, outdir=cache_dir, prompt_install=False, build_deps=True)
         shutil.copy2(blob, staged_repo / Path(blob).name)
-    return 0
+        if name:
+            built_package_names.append(name)
+
+    # Populate the target chroot with the packages represented by the
+    # lpmbuild set so a fresh root can be brought up directly from sources.
+    install_result = _run_root_install(root, built_package_names)
+    print(json.dumps(install_result, indent=2, sort_keys=True))
+    return int(install_result.get("returncode", 0))
