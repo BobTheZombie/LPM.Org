@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -126,7 +127,75 @@ def run_buildgen(args: Any) -> int:
         _echo("[buildgen] dry-run enabled; no filesystem changes", verbose=verbose)
         return 0
 
+    from lpm import app as lpm_app
+
+    scripts = sorted(source.glob("*/**/*.lpmbuild")) if source.is_dir() else []
+    if not scripts:
+        raise ValueError(f"no .lpmbuild scripts found under: {source}")
+
+    meta_by_pkg: dict[str, dict[str, Any]] = {}
+    deps_by_pkg: dict[str, set[str]] = {}
+    for script in scripts:
+        scal, arr, _maps = lpm_app._capture_lpmbuild_metadata(script)
+        name = str(scal.get("NAME") or scal.get("name") or "").strip()
+        if not name:
+            continue
+        dep_fields = []
+        for key in ("REQUIRES", "requires", "BUILD_REQUIRES", "build_requires"):
+            dep_fields.extend([str(x) for x in (arr.get(key) or []) if x])
+        dep_names: set[str] = set()
+        for raw in dep_fields:
+            try:
+                dep_names.add(lpm_app.parse_dep_expr(raw).name)
+                continue
+            except Exception:
+                pass
+            token = str(raw).strip().split()[0] if str(raw).strip() else ""
+            token = token.split(">=")[0].split("<=")[0].split("=")[0].split("<")[0].split(">")[0]
+            if token:
+                dep_names.add(token)
+        meta_by_pkg[name] = {
+            "name": name,
+            "version": str(scal.get("VERSION") or scal.get("version") or ""),
+            "script": str(script),
+            "depends": sorted(dep_names),
+        }
+        deps_by_pkg[name] = set(dep_names)
+
+    known = set(meta_by_pkg)
+    for name, deps in deps_by_pkg.items():
+        deps.intersection_update(known)
+        meta_by_pkg[name]["depends"] = sorted(deps)
+
+    indeg = {k: 0 for k in known}
+    rev: dict[str, set[str]] = {k: set() for k in known}
+    for pkg in sorted(known):
+        for dep in sorted(deps_by_pkg[pkg]):
+            indeg[pkg] += 1
+            rev[dep].add(pkg)
+    queue = sorted([k for k, d in indeg.items() if d == 0])
+    order: list[str] = []
+    while queue:
+        cur = queue.pop(0)
+        order.append(cur)
+        for nxt in sorted(rev[cur]):
+            indeg[nxt] -= 1
+            if indeg[nxt] == 0:
+                queue.append(nxt)
+                queue.sort()
+    if len(order) != len(known):
+        remaining = sorted([k for k, d in indeg.items() if d > 0])
+        raise ValueError("Cycle detected in buildgen dependency graph. Cycle groups: " + ", ".join(remaining))
+
     output_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "source": str(source),
+        "package_order": order,
+        "packages": [meta_by_pkg[n] for n in order],
+    }
+    manifest_path = output_dir / "build-manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(str(manifest_path))
     return 0
 
 
@@ -145,7 +214,33 @@ def run_buildchroot(args: Any) -> int:
         _echo("[buildchroot] dry-run enabled; no filesystem changes", verbose=verbose)
         return 0
 
+    from lpm import app as lpm_app
+
+    manifest_path = output_dir / "build-manifest.json"
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    else:
+        tmp_args = type("BuildGenArgs", (), {
+            "root": str(root), "source": str(source), "output_dir": str(output_dir), "dry_run": False, "verbose": verbose
+        })()
+        run_buildgen(tmp_args)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    packages = manifest.get("packages", []) or []
+    missing = [p.get("script") for p in packages if not Path(str(p.get("script", ""))).exists()]
+    if missing:
+        raise ValueError("Missing .lpmbuild scripts for build targets: " + ", ".join(sorted(str(x) for x in missing)))
+
     root.mkdir(parents=True, exist_ok=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    staged_repo = output_dir / "repo"
+    staged_repo.mkdir(parents=True, exist_ok=True)
+    for idx, pkg in enumerate(packages, start=1):
+        name = str(pkg.get("name", ""))
+        script = Path(str(pkg.get("script", "")))
+        print(f"[buildchroot {idx}/{len(packages)}] {name}")
+        blob, _elapsed, _size, _splits = lpm_app.run_lpmbuild(script, outdir=cache_dir, prompt_install=False, build_deps=True)
+        shutil.copy2(blob, staged_repo / Path(blob).name)
     return 0
