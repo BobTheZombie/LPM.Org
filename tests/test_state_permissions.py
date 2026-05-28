@@ -1,4 +1,5 @@
 import importlib
+import os
 import sys
 from pathlib import Path
 
@@ -27,3 +28,16 @@ def test_state_db_is_group_writable(tmp_path, monkeypatch):
     assert (state_dir.stat().st_mode & 0o777) == 0o775
     assert (db_path.stat().st_mode & 0o777) == 0o664
 
+
+def test_operation_phase_enforces_umask_for_unprivileged(tmp_path):
+    from src.lpm.fs_ops import operation_phase
+
+    probe = tmp_path / "probe"
+    original = os.umask(0o077)
+    try:
+        with operation_phase(privileged=False):
+            probe.mkdir()
+    finally:
+        os.umask(original)
+
+    assert (probe.stat().st_mode & 0o777) == 0o755
