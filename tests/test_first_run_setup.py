@@ -3,6 +3,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import lpm
@@ -33,6 +35,64 @@ def test_main_triggers_setup_when_conf_missing(monkeypatch, tmp_path):
 
     assert captured.get("called") is True
     assert conf_path.exists()
+
+
+def test_wizard_permission_denied_reports_actionable_message(monkeypatch, tmp_path):
+    conf_path = tmp_path / "etc" / "lpm" / "lpm.conf"
+    output = io.StringIO()
+
+    monkeypatch.setattr(first_run_ui, "_build_fields", lambda: ([], []))
+
+    def deny_save(settings, *, path):
+        raise PermissionError("blocked")
+
+    monkeypatch.setattr(first_run_ui.config, "save_conf", deny_save)
+
+    with pytest.raises(first_run_ui.FirstRunSetupError) as excinfo:
+        first_run_ui.run_first_run_wizard(
+            conf_path=conf_path,
+            input_stream=io.StringIO(),
+            output_stream=output,
+            metadata={"version": "test", "build": "test", "build_date": ""},
+            init_system="unknown",
+            cpu_info={
+                "vendor": "",
+                "family": "",
+                "march": "generic",
+                "mtune": "generic",
+            },
+        )
+
+    text = output.getvalue()
+    assert str(conf_path) in text
+    assert "sudo lpm setup" in text
+    assert str(conf_path) in str(excinfo.value)
+    assert "sudo lpm setup" in str(excinfo.value)
+
+
+def test_main_reports_first_run_setup_errors_without_traceback(monkeypatch, tmp_path, capsys):
+    import importlib
+
+    app = importlib.import_module("lpm.app")
+
+    conf_path = tmp_path / "missing.conf"
+    message = first_run_ui.permission_denied_message(conf_path)
+
+    def fake_wizard(*args, **kwargs):
+        raise app.FirstRunSetupError(message)
+
+    monkeypatch.setattr(lpm, "CONF_FILE", conf_path, raising=False)
+    monkeypatch.setattr(lpm, "run_first_run_wizard", fake_wizard)
+    monkeypatch.setattr(lpm, "cmd_repolist", lambda args: None)
+
+    with pytest.raises(SystemExit) as excinfo:
+        lpm.main(["repolist"])
+
+    captured = capsys.readouterr()
+    assert excinfo.value.code == 2
+    assert str(conf_path) in captured.err
+    assert "sudo lpm setup" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):

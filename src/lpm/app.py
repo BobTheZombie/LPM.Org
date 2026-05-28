@@ -228,7 +228,7 @@ from .config import (
 initialize_state()
 from fs import read_json, write_json, urlread
 from installgen import generate_install_script
-from first_run_ui import run_first_run_wizard
+from first_run_ui import FirstRunSetupError, run_first_run_wizard
 import maintainer_mode
 from . import config as _config
 from .atomic_io import atomic_replace, safe_write
@@ -7048,14 +7048,16 @@ def main(argv=None):
     if cmd is None:
         parser.error("a subcommand is required")
     conf_file = _resolve_lpm_attr("CONF_FILE", CONF_FILE)
-    if cmd != "setup" and not conf_file.exists():
-        _resolve_lpm_attr("run_first_run_wizard", run_first_run_wizard)()
     try:
+        if cmd != "setup" and not conf_file.exists():
+            _resolve_lpm_attr("run_first_run_wizard", run_first_run_wizard)()
         if cmd in _PRIVILEGED_COMMANDS:
             with operation_phase(privileged=True):
                 args.func(args)
         else:
             args.func(args)
+    except FirstRunSetupError as e:
+        die(str(e))
     except ResolutionError as e:
         die(f"dependency resolution failed: {e}")
 
