@@ -231,7 +231,7 @@ from installgen import generate_install_script
 from first_run_ui import run_first_run_wizard
 import maintainer_mode
 from . import config as _config
-from .atomic_io import atomic_replace
+from .atomic_io import atomic_replace, safe_write
 from .fs_ops import operation_phase
 from .privileges import privilege_info, privileged_section, privileges_enabled
 from .resolver import CNF, CDCLSolver
@@ -2580,10 +2580,16 @@ def build_package(stagedir: Path, meta: PkgMeta, out: Path, sign=True):
     mani_path = stagedir / ".lpm-manifest.json"
     meta_dict = dataclasses.asdict(meta)
 
-    with meta_path.open("w", encoding="utf-8") as f:
-        json.dump(meta_dict, f, indent=2, sort_keys=True)
-    with mani_path.open("w", encoding="utf-8") as f:
-        json.dump(mani, f, indent=2)
+    safe_write(
+        meta_path,
+        json.dumps(meta_dict, ensure_ascii=False, indent=2, sort_keys=True),
+        mode=0o644,
+    )
+    safe_write(
+        mani_path,
+        json.dumps(mani, ensure_ascii=False, indent=2),
+        mode=0o644,
+    )
 
     # Package with tar + zstd (with Python fallback)
     if use_fallback:
