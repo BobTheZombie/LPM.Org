@@ -11,6 +11,19 @@ from typing import Callable, Dict, Iterable, Mapping, Optional, TextIO
 from lpm import config
 
 
+class FirstRunSetupError(RuntimeError):
+    """Raised when first-run setup cannot persist a usable configuration."""
+
+
+def permission_denied_message(conf_path: Path) -> str:
+    """Return actionable guidance for configuration write permission failures."""
+
+    return (
+        f'Permission denied writing {conf_path}. '
+        'Re-run "sudo lpm setup" or create the config as root.'
+    )
+
+
 @dataclass(frozen=True)
 class ConfigField:
     """Description of an interactive configuration field."""
@@ -583,10 +596,16 @@ def run_first_run_wizard(
             selections[field.key] = value
 
     output_stream.write("\nSaving configuration...\n")
-    config.save_conf(selections, path=conf_path)
+    try:
+        config.save_conf(selections, path=conf_path)
+    except PermissionError as exc:
+        message = permission_denied_message(conf_path)
+        output_stream.write(f"{message}\n")
+        output_stream.flush()
+        raise FirstRunSetupError(message) from exc
     output_stream.write(f"Configuration written to {conf_path}\n")
     output_stream.flush()
     return selections
 
 
-__all__ = ["run_first_run_wizard"]
+__all__ = ["FirstRunSetupError", "permission_denied_message", "run_first_run_wizard"]
