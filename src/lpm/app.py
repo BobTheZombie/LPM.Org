@@ -6562,7 +6562,8 @@ def cmd_protected(a):
 
 
 def cmd_setup(_):
-    _resolve_lpm_attr("run_first_run_wizard", run_first_run_wizard)()
+    with operation_phase(privileged=True):
+        _resolve_lpm_attr("run_first_run_wizard", run_first_run_wizard)()
 
 
 # =========================== Maintainer spec generation =======================
@@ -7050,7 +7051,8 @@ def main(argv=None):
     conf_file = _resolve_lpm_attr("CONF_FILE", CONF_FILE)
     try:
         if cmd != "setup" and not conf_file.exists():
-            _resolve_lpm_attr("run_first_run_wizard", run_first_run_wizard)()
+            with operation_phase(privileged=True):
+                _resolve_lpm_attr("run_first_run_wizard", run_first_run_wizard)()
         if cmd in _PRIVILEGED_COMMANDS:
             with operation_phase(privileged=True):
                 args.func(args)

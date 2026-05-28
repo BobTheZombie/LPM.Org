@@ -1,3 +1,4 @@
+import contextlib
 import io
 import json
 import sys
@@ -10,6 +11,118 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import lpm
 import src.config as config
 import src.first_run_ui as first_run_ui
+
+
+@contextlib.contextmanager
+def _recording_operation_phase(events, *, active_uid=None):
+    events.append(("enter", True, active_uid["current"] if active_uid else None))
+    previous_uid = None
+    if active_uid is not None:
+        previous_uid = active_uid["current"]
+        active_uid["current"] = active_uid["privileged"]
+    try:
+        yield
+    finally:
+        if active_uid is not None:
+            active_uid["current"] = previous_uid
+        events.append(("exit", True, active_uid["current"] if active_uid else None))
+
+
+def test_setup_command_enters_privileged_section_before_wizard(monkeypatch):
+    import importlib
+
+    app = importlib.import_module("lpm.app")
+    events = []
+
+    def fake_operation_phase(*, privileged=True):
+        assert privileged is True
+        return _recording_operation_phase(events)
+
+    def fake_wizard(*args, **kwargs):
+        events.append(("wizard", None, None))
+        return {"ARCH": "x86_64"}
+
+    monkeypatch.setattr(app, "operation_phase", fake_operation_phase)
+    monkeypatch.setattr(app, "run_first_run_wizard", fake_wizard)
+
+    lpm.main(["setup"])
+
+    assert events == [
+        ("enter", True, None),
+        ("wizard", None, None),
+        ("exit", True, None),
+    ]
+
+
+def test_auto_setup_enters_privileged_section_before_wizard(monkeypatch, tmp_path):
+    import importlib
+
+    app = importlib.import_module("lpm.app")
+    conf_path = tmp_path / "missing.conf"
+    events = []
+
+    def fake_operation_phase(*, privileged=True):
+        assert privileged is True
+        return _recording_operation_phase(events)
+
+    def fake_wizard(*args, **kwargs):
+        events.append(("wizard", None, None))
+        conf_path.write_text("ARCH=x86_64\n", encoding="utf-8")
+        return {"ARCH": "x86_64"}
+
+    def fake_repolist(args):
+        events.append(("command", None, None))
+
+    monkeypatch.setattr(app, "CONF_FILE", conf_path, raising=False)
+    monkeypatch.setattr(lpm, "CONF_FILE", conf_path, raising=False)
+    monkeypatch.setattr(app, "operation_phase", fake_operation_phase)
+    monkeypatch.setattr(app, "run_first_run_wizard", fake_wizard)
+    monkeypatch.setattr(app, "cmd_repolist", fake_repolist)
+
+    lpm.main(["repolist"])
+
+    assert events == [
+        ("enter", True, None),
+        ("wizard", None, None),
+        ("exit", True, None),
+        ("command", None, None),
+    ]
+
+
+def test_auto_setup_re_drops_sudo_style_privileges_before_command(monkeypatch, tmp_path):
+    import importlib
+
+    app = importlib.import_module("lpm.app")
+    conf_path = tmp_path / "missing.conf"
+    # Simulate the privilege manager's sudo path: the process started as root,
+    # then module initialization dropped the effective UID before command work.
+    active_uid = {"started": 0, "privileged": 0, "current": 1000}
+    seen = []
+
+    def fake_operation_phase(*, privileged=True):
+        assert privileged is True
+        return _recording_operation_phase(seen, active_uid=active_uid)
+
+    def fake_wizard(*args, **kwargs):
+        seen.append(("wizard_euid", active_uid["current"]))
+        conf_path.write_text("ARCH=x86_64\n", encoding="utf-8")
+        return {"ARCH": "x86_64"}
+
+    def fake_repolist(args):
+        seen.append(("command_euid", active_uid["current"]))
+
+    monkeypatch.setattr(app, "CONF_FILE", conf_path, raising=False)
+    monkeypatch.setattr(lpm, "CONF_FILE", conf_path, raising=False)
+    monkeypatch.setattr(app, "operation_phase", fake_operation_phase)
+    monkeypatch.setattr(app, "run_first_run_wizard", fake_wizard)
+    monkeypatch.setattr(app, "cmd_repolist", fake_repolist)
+
+    lpm.main(["repolist"])
+
+    assert active_uid["started"] == 0
+    assert ("wizard_euid", 0) in seen
+    assert ("command_euid", 1000) in seen
+    assert active_uid["current"] == 1000
 
 
 def test_main_triggers_setup_when_conf_missing(monkeypatch, tmp_path):
