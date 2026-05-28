@@ -232,7 +232,7 @@ from first_run_ui import run_first_run_wizard
 import maintainer_mode
 from . import config as _config
 from .atomic_io import atomic_replace, safe_write
-from .fs_ops import operation_phase
+from .fs_ops import operation_phase, prepare_directory
 from .privileges import privilege_info, privileged_section, privileges_enabled
 from .resolver import CNF, CDCLSolver
 from .hooks import HookExecutionError, HookFailureMode, HookTransactionManager, _ensure_executable, load_hooks
@@ -4276,18 +4276,18 @@ def run_lpmbuild(
     srcroot_base = Path(f"/tmp/src-{name}")
 
     def _prepare_directory(base: Path, *, label: str) -> Path:
-        try:
-            if base.exists():
-                shutil.rmtree(base)
-            base.mkdir(parents=True, exist_ok=True)
-            return base
-        except PermissionError as exc:
+        prepared = prepare_directory(
+            base,
+            privileged=True,
+            reset=True,
+            fallback_prefix=f"lpm-{label}-{name}-",
+        )
+        if prepared != base:
             warn(
-                "[lpm] Permission denied while preparing %s (%s); "
-                "falling back to a temporary directory" % (base, exc)
+                "[lpm] Permission denied while preparing %s; "
+                "falling back to a temporary directory %s" % (base, prepared)
             )
-            fallback = Path(tempfile.mkdtemp(prefix=f"lpm-{label}-{name}-"))
-            return fallback
+        return prepared
 
     stagedir = _prepare_directory(stagedir_base, label="pkg")
     buildroot = _prepare_directory(buildroot_base, label="build")
@@ -4558,7 +4558,7 @@ def run_lpmbuild(
                 target_name = alias or os.path.basename(source_ref.rstrip("/"))
                 if target_name:
                     target_path = srcroot / target_name
-                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    prepare_directory(target_path.parent, privileged=False)
                     shutil.copy2(local_candidate, target_path)
                 continue
 
@@ -4571,7 +4571,7 @@ def run_lpmbuild(
                 target_name = alias or os.path.basename(source_ref.rstrip("/"))
                 if target_name:
                     target_path = srcroot / target_name
-                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    prepare_directory(target_path.parent, privileged=False)
                     shutil.copy2(local_candidate, target_path)
                 continue
 
@@ -4629,7 +4629,7 @@ def run_lpmbuild(
 
     if archive_path is not None:
         target_dir = srcroot / f"{name}-{version}"
-        target_dir.mkdir(parents=True, exist_ok=True)
+        prepare_directory(target_dir, privileged=False)
 
         def _extract_with_tarfile(path: Path, dest: Path) -> None:
             def _strip_member(name: str) -> Optional[str]:
@@ -5418,7 +5418,7 @@ def cmd_splitpkg(a):
         out = Path(a.output)
     else:
         out = outdir / f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}"
-    out.parent.mkdir(parents=True, exist_ok=True)
+    prepare_directory(out.parent, privileged=False)
 
     install_sh = stagedir / ".lpm-install.sh"
     if install_sh.exists():

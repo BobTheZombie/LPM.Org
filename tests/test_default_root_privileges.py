@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from lpm import app as lpm
+from lpm.fs_ops import prepare_directory
 
 
 def _raise_die(message: str, _code: int = 2):
@@ -125,3 +126,16 @@ def test_removepkg_default_root_dry_run_does_not_use_privileged_section(monkeypa
 
     lpm.removepkg("demo", root=Path(lpm.DEFAULT_ROOT), dry_run=True)
     assert calls == []
+
+
+def test_prepare_directory_permission_fallback(tmp_path, monkeypatch):
+    target = tmp_path / "blocked"
+    fallback = tmp_path / "fallback-dir"
+
+    def _raise_mkdir(*_args, **_kwargs):
+        raise PermissionError("blocked")
+
+    monkeypatch.setattr(Path, "mkdir", _raise_mkdir)
+    monkeypatch.setattr(lpm.tempfile, "mkdtemp", lambda prefix: str(fallback))
+    result = prepare_directory(target, privileged=True, reset=True, fallback_prefix="lpm-test-")
+    assert result == fallback

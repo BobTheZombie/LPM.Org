@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Union
@@ -15,15 +17,42 @@ def operation_phase(privileged: bool = True):
 
     managers = []
     try:
+        managers.append(enforce_umask(0o022))
         if privileged:
             managers.append(privileged_section())
-            managers.append(enforce_umask(0o022))
         for cm in managers:
             cm.__enter__()
         yield
     finally:
         for cm in reversed(managers):
             cm.__exit__(None, None, None)
+
+
+def prepare_directory(
+    path: Union[str, Path],
+    *,
+    privileged: bool,
+    reset: bool = False,
+    fallback_prefix: Optional[str] = None,
+) -> Path:
+    """Create *path* with deterministic umask and optional reset/fallback behavior.
+
+    When *privileged* is ``True`` this runs in an elevated section and typically
+    yields root-owned directories. When ``False`` it runs under current
+    privileges and ownership follows the current effective user.
+    """
+
+    target = Path(path)
+    try:
+        with operation_phase(privileged=privileged):
+            if reset and target.exists():
+                shutil.rmtree(target)
+            target.mkdir(parents=True, exist_ok=True)
+        return target
+    except PermissionError:
+        if not fallback_prefix:
+            raise
+        return Path(tempfile.mkdtemp(prefix=fallback_prefix))
 
 
 def write_db_json(path: Union[str, Path], obj: Any) -> Path:
@@ -103,6 +132,7 @@ def materialize_from_manifest(
 
 __all__ = [
     "operation_phase",
+    "prepare_directory",
     "write_db_json",
     "write_db_bytes",
     "write_manifest_file",
