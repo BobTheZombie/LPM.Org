@@ -41,6 +41,20 @@ def test_state_tracking_dry_run(tmp_path: Path) -> None:
     assert not cfg.state_path.exists()
 
 
+def test_parse_toml_reads_bootstrap_section(tmp_path: Path) -> None:
+    config = tmp_path / "bootstrap.toml"
+    config.write_text(
+        "[bootstrap]\n"
+        "target = '/mnt/lumin'\n"
+        "hostname = 'lumin'\n",
+        encoding="utf-8",
+    )
+
+    data = bootstrap._parse_toml(config)
+
+    assert data == {"target": "/mnt/lumin", "hostname": "lumin"}
+
+
 def test_grub_install_requires_boot_device_for_bios() -> None:
     with pytest.raises(ValueError):
         bootstrap.grub_install_command("bios", None, None)
@@ -67,7 +81,7 @@ def test_install_base_uses_lpm_not_dnf(monkeypatch, tmp_path: Path) -> None:
         return Result()
 
     monkeypatch.setattr(bootstrap.subprocess, 'run', fake_run)
-    bootstrap._run_stage(cfg, bootstrap.Stage.INSTALL_BASE, bootstrap.ChrootMountState())
+    bootstrap._run_stage(cfg, bootstrap.Stage.INSTALL_BASE, bootstrap.ChrootMountState(), {})
     assert calls
     assert calls[0][0] == 'lpm'
     assert 'dnf' not in calls[0]

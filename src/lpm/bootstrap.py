@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
@@ -14,7 +15,10 @@ from typing import Any, Dict, Optional
 
 from lpm.chroot import ChrootMountState, mount_chroot_api, umount_chroot_api
 
-import tomllib
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - exercised on Python 3.10
+    import tomli as tomllib
 
 
 class Stage(str, Enum):
