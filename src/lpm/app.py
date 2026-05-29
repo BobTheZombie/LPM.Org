@@ -232,7 +232,7 @@ import maintainer_mode
 from . import config as _config
 from .atomic_io import atomic_replace, safe_write
 from .fs_ops import operation_phase, prepare_directory
-from .privileges import privilege_info, privileged_section, privileges_enabled
+from .privileges import privilege_info, privileged_section, privileges_enabled, require_root
 from .resolver import CNF, CDCLSolver
 from .hooks import HookExecutionError, HookFailureMode, HookTransactionManager, _ensure_executable, load_hooks
 from .delta import apply_delta, find_cached_by_sha, file_sha256, zstd_version, version_at_least
@@ -4899,7 +4899,7 @@ def run_lpmbuild(
     return out, duration, phase_count, split_records
 
 # =========================== CLI commands =====================================
-_PRIVILEGED_COMMANDS = {"install", "installpkg", "remove", "upgrade", "upgradepkg", "rollback"}
+_PRIVILEGED_COMMANDS = {"install", "installpkg", "remove", "removepkg", "upgrade", "upgradepkg", "rollback"}
 _STATE_COMMANDS = {
     "autoremove",
     "bootstrap",
@@ -7102,6 +7102,7 @@ def main(argv=None):
         elif cmd in _STATE_COMMANDS:
             _initialize_cli_state()
         if cmd in _PRIVILEGED_COMMANDS:
+            require_root(cmd)
             with operation_phase(privileged=True):
                 args.func(args)
         else:
