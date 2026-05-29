@@ -42,14 +42,19 @@ def test_setup_command_enters_privileged_section_before_wizard(monkeypatch):
         events.append(("wizard", None, None))
         return {"ARCH": "x86_64"}
 
+    def fake_initialize_state():
+        events.append(("initialize_state", None, None))
+
     monkeypatch.setattr(app, "operation_phase", fake_operation_phase)
     monkeypatch.setattr(app, "run_first_run_wizard", fake_wizard)
+    monkeypatch.setattr(app, "initialize_state", fake_initialize_state)
 
     lpm.main(["setup"])
 
     assert events == [
         ("enter", True, None),
         ("wizard", None, None),
+        ("initialize_state", None, None),
         ("exit", True, None),
     ]
 
@@ -73,17 +78,22 @@ def test_auto_setup_enters_privileged_section_before_wizard(monkeypatch, tmp_pat
     def fake_repolist(args):
         events.append(("command", None, None))
 
+    def fake_initialize_state():
+        events.append(("initialize_state", None, None))
+
     monkeypatch.setattr(app, "CONF_FILE", conf_path, raising=False)
     monkeypatch.setattr(lpm, "CONF_FILE", conf_path, raising=False)
     monkeypatch.setattr(app, "operation_phase", fake_operation_phase)
     monkeypatch.setattr(app, "run_first_run_wizard", fake_wizard)
     monkeypatch.setattr(app, "cmd_repolist", fake_repolist)
+    monkeypatch.setattr(app, "initialize_state", fake_initialize_state)
 
     lpm.main(["repolist"])
 
     assert events == [
         ("enter", True, None),
         ("wizard", None, None),
+        ("initialize_state", None, None),
         ("exit", True, None),
         ("command", None, None),
     ]
@@ -111,24 +121,33 @@ def test_auto_setup_re_drops_sudo_style_privileges_before_command(monkeypatch, t
     def fake_repolist(args):
         seen.append(("command_euid", active_uid["current"]))
 
+    def fake_initialize_state():
+        seen.append(("initialize_euid", active_uid["current"]))
+
     monkeypatch.setattr(app, "CONF_FILE", conf_path, raising=False)
     monkeypatch.setattr(lpm, "CONF_FILE", conf_path, raising=False)
     monkeypatch.setattr(app, "operation_phase", fake_operation_phase)
     monkeypatch.setattr(app, "run_first_run_wizard", fake_wizard)
     monkeypatch.setattr(app, "cmd_repolist", fake_repolist)
+    monkeypatch.setattr(app, "initialize_state", fake_initialize_state)
 
     lpm.main(["repolist"])
 
     assert active_uid["started"] == 0
     assert ("wizard_euid", 0) in seen
+    assert ("initialize_euid", 0) in seen
     assert ("command_euid", 1000) in seen
     assert active_uid["current"] == 1000
 
 
 def test_main_triggers_setup_when_conf_missing(monkeypatch, tmp_path):
+    import importlib
+
+    app = importlib.import_module("lpm.app")
     conf_path = tmp_path / "lpm.conf"
     original_conf = dict(config.CONF)
     monkeypatch.setattr(config, "CONF_FILE", conf_path, raising=False)
+    monkeypatch.setattr(app, "CONF_FILE", conf_path, raising=False)
     monkeypatch.setattr(lpm, "CONF_FILE", conf_path, raising=False)
 
     captured = {}
@@ -138,8 +157,11 @@ def test_main_triggers_setup_when_conf_missing(monkeypatch, tmp_path):
         config.save_conf({"ARCH": "x86_64"}, path=conf_path)
         return {"ARCH": "x86_64"}
 
+    monkeypatch.setattr(app, "run_first_run_wizard", fake_wizard)
     monkeypatch.setattr(lpm, "run_first_run_wizard", fake_wizard)
-    monkeypatch.setattr(lpm, "cmd_repolist", lambda args: None)
+    monkeypatch.setattr(app, "cmd_repolist", lambda args: None)
+    monkeypatch.setattr(app, "initialize_state", lambda: None)
+    monkeypatch.setattr(lpm, "initialize_state", lambda: None)
 
     try:
         lpm.main(["repolist"])
@@ -197,6 +219,7 @@ def test_main_reports_first_run_setup_errors_without_traceback(monkeypatch, tmp_
     monkeypatch.setattr(lpm, "CONF_FILE", conf_path, raising=False)
     monkeypatch.setattr(lpm, "run_first_run_wizard", fake_wizard)
     monkeypatch.setattr(lpm, "cmd_repolist", lambda args: None)
+    monkeypatch.setattr(lpm, "initialize_state", lambda: None)
 
     with pytest.raises(SystemExit) as excinfo:
         lpm.main(["repolist"])
@@ -208,10 +231,101 @@ def test_main_reports_first_run_setup_errors_without_traceback(monkeypatch, tmp_
     assert "Traceback" not in captured.err
 
 
+def test_missing_config_non_root_reports_setup_before_state_init(monkeypatch, tmp_path, capsys):
+    import importlib
+
+    app = importlib.import_module("lpm.app")
+    conf_path = tmp_path / "etc" / "lpm" / "lpm.conf"
+    state_dir = tmp_path / "var" / "lib" / "lpm"
+    message = first_run_ui.permission_denied_message(conf_path)
+    active_uid = {"privileged": 1000, "current": 1000}
+    events = []
+
+    def fake_operation_phase(*, privileged=True):
+        assert privileged is True
+        return _recording_operation_phase(events, active_uid=active_uid)
+
+    def fake_wizard(*args, **kwargs):
+        events.append(("wizard_euid", active_uid["current"]))
+        raise app.FirstRunSetupError(message)
+
+    def unexpected_initialize_state():  # pragma: no cover - assertion path
+        raise AssertionError("state initialization must wait until setup succeeds")
+
+    monkeypatch.setattr(app, "CONF_FILE", conf_path, raising=False)
+    monkeypatch.setattr(lpm, "CONF_FILE", conf_path, raising=False)
+    monkeypatch.setattr(app, "STATE_DIR", state_dir, raising=False)
+    monkeypatch.setattr(lpm, "STATE_DIR", state_dir, raising=False)
+    monkeypatch.setattr(app, "operation_phase", fake_operation_phase)
+    monkeypatch.setattr(app, "run_first_run_wizard", fake_wizard)
+    monkeypatch.setattr(lpm, "run_first_run_wizard", fake_wizard)
+    monkeypatch.setattr(app, "initialize_state", unexpected_initialize_state)
+    monkeypatch.setattr(lpm, "initialize_state", unexpected_initialize_state)
+
+    with pytest.raises(SystemExit) as excinfo:
+        lpm.main(["repolist"])
+
+    captured = capsys.readouterr()
+    assert excinfo.value.code == 2
+    assert ("wizard_euid", 1000) in events
+    assert str(conf_path) in captured.err
+    assert "sudo lpm setup" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_missing_state_non_root_reports_actionable_setup_message(monkeypatch, tmp_path, capsys):
+    import importlib
+
+    app = importlib.import_module("lpm.app")
+    conf_path = tmp_path / "etc" / "lpm" / "lpm.conf"
+    conf_path.parent.mkdir(parents=True)
+    conf_path.write_text("ARCH=x86_64\n", encoding="utf-8")
+    state_dir = tmp_path / "var" / "lib" / "lpm"
+    active_uid = {"privileged": 1000, "current": 1000}
+    events = []
+
+    def fake_operation_phase(*, privileged=True):
+        assert privileged is True
+        return _recording_operation_phase(events, active_uid=active_uid)
+
+    def fake_initialize_state():
+        events.append(("initialize_euid", active_uid["current"]))
+        raise PermissionError(f"[Errno 13] Permission denied: '{state_dir}'")
+
+    def unexpected_repolist(args):  # pragma: no cover - assertion path
+        raise AssertionError("command dispatch must not happen without state")
+
+    monkeypatch.setattr(app, "CONF_FILE", conf_path, raising=False)
+    monkeypatch.setattr(lpm, "CONF_FILE", conf_path, raising=False)
+    monkeypatch.setattr(app, "STATE_DIR", state_dir, raising=False)
+    monkeypatch.setattr(lpm, "STATE_DIR", state_dir, raising=False)
+    monkeypatch.setattr(app, "operation_phase", fake_operation_phase)
+    monkeypatch.setattr(app, "initialize_state", fake_initialize_state)
+    monkeypatch.setattr(lpm, "initialize_state", fake_initialize_state)
+    monkeypatch.setattr(app, "cmd_repolist", unexpected_repolist)
+
+    with pytest.raises(SystemExit) as excinfo:
+        lpm.main(["repolist"])
+
+    captured = capsys.readouterr()
+    assert excinfo.value.code == 2
+    assert ("initialize_euid", 1000) in events
+    assert str(state_dir) in captured.err
+    assert str(conf_path) in captured.err
+    assert "sudo lpm setup" in captured.err
+    assert "sufficient privileges" in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):
+    import importlib
+
+    app = importlib.import_module("lpm.app")
     conf_path = tmp_path / "lpm.conf"
     original_conf = dict(config.CONF)
     monkeypatch.setattr(config, "CONF_FILE", conf_path, raising=False)
+    monkeypatch.setattr(first_run_ui.config, "CONF_FILE", conf_path, raising=False)
+    monkeypatch.setattr(app, "CONF_FILE", conf_path, raising=False)
     monkeypatch.setattr(lpm, "CONF_FILE", conf_path, raising=False)
 
     state_dir = tmp_path / "state"
@@ -244,6 +358,15 @@ def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):
     output = io.StringIO()
     monkeypatch.setattr(sys, "stdin", user_input)
     monkeypatch.setattr(sys, "stdout", output)
+
+    def run_wizard_for_test(*args, **kwargs):
+        kwargs.setdefault("conf_path", conf_path)
+        return first_run_ui.run_first_run_wizard(*args, **kwargs)
+
+    monkeypatch.setattr(app, "run_first_run_wizard", run_wizard_for_test)
+    monkeypatch.setattr(lpm, "run_first_run_wizard", run_wizard_for_test)
+    monkeypatch.setattr(app, "initialize_state", lambda: None)
+    monkeypatch.setattr(lpm, "initialize_state", lambda: None)
 
     try:
         lpm.main(["setup"])

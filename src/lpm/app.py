@@ -225,7 +225,6 @@ from .config import (
     detect_init_system,
     initialize_state,
 )
-initialize_state()
 from fs import read_json, write_json, urlread
 from installgen import generate_install_script
 from first_run_ui import FirstRunSetupError, run_first_run_wizard
@@ -4901,6 +4900,51 @@ def run_lpmbuild(
 
 # =========================== CLI commands =====================================
 _PRIVILEGED_COMMANDS = {"install", "installpkg", "remove", "upgrade", "upgradepkg", "rollback"}
+_STATE_COMMANDS = {
+    "autoremove",
+    "bootstrap",
+    "bootstrap-chroot",
+    "build",
+    "buildchroot",
+    "buildpkg",
+    "clean",
+    "files",
+    "history",
+    "info",
+    "install",
+    "installpkg",
+    "list",
+    "pins",
+    "protected",
+    "rebuild",
+    "removepkg",
+    "remove",
+    "repoadd",
+    "repodel",
+    "repolist",
+    "rollback",
+    "search",
+    "snapshots",
+    "splitpkg",
+    "verify",
+}
+
+
+def _state_setup_permission_message(exc: PermissionError) -> str:
+    state_dir = _resolve_lpm_attr("STATE_DIR", STATE_DIR)
+    conf_file = _resolve_lpm_attr("CONF_FILE", CONF_FILE)
+    return (
+        f"Unable to initialize LPM state under {state_dir}: {exc}. "
+        f"Run 'sudo lpm setup' to create {conf_file} and the LPM state tree, "
+        "or re-run this command with sufficient privileges."
+    )
+
+
+def _initialize_cli_state() -> None:
+    with operation_phase(privileged=True):
+        _resolve_lpm_attr("initialize_state", initialize_state)()
+
+
 def cmd_repolist(_):
     for r in sorted(list_repos(), key=lambda x:x.priority):
         print(f"{r.name:15} {r.url} (prio {r.priority})")
@@ -6564,6 +6608,7 @@ def cmd_protected(a):
 def cmd_setup(_):
     with operation_phase(privileged=True):
         _resolve_lpm_attr("run_first_run_wizard", run_first_run_wizard)()
+        _resolve_lpm_attr("initialize_state", initialize_state)()
 
 
 # =========================== Maintainer spec generation =======================
@@ -7053,6 +7098,9 @@ def main(argv=None):
         if cmd != "setup" and not conf_file.exists():
             with operation_phase(privileged=True):
                 _resolve_lpm_attr("run_first_run_wizard", run_first_run_wizard)()
+                _resolve_lpm_attr("initialize_state", initialize_state)()
+        elif cmd in _STATE_COMMANDS:
+            _initialize_cli_state()
         if cmd in _PRIVILEGED_COMMANDS:
             with operation_phase(privileged=True):
                 args.func(args)
@@ -7060,6 +7108,8 @@ def main(argv=None):
             args.func(args)
     except FirstRunSetupError as e:
         die(str(e))
+    except PermissionError as e:
+        die(_state_setup_permission_message(e))
     except ResolutionError as e:
         die(f"dependency resolution failed: {e}")
 
