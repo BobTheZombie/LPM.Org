@@ -431,3 +431,44 @@ def test_gather_metadata_prefers_build_info(monkeypatch, tmp_path):
     assert metadata["version"] == "9.9.9"
     assert metadata["build_date"] == "2024-06-01T00:00:00Z"
     assert metadata["build"] == "release"
+
+
+def test_privileged_cli_requires_root_before_install_planning(monkeypatch, tmp_path):
+    import importlib
+
+    app = importlib.import_module("lpm.app")
+    conf_path = tmp_path / "lpm.conf"
+    conf_path.write_text("ARCH=x86_64\n", encoding="utf-8")
+    events = []
+
+    def fake_operation_phase(*, privileged=True):
+        assert privileged is True
+        return _recording_operation_phase(events)
+
+    def fake_initialize_cli_state():
+        events.append(("state", None, None))
+
+    def fake_require_root(cmd):
+        events.append(("gate", cmd, None))
+        raise SystemExit(1)
+
+    def fake_cmd_install(_args):
+        events.append(("install", None, None))
+
+    monkeypatch.setattr(app, "CONF_FILE", conf_path, raising=False)
+    monkeypatch.setattr(lpm, "CONF_FILE", conf_path, raising=False)
+    monkeypatch.setattr(app, "operation_phase", fake_operation_phase)
+    monkeypatch.setattr(app, "_initialize_cli_state", fake_initialize_cli_state)
+    monkeypatch.setattr(app, "require_root", fake_require_root)
+    monkeypatch.setattr(app, "cmd_install", fake_cmd_install)
+
+    with pytest.raises(SystemExit) as exc_info:
+        lpm.main(["install", "demo"])
+
+    assert exc_info.value.code == 1
+    assert events == [
+        ("state", None, None),
+        ("enter", True, None),
+        ("gate", "install", None),
+        ("exit", True, None),
+    ]
