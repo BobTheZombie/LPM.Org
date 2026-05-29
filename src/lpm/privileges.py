@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import shlex
+import sys
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -125,6 +127,23 @@ class _PrivilegeManager:
                 self._drop_privileges()
 
 
+def is_root() -> bool:
+    return os.geteuid() == 0
+
+
+def format_rerun_hint() -> str:
+    args = [shlex.quote(arg) for arg in sys.argv]
+    return "sudo " + " ".join(args)
+
+
+def require_root(action: str) -> None:
+    if is_root():
+        return
+    print(f"lpm: {action} requires root privileges", file=sys.stderr)
+    print(f"try: {format_rerun_hint()}", file=sys.stderr)
+    raise SystemExit(1)
+
+
 _MANAGER = _PrivilegeManager()
 
 
@@ -156,6 +175,9 @@ def state_owner_ids() -> tuple[Optional[int], Optional[int]]:
 
 
 __all__ = [
+    "is_root",
+    "format_rerun_hint",
+    "require_root",
     "privileged_section",
     "privileges_enabled",
     "privilege_info",

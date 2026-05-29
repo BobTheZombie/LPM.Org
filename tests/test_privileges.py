@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import List, Tuple
 
+import pytest
+
 
 def _reload_privileges(monkeypatch, *, real_ids, effective_ids, env_ids=None):
     real_uid, real_gid = real_ids
@@ -97,5 +99,56 @@ def test_privileged_section_disabled_without_elevation(monkeypatch):
             pass
 
         assert calls == []
+    finally:
+        cleanup()
+
+
+def test_format_rerun_hint_quotes_sys_argv(monkeypatch):
+    module, _calls, cleanup = _reload_privileges(
+        monkeypatch,
+        real_ids=(1000, 1000),
+        effective_ids=(1000, 1000),
+    )
+    try:
+        monkeypatch.setattr(sys, "argv", ["lpm", "install", "pkg with space", "it's"])
+
+        assert module.format_rerun_hint() == (
+            "sudo lpm install 'pkg with space' 'it'\"'\"'s'"
+        )
+    finally:
+        cleanup()
+
+
+def test_require_root_exits_with_rerun_hint(monkeypatch, capsys):
+    module, _calls, cleanup = _reload_privileges(
+        monkeypatch,
+        real_ids=(1000, 1000),
+        effective_ids=(1000, 1000),
+    )
+    try:
+        monkeypatch.setattr(sys, "argv", ["lpm", "remove", "pkg name"])
+
+        with pytest.raises(SystemExit) as exc_info:
+            module.require_root("remove")
+
+        assert exc_info.value.code == 1
+        assert capsys.readouterr().err == (
+            "lpm: remove requires root privileges\n"
+            "try: sudo lpm remove 'pkg name'\n"
+        )
+    finally:
+        cleanup()
+
+
+def test_require_root_returns_for_root(monkeypatch, capsys):
+    module, _calls, cleanup = _reload_privileges(
+        monkeypatch,
+        real_ids=(0, 0),
+        effective_ids=(0, 0),
+    )
+    try:
+        module.require_root("install")
+
+        assert capsys.readouterr().err == ""
     finally:
         cleanup()
