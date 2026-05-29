@@ -4899,15 +4899,7 @@ def run_lpmbuild(
     return out, duration, phase_count, split_records
 
 # =========================== CLI commands =====================================
-_PRIVILEGED_COMMANDS = {
-    "install",
-    "installpkg",
-    "remove",
-    "removepkg",
-    "upgrade",
-    "upgradepkg",
-    "rollback",
-}
+_PRIVILEGED_COMMANDS = {"install", "installpkg", "remove", "removepkg", "upgrade", "upgradepkg", "rollback"}
 _STATE_COMMANDS = {
     "autoremove",
     "bootstrap",
@@ -7110,6 +7102,7 @@ def main(argv=None):
         elif cmd in _STATE_COMMANDS:
             _initialize_cli_state()
         if cmd in _PRIVILEGED_COMMANDS:
+            require_root(cmd)
             with operation_phase(privileged=True):
                 require_root(cmd)
                 args.func(args)
