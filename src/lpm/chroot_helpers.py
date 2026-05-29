@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from lpm.bootstrap import _safe_target, generate_lpm_root_install_command
+from lpm.bootstrap import _safe_target, generate_chroot_command, generate_lpm_root_install_command
 from lpm.chroot import ChrootMountState, mount_chroot_api, umount_chroot_api
 
 
@@ -64,6 +64,65 @@ def _run_root_install(target_root: Path, packages: list[str], *, dry_run: bool =
     else:
         result["failed"] = packages
     return result
+
+
+def _bind_mount(source: Path, target: Path) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["mount", "--bind", str(source), str(target)], check=True)
+
+
+def _umount_path(target: Path) -> None:
+    subprocess.run(["umount", str(target)], check=True)
+
+
+def _chroot_absolute(path: Path) -> str:
+    return "/" + str(path).lstrip("/")
+
+
+def _manifest_script_in_chroot(script: Path, source: Path, source_mount_rel: Path) -> str:
+    try:
+        rel = script.resolve().relative_to(source.resolve())
+    except ValueError as exc:
+        raise ValueError(f"manifest script is outside build source: {script}") from exc
+    return _chroot_absolute(source_mount_rel / rel)
+
+
+def _host_path_from_chroot_path(chroot_path: str, root: Path, cache_dir: Path, cache_mount_rel: Path) -> Path:
+    path = Path(chroot_path)
+    cache_mount = Path(_chroot_absolute(cache_mount_rel))
+    try:
+        rel = path.relative_to(cache_mount)
+    except ValueError:
+        return root / str(path).lstrip("/")
+    return cache_dir / rel
+
+
+def _run_chroot_lpmbuild(root: Path, script_in_chroot: str, outdir_in_chroot: str) -> dict[str, Any]:
+    code = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "from lpm import app as lpm_app\n"
+        "blob, _elapsed, _size, splits = lpm_app.run_lpmbuild("
+        "Path(sys.argv[1]), outdir=Path(sys.argv[2]), prompt_install=False, build_deps=True"
+        ")\n"
+        "print('LPM_BUILDCHROOT_RESULT=' + json.dumps({"
+        "'blob': str(blob), 'splits': [str(path) for path, _meta in splits]"
+        "}))\n"
+    )
+    cmd = generate_chroot_command(root, ["python3", "-c", code, script_in_chroot, outdir_in_chroot])
+    proc = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    if proc.stdout:
+        print(proc.stdout, end="")
+    if proc.stderr:
+        print(proc.stderr, end="")
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, cmd, output=proc.stdout, stderr=proc.stderr)
+
+    marker = "LPM_BUILDCHROOT_RESULT="
+    for line in reversed((proc.stdout or "").splitlines()):
+        if line.startswith(marker):
+            return json.loads(line[len(marker):])
+    raise RuntimeError("chroot lpmbuild did not report build artifacts")
 
 
 def run_bootstrap_chroot(args: Any) -> int:
@@ -214,8 +273,6 @@ def run_buildchroot(args: Any) -> int:
         _echo("[buildchroot] dry-run enabled; no filesystem changes", verbose=verbose)
         return 0
 
-    from lpm import app as lpm_app
-
     manifest_path = output_dir / "build-manifest.json"
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -237,10 +294,40 @@ def run_buildchroot(args: Any) -> int:
 
     staged_repo = output_dir / "repo"
     staged_repo.mkdir(parents=True, exist_ok=True)
-    for idx, pkg in enumerate(packages, start=1):
-        name = str(pkg.get("name", ""))
-        script = Path(str(pkg.get("script", "")))
-        print(f"[buildchroot {idx}/{len(packages)}] {name}")
-        blob, _elapsed, _size, _splits = lpm_app.run_lpmbuild(script, outdir=cache_dir, prompt_install=False, build_deps=True)
-        shutil.copy2(blob, staged_repo / Path(blob).name)
-    return 0
+
+    source_mount_rel = Path("tmp/lpm-buildchroot/source")
+    cache_mount_rel = Path("tmp/lpm-buildchroot/cache")
+    source_mount = root / source_mount_rel
+    cache_mount = root / cache_mount_rel
+    cache_in_chroot = _chroot_absolute(cache_mount_rel)
+
+    mount_state = ChrootMountState(mounted=[])
+    bind_mounts: list[Path] = []
+    try:
+        _bind_mount(source.resolve(), source_mount)
+        bind_mounts.append(source_mount)
+        _bind_mount(cache_dir.resolve(), cache_mount)
+        bind_mounts.append(cache_mount)
+        mount_state = mount_chroot_api(root, mount_state)
+
+        for idx, pkg in enumerate(packages, start=1):
+            name = str(pkg.get("name", ""))
+            script = Path(str(pkg.get("script", "")))
+            script_in_chroot = _manifest_script_in_chroot(script, source, source_mount_rel)
+            print(f"[buildchroot {idx}/{len(packages)}] {name}")
+            result = _run_chroot_lpmbuild(root, script_in_chroot, cache_in_chroot)
+            built_paths = [str(result.get("blob", "")), *[str(p) for p in result.get("splits", [])]]
+            for built in built_paths:
+                if not built:
+                    continue
+                host_path = _host_path_from_chroot_path(built, root, cache_dir, cache_mount_rel)
+                if not host_path.exists():
+                    raise FileNotFoundError(f"built artifact not found outside chroot: {host_path}")
+                shutil.copy2(host_path, staged_repo / host_path.name)
+        return 0
+    finally:
+        try:
+            umount_chroot_api(root, mount_state)
+        finally:
+            for mountpoint in reversed(bind_mounts):
+                _umount_path(mountpoint)

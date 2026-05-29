@@ -79,3 +79,70 @@ def test_buildchroot_missing_script_fails(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="Missing .lpmbuild scripts for build targets"):
         chroot_helpers.run_buildchroot(args)
+
+
+def test_buildchroot_executes_build_inside_requested_chroot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "packages"
+    script = source / "demo" / "demo.lpmbuild"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("# stub\n", encoding="utf-8")
+
+    output = tmp_path / "out"
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "package_order": ["demo"],
+        "packages": [{"name": "demo", "script": str(script), "depends": []}],
+    }
+    (output / "build-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    root = tmp_path / "root"
+    cache = tmp_path / "cache"
+    built = cache / "demo.lpm"
+    commands: list[list[str]] = []
+    mounted_api: list[Path] = []
+    unmounted_api: list[Path] = []
+
+    def fake_mount_api(target: Path, state: chroot_helpers.ChrootMountState) -> chroot_helpers.ChrootMountState:
+        mounted_api.append(Path(target))
+        state.mark_mounted("proc")
+        return state
+
+    def fake_umount_api(target: Path, state: chroot_helpers.ChrootMountState) -> chroot_helpers.ChrootMountState:
+        unmounted_api.append(Path(target))
+        state.mounted.clear()
+        return state
+
+    def fake_run(cmd, check=False, text=False, capture_output=False):
+        cmd = [str(part) for part in cmd]
+        commands.append(cmd)
+        if cmd[:2] == ["mount", "--bind"]:
+            return chroot_helpers.subprocess.CompletedProcess(cmd, 0)
+        if cmd[0] == "umount":
+            return chroot_helpers.subprocess.CompletedProcess(cmd, 0)
+        if cmd[:2] == ["chroot", str(root)]:
+            assert cmd[2:5] == ["python3", "-c", cmd[4]]
+            assert cmd[-2] == "/tmp/lpm-buildchroot/source/demo/demo.lpmbuild"
+            assert cmd[-1] == "/tmp/lpm-buildchroot/cache"
+            built.write_text("package", encoding="utf-8")
+            stdout = 'LPM_BUILDCHROOT_RESULT={"blob":"/tmp/lpm-buildchroot/cache/demo.lpm","splits":[]}\n'
+            return chroot_helpers.subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(chroot_helpers, "mount_chroot_api", fake_mount_api)
+    monkeypatch.setattr(chroot_helpers, "umount_chroot_api", fake_umount_api)
+    monkeypatch.setattr(chroot_helpers.subprocess, "run", fake_run)
+
+    args = Namespace(
+        root=str(root),
+        source=str(source),
+        cache_dir=str(cache),
+        output_dir=str(output),
+        dry_run=False,
+        verbose=False,
+    )
+
+    assert chroot_helpers.run_buildchroot(args) == 0
+    assert mounted_api == [root]
+    assert unmounted_api == [root]
+    assert (output / "repo" / "demo.lpm").read_text(encoding="utf-8") == "package"
+    assert [cmd[0] for cmd in commands] == ["mount", "mount", "chroot", "umount", "umount"]
