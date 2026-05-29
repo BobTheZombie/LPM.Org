@@ -7104,6 +7104,7 @@ def main(argv=None):
         if cmd in _PRIVILEGED_COMMANDS:
             require_root(cmd)
             with operation_phase(privileged=True):
+                require_root(cmd)
                 args.func(args)
         else:
             args.func(args)
