@@ -317,6 +317,45 @@ def test_missing_state_non_root_reports_actionable_setup_message(monkeypatch, tm
     assert "Traceback" not in captured.err
 
 
+@pytest.mark.parametrize("command", ["upgrade", "upgradepkg"])
+def test_upgrade_commands_initialize_existing_config_state(command, monkeypatch, tmp_path):
+    import importlib
+
+    app = importlib.import_module("lpm.app")
+    conf_path = tmp_path / "etc" / "lpm" / "lpm.conf"
+    conf_path.parent.mkdir(parents=True)
+    conf_path.write_text("ARCH=x86_64\n", encoding="utf-8")
+    events = []
+
+    def fake_operation_phase(*, privileged=True):
+        assert privileged is True
+        return _recording_operation_phase(events)
+
+    def fake_initialize_state():
+        events.append(("initialize_state", None, None))
+
+    def fake_upgrade(args):
+        events.append(("command", args.cmd, None))
+
+    monkeypatch.setattr(app, "CONF_FILE", conf_path, raising=False)
+    monkeypatch.setattr(lpm, "CONF_FILE", conf_path, raising=False)
+    monkeypatch.setattr(app, "operation_phase", fake_operation_phase)
+    monkeypatch.setattr(app, "initialize_state", fake_initialize_state)
+    monkeypatch.setattr(lpm, "initialize_state", fake_initialize_state)
+    monkeypatch.setattr(app, "cmd_upgrade", fake_upgrade)
+
+    lpm.main([command])
+
+    assert events == [
+        ("enter", True, None),
+        ("initialize_state", None, None),
+        ("exit", True, None),
+        ("enter", True, None),
+        ("command", command, None),
+        ("exit", True, None),
+    ]
+
+
 def test_setup_command_runs_wizard_and_writes_config(monkeypatch, tmp_path):
     import importlib
 

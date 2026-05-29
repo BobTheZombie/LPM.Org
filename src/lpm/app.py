@@ -4926,6 +4926,8 @@ _STATE_COMMANDS = {
     "search",
     "snapshots",
     "splitpkg",
+    "upgrade",
+    "upgradepkg",
     "verify",
 }
 
