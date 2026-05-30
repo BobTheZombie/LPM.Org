@@ -227,6 +227,50 @@ def test_buildgen_finds_nested_maintainer_mode_layouts(
     assert manifest["packages"][0]["script"] == str(script)
 
 
+def test_buildgen_resolves_virtual_dependencies_from_provides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = tmp_path / "packages"
+    for name in ("consumer", "zlib-ng"):
+        script = src / name / f"{name}.lpmbuild"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("# stub\n", encoding="utf-8")
+
+    from lpm import app as lpm_app
+
+    def fake_capture(path: Path):
+        if path.stem == "consumer":
+            return (
+                {"NAME": "consumer", "VERSION": "1"},
+                {"REQUIRES": ["zlib >= 1", "compression-lib"]},
+                {},
+            )
+        return (
+            {"NAME": "zlib-ng", "VERSION": "1"},
+            {"REQUIRES": [], "PROVIDES": ["compression-lib"]},
+            {"META_PROVIDES": {"zlib-ng": ["zlib"]}},
+        )
+
+    monkeypatch.setattr(lpm_app, "_capture_lpmbuild_metadata", fake_capture)
+
+    out = tmp_path / "out"
+    args = Namespace(
+        root=str(tmp_path / "root"),
+        source=str(src),
+        output_dir=str(out),
+        dry_run=False,
+        verbose=False,
+    )
+
+    assert chroot_helpers.run_buildgen(args) == 0
+
+    manifest = json.loads((out / "build-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["package_order"] == ["zlib-ng", "consumer"]
+    packages = {pkg["name"]: pkg for pkg in manifest["packages"]}
+    assert packages["consumer"]["depends"] == ["zlib-ng"]
+    assert packages["zlib-ng"]["provides"] == ["compression-lib", "zlib"]
+
+
 def test_buildgen_cycle_detection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
