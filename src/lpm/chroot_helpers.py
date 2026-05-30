@@ -129,7 +129,13 @@ def run_buildgen(args: Any) -> int:
 
     from lpm import app as lpm_app
 
-    scripts = sorted(source.glob("*/**/*.lpmbuild")) if source.is_dir() else []
+    if source.is_file() and source.suffix == ".lpmbuild":
+        scripts = [source]
+    elif source.is_dir():
+        scripts = sorted(source.rglob("*.lpmbuild"))
+    else:
+        raise ValueError(f"no .lpmbuild scripts found under: {source}")
+
     if not scripts:
         raise ValueError(f"no .lpmbuild scripts found under: {source}")
 

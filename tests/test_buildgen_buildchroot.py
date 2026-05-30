@@ -39,6 +39,77 @@ def test_buildgen_manifest_is_deterministic(tmp_path: Path, monkeypatch: pytest.
     assert m1 == m2
 
 
+def test_buildgen_accepts_direct_lpmbuild_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    script = tmp_path / "demo.lpmbuild"
+    script.write_text("# demo\n", encoding="utf-8")
+
+    from lpm import app as lpm_app
+
+    def fake_capture(path: Path):
+        assert path == script
+        return {"NAME": "demo", "VERSION": "1"}, {"REQUIRES": []}, {}
+
+    monkeypatch.setattr(lpm_app, "_capture_lpmbuild_metadata", fake_capture)
+
+    out = tmp_path / "out"
+    args = Namespace(root=str(tmp_path / "root"), source=str(script), output_dir=str(out), dry_run=False, verbose=False)
+
+    assert chroot_helpers.run_buildgen(args) == 0
+
+    manifest = json.loads((out / "build-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["source"] == str(script)
+    assert manifest["package_order"] == ["demo"]
+    assert manifest["packages"][0]["script"] == str(script)
+
+
+def test_buildgen_finds_lpmbuild_directly_in_source_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    src = tmp_path / "packages"
+    src.mkdir()
+    script = src / "demo.lpmbuild"
+    script.write_text("# demo\n", encoding="utf-8")
+
+    from lpm import app as lpm_app
+
+    def fake_capture(path: Path):
+        assert path == script
+        return {"NAME": "demo", "VERSION": "1"}, {"REQUIRES": []}, {}
+
+    monkeypatch.setattr(lpm_app, "_capture_lpmbuild_metadata", fake_capture)
+
+    out = tmp_path / "out"
+    args = Namespace(root=str(tmp_path / "root"), source=str(src), output_dir=str(out), dry_run=False, verbose=False)
+
+    assert chroot_helpers.run_buildgen(args) == 0
+
+    manifest = json.loads((out / "build-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["package_order"] == ["demo"]
+    assert manifest["packages"][0]["script"] == str(script)
+
+
+def test_buildgen_finds_nested_maintainer_mode_layouts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    src = tmp_path / "packages"
+    script = src / "lpmbuilds" / "demo" / "1" / "demo.lpmbuild"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("# demo\n", encoding="utf-8")
+
+    from lpm import app as lpm_app
+
+    def fake_capture(path: Path):
+        assert path == script
+        return {"NAME": "demo", "VERSION": "1"}, {"REQUIRES": []}, {}
+
+    monkeypatch.setattr(lpm_app, "_capture_lpmbuild_metadata", fake_capture)
+
+    out = tmp_path / "out"
+    args = Namespace(root=str(tmp_path / "root"), source=str(src), output_dir=str(out), dry_run=False, verbose=False)
+
+    assert chroot_helpers.run_buildgen(args) == 0
+
+    manifest = json.loads((out / "build-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["package_order"] == ["demo"]
+    assert manifest["packages"][0]["script"] == str(script)
+
+
 def test_buildgen_cycle_detection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     src = tmp_path / "packages"
     for name in ("a", "b"):
