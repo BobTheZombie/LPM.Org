@@ -9,7 +9,9 @@ import pytest
 from lpm import chroot_helpers
 
 
-def test_buildgen_manifest_is_deterministic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_buildgen_manifest_is_deterministic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     src = tmp_path / "packages"
     for name in ("a", "b"):
         p = src / name / f"{name}.lpmbuild"
@@ -27,8 +29,20 @@ def test_buildgen_manifest_is_deterministic(tmp_path: Path, monkeypatch: pytest.
 
     out1 = tmp_path / "out1"
     out2 = tmp_path / "out2"
-    args1 = Namespace(root=str(tmp_path / "root"), source=str(src), output_dir=str(out1), dry_run=False, verbose=False)
-    args2 = Namespace(root=str(tmp_path / "root"), source=str(src), output_dir=str(out2), dry_run=False, verbose=False)
+    args1 = Namespace(
+        root=str(tmp_path / "root"),
+        source=str(src),
+        output_dir=str(out1),
+        dry_run=False,
+        verbose=False,
+    )
+    args2 = Namespace(
+        root=str(tmp_path / "root"),
+        source=str(src),
+        output_dir=str(out2),
+        dry_run=False,
+        verbose=False,
+    )
 
     assert chroot_helpers.run_buildgen(args1) == 0
     assert chroot_helpers.run_buildgen(args2) == 0
@@ -39,7 +53,9 @@ def test_buildgen_manifest_is_deterministic(tmp_path: Path, monkeypatch: pytest.
     m2 = json.loads(raw2)
     assert m1["package_order"] == ["b", "a"]
 
-    def normalize_package_paths(packages: list[dict[str, object]], output_dir: Path) -> list[dict[str, object]]:
+    def normalize_package_paths(
+        packages: list[dict[str, object]], output_dir: Path
+    ) -> list[dict[str, object]]:
         normalized = []
         for pkg in packages:
             item = dict(pkg)
@@ -52,12 +68,16 @@ def test_buildgen_manifest_is_deterministic(tmp_path: Path, monkeypatch: pytest.
             normalized.append(item)
         return normalized
 
-    assert normalize_package_paths(m1["packages"], out1) == normalize_package_paths(m2["packages"], out2)
+    assert normalize_package_paths(m1["packages"], out1) == normalize_package_paths(
+        m2["packages"], out2
+    )
     assert raw1 == json.dumps(m1, indent=2, sort_keys=True) + "\n"
     assert raw2 == json.dumps(m2, indent=2, sort_keys=True) + "\n"
 
 
-def test_buildgen_manifest_records_chroot_setup_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_buildgen_manifest_records_chroot_setup_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     src = tmp_path / "packages"
     script = src / "demo.lpmbuild"
     script.parent.mkdir(parents=True, exist_ok=True)
@@ -67,13 +87,23 @@ def test_buildgen_manifest_records_chroot_setup_paths(tmp_path: Path, monkeypatc
 
     def fake_capture(path: Path):
         assert path == script
-        return {"NAME": "demo", "VERSION": "2", "RELEASE": "3", "ARCH": "x86_64"}, {"REQUIRES": []}, {}
+        return (
+            {"NAME": "demo", "VERSION": "2", "RELEASE": "3", "ARCH": "x86_64"},
+            {"REQUIRES": []},
+            {},
+        )
 
     monkeypatch.setattr(lpm_app, "_capture_lpmbuild_metadata", fake_capture)
 
     root = tmp_path / "target-root"
     out = tmp_path / "out"
-    args = Namespace(root=str(root), source=str(src), output_dir=str(out), dry_run=False, verbose=False)
+    args = Namespace(
+        root=str(root),
+        source=str(src),
+        output_dir=str(out),
+        dry_run=False,
+        verbose=False,
+    )
 
     assert chroot_helpers.run_buildgen(args) == 0
 
@@ -88,13 +118,23 @@ def test_buildgen_manifest_records_chroot_setup_paths(tmp_path: Path, monkeypatc
         "repo_dir": (out / "repo").as_posix(),
         "root": root.as_posix(),
     }
-    assert manifest["packages"][0]["build_output_dir"] == (out / "build" / "demo").as_posix()
+    assert (
+        manifest["packages"][0]["build_output_dir"]
+        == (out / "build" / "demo").as_posix()
+    )
     assert manifest["packages"][0]["repo_dir"] == (out / "repo").as_posix()
-    assert manifest["packages"][0]["planned_artifact"] == (out / "repo" / "demo-2-3.x86_64.zst").as_posix()
-    assert manifest["packages"][0]["planned_artifacts"] == [(out / "repo" / "demo-2-3.x86_64.zst").as_posix()]
+    assert (
+        manifest["packages"][0]["planned_artifact"]
+        == (out / "repo" / "demo-2-3.x86_64.zst").as_posix()
+    )
+    assert manifest["packages"][0]["planned_artifacts"] == [
+        (out / "repo" / "demo-2-3.x86_64.zst").as_posix()
+    ]
 
 
-def test_buildgen_accepts_direct_lpmbuild_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_buildgen_accepts_direct_lpmbuild_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     script = tmp_path / "demo.lpmbuild"
     script.write_text("# demo\n", encoding="utf-8")
 
@@ -107,7 +147,13 @@ def test_buildgen_accepts_direct_lpmbuild_path(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setattr(lpm_app, "_capture_lpmbuild_metadata", fake_capture)
 
     out = tmp_path / "out"
-    args = Namespace(root=str(tmp_path / "root"), source=str(script), output_dir=str(out), dry_run=False, verbose=False)
+    args = Namespace(
+        root=str(tmp_path / "root"),
+        source=str(script),
+        output_dir=str(out),
+        dry_run=False,
+        verbose=False,
+    )
 
     assert chroot_helpers.run_buildgen(args) == 0
 
@@ -117,7 +163,9 @@ def test_buildgen_accepts_direct_lpmbuild_path(tmp_path: Path, monkeypatch: pyte
     assert manifest["packages"][0]["script"] == str(script)
 
 
-def test_buildgen_finds_lpmbuild_directly_in_source_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_buildgen_finds_lpmbuild_directly_in_source_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     src = tmp_path / "packages"
     src.mkdir()
     script = src / "demo.lpmbuild"
@@ -132,7 +180,13 @@ def test_buildgen_finds_lpmbuild_directly_in_source_directory(tmp_path: Path, mo
     monkeypatch.setattr(lpm_app, "_capture_lpmbuild_metadata", fake_capture)
 
     out = tmp_path / "out"
-    args = Namespace(root=str(tmp_path / "root"), source=str(src), output_dir=str(out), dry_run=False, verbose=False)
+    args = Namespace(
+        root=str(tmp_path / "root"),
+        source=str(src),
+        output_dir=str(out),
+        dry_run=False,
+        verbose=False,
+    )
 
     assert chroot_helpers.run_buildgen(args) == 0
 
@@ -141,7 +195,9 @@ def test_buildgen_finds_lpmbuild_directly_in_source_directory(tmp_path: Path, mo
     assert manifest["packages"][0]["script"] == str(script)
 
 
-def test_buildgen_finds_nested_maintainer_mode_layouts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_buildgen_finds_nested_maintainer_mode_layouts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     src = tmp_path / "packages"
     script = src / "lpmbuilds" / "demo" / "1" / "demo.lpmbuild"
     script.parent.mkdir(parents=True, exist_ok=True)
@@ -156,7 +212,13 @@ def test_buildgen_finds_nested_maintainer_mode_layouts(tmp_path: Path, monkeypat
     monkeypatch.setattr(lpm_app, "_capture_lpmbuild_metadata", fake_capture)
 
     out = tmp_path / "out"
-    args = Namespace(root=str(tmp_path / "root"), source=str(src), output_dir=str(out), dry_run=False, verbose=False)
+    args = Namespace(
+        root=str(tmp_path / "root"),
+        source=str(src),
+        output_dir=str(out),
+        dry_run=False,
+        verbose=False,
+    )
 
     assert chroot_helpers.run_buildgen(args) == 0
 
@@ -165,7 +227,9 @@ def test_buildgen_finds_nested_maintainer_mode_layouts(tmp_path: Path, monkeypat
     assert manifest["packages"][0]["script"] == str(script)
 
 
-def test_buildgen_cycle_detection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_buildgen_cycle_detection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     src = tmp_path / "packages"
     for name in ("a", "b"):
         p = src / name / f"{name}.lpmbuild"
@@ -197,7 +261,13 @@ def test_buildchroot_missing_script_fails(tmp_path: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     manifest = {
         "package_order": ["demo"],
-        "packages": [{"name": "demo", "script": str(tmp_path / "missing.lpmbuild"), "depends": []}],
+        "packages": [
+            {
+                "name": "demo",
+                "script": str(tmp_path / "missing.lpmbuild"),
+                "depends": [],
+            }
+        ],
     }
     (out / "build-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
@@ -213,7 +283,9 @@ def test_buildchroot_missing_script_fails(tmp_path: Path) -> None:
         chroot_helpers.run_buildchroot(args)
 
 
-def test_buildchroot_uses_manifest_chroot_setup_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_buildchroot_uses_manifest_chroot_setup_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     script = tmp_path / "packages" / "demo" / "demo.lpmbuild"
     script.parent.mkdir(parents=True, exist_ok=True)
     script.write_text("# demo\n", encoding="utf-8")
@@ -233,23 +305,42 @@ def test_buildchroot_uses_manifest_chroot_setup_paths(tmp_path: Path, monkeypatc
     }
     (cli_out / "build-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
-    built_blob = tmp_path / "cache" / "demo-1-any.zst"
+    install_calls: list[tuple[Path, list[str]]] = []
+    local_install_calls: list[tuple[Path, list[Path]]] = []
 
-    from lpm import app as lpm_app
+    def fake_mount(root: Path, state: chroot_helpers.ChrootMountState):
+        state.mark_mounted("proc")
+        return state
 
-    def fake_run_lpmbuild(*_args, **_kwargs):
+    def fake_umount(_root: Path, state: chroot_helpers.ChrootMountState):
+        return state
+
+    def fake_run_chroot_build(root: Path, _script: Path, outdir: Path) -> int:
+        assert root == manifest_root
+        built_blob = outdir / "demo-1-any.zst"
         built_blob.parent.mkdir(parents=True, exist_ok=True)
         built_blob.write_text("blob", encoding="utf-8")
-        return built_blob, 0.0, built_blob.stat().st_size, []
+        return 0
 
-    install_calls: list[tuple[Path, list[str]]] = []
-
-    def fake_run_root_install(root: Path, packages: list[str], *, dry_run: bool = False):
+    def fake_run_root_install(
+        root: Path, packages: list[str], *, dry_run: bool = False
+    ):
         install_calls.append((root, list(packages)))
         return {"returncode": 0, "dry_run": dry_run}
 
-    monkeypatch.setattr(lpm_app, "run_lpmbuild", fake_run_lpmbuild)
+    def fake_run_root_install_local(
+        root: Path, artifacts: list[Path], *, dry_run: bool = False
+    ):
+        local_install_calls.append((root, list(artifacts)))
+        return {"returncode": 0, "dry_run": dry_run}
+
+    monkeypatch.setattr(chroot_helpers, "mount_chroot_api", fake_mount)
+    monkeypatch.setattr(chroot_helpers, "umount_chroot_api", fake_umount)
+    monkeypatch.setattr(chroot_helpers, "_run_chroot_build", fake_run_chroot_build)
     monkeypatch.setattr(chroot_helpers, "_run_root_install", fake_run_root_install)
+    monkeypatch.setattr(
+        chroot_helpers, "_run_root_install_local", fake_run_root_install_local
+    )
 
     args = Namespace(
         root=str(tmp_path / "cli-root"),
@@ -262,12 +353,160 @@ def test_buildchroot_uses_manifest_chroot_setup_paths(tmp_path: Path, monkeypatc
 
     rc = chroot_helpers.run_buildchroot(args)
     assert rc == 0
-    assert install_calls == [(manifest_root, ["base", "toolchain"]), (manifest_root, ["demo"])]
-    assert (manifest_repo / built_blob.name).exists()
-    assert not (cli_out / "repo" / built_blob.name).exists()
+    assert install_calls == [(manifest_root, ["base", "toolchain"])]
+    assert local_install_calls == [
+        (manifest_root, [manifest_out / "repo" / "demo-1-any.zst"])
+    ]
+    assert (manifest_out / "repo" / "demo-1-any.zst").exists()
+    assert not (manifest_repo / "demo-1-any.zst").exists()
 
 
-def test_buildchroot_installs_built_packages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_buildchroot_chroot_command_targets_requested_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "root"
+    script = root / "var/lib/lpm/buildchroot/inputs/0001-demo/demo.lpmbuild"
+    outdir = root / "var/cache/lpm/buildchroot"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    outdir.mkdir(parents=True, exist_ok=True)
+    script.write_text("# demo\n", encoding="utf-8")
+
+    generated: list[tuple[Path, list[str]]] = []
+    ran: list[list[str]] = []
+
+    class Proc:
+        returncode = 0
+
+    def fake_generate_chroot_command(target: Path, command: list[str]) -> list[str]:
+        generated.append((target, list(command)))
+        return ["chroot", str(target), *command]
+
+    def fake_run(cmd: list[str], check: bool = False):
+        ran.append(list(cmd))
+        return Proc()
+
+    monkeypatch.setattr(
+        chroot_helpers, "generate_chroot_command", fake_generate_chroot_command
+    )
+    monkeypatch.setattr(chroot_helpers.subprocess, "run", fake_run)
+
+    assert chroot_helpers._run_chroot_build(root, script, outdir) == 0
+    assert generated == [
+        (
+            root,
+            [
+                "lpm",
+                "buildpkg",
+                "/var/lib/lpm/buildchroot/inputs/0001-demo/demo.lpmbuild",
+                "--outdir",
+                "/var/cache/lpm/buildchroot",
+                "--install-default",
+                "n",
+            ],
+        )
+    ]
+    assert ran == [["chroot", str(root), *generated[0][1]]]
+
+
+def test_buildchroot_unmounts_api_filesystems_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = tmp_path / "packages" / "demo" / "demo.lpmbuild"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("# demo\n", encoding="utf-8")
+    out = tmp_path / "out"
+    out.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "package_order": ["demo"],
+        "packages": [{"name": "demo", "script": str(script), "depends": []}],
+    }
+    (out / "build-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    events: list[tuple[str, Path, list[str]]] = []
+
+    def fake_mount(root: Path, state: chroot_helpers.ChrootMountState):
+        state.mark_mounted("proc")
+        events.append(("mount", root, list(state.mounted)))
+        return state
+
+    def fake_umount(root: Path, state: chroot_helpers.ChrootMountState):
+        events.append(("umount", root, list(state.mounted)))
+        return state
+
+    def fake_run_chroot_build(_root: Path, _script: Path, outdir: Path) -> int:
+        (outdir / "demo-1-any.zst").write_text("blob", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(chroot_helpers, "mount_chroot_api", fake_mount)
+    monkeypatch.setattr(chroot_helpers, "umount_chroot_api", fake_umount)
+    monkeypatch.setattr(chroot_helpers, "_run_chroot_build", fake_run_chroot_build)
+    monkeypatch.setattr(
+        chroot_helpers,
+        "_run_root_install_local",
+        lambda *_args, **_kwargs: {"returncode": 0},
+    )
+
+    args = Namespace(
+        root=str(tmp_path / "root"),
+        source=str(tmp_path / "packages"),
+        cache_dir=str(tmp_path / "cache"),
+        output_dir=str(out),
+        dry_run=False,
+        verbose=False,
+    )
+    assert chroot_helpers.run_buildchroot(args) == 0
+    assert events == [
+        ("mount", tmp_path / "root", ["proc"]),
+        ("umount", tmp_path / "root", ["proc"]),
+    ]
+
+
+def test_buildchroot_unmounts_api_filesystems_on_build_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = tmp_path / "packages" / "demo" / "demo.lpmbuild"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("# demo\n", encoding="utf-8")
+    out = tmp_path / "out"
+    out.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "package_order": ["demo"],
+        "packages": [{"name": "demo", "script": str(script), "depends": []}],
+    }
+    (out / "build-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    events: list[str] = []
+
+    def fake_mount(root: Path, state: chroot_helpers.ChrootMountState):
+        state.mark_mounted("proc")
+        events.append(f"mount:{root}")
+        return state
+
+    def fake_umount(root: Path, state: chroot_helpers.ChrootMountState):
+        events.append(f"umount:{root}:{','.join(state.mounted)}")
+        return state
+
+    monkeypatch.setattr(chroot_helpers, "mount_chroot_api", fake_mount)
+    monkeypatch.setattr(chroot_helpers, "umount_chroot_api", fake_umount)
+    monkeypatch.setattr(
+        chroot_helpers, "_run_chroot_build", lambda *_args, **_kwargs: 77
+    )
+
+    args = Namespace(
+        root=str(tmp_path / "root"),
+        source=str(tmp_path / "packages"),
+        cache_dir=str(tmp_path / "cache"),
+        output_dir=str(out),
+        dry_run=False,
+        verbose=False,
+    )
+    assert chroot_helpers.run_buildchroot(args) == 77
+    assert events == [f"mount:{tmp_path / 'root'}", f"umount:{tmp_path / 'root'}:proc"]
+
+
+def test_buildchroot_installs_built_local_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     script = tmp_path / "packages" / "demo" / "demo.lpmbuild"
     script.parent.mkdir(parents=True, exist_ok=True)
     script.write_text("# demo\n", encoding="utf-8")
@@ -280,23 +519,31 @@ def test_buildchroot_installs_built_packages(tmp_path: Path, monkeypatch: pytest
     }
     (out / "build-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
-    built_blob = tmp_path / "cache" / "demo-1-any.zst"
+    installed_artifacts: list[Path] = []
 
-    from lpm import app as lpm_app
+    def fake_mount(root: Path, state: chroot_helpers.ChrootMountState):
+        return state
 
-    def fake_run_lpmbuild(*_args, **_kwargs):
-        built_blob.parent.mkdir(parents=True, exist_ok=True)
+    def fake_umount(_root: Path, state: chroot_helpers.ChrootMountState):
+        return state
+
+    def fake_run_chroot_build(_root: Path, _script: Path, outdir: Path) -> int:
+        built_blob = outdir / "demo-1-any.zst"
         built_blob.write_text("blob", encoding="utf-8")
-        return built_blob, 0.0, built_blob.stat().st_size, []
+        return 0
 
-    install_calls: list[list[str]] = []
-
-    def fake_run_root_install(_root: Path, packages: list[str], *, dry_run: bool = False):
-        install_calls.append(list(packages))
+    def fake_run_root_install_local(
+        _root: Path, artifacts: list[Path], *, dry_run: bool = False
+    ):
+        installed_artifacts.extend(artifacts)
         return {"returncode": 0, "dry_run": dry_run}
 
-    monkeypatch.setattr(lpm_app, "run_lpmbuild", fake_run_lpmbuild)
-    monkeypatch.setattr(chroot_helpers, "_run_root_install", fake_run_root_install)
+    monkeypatch.setattr(chroot_helpers, "mount_chroot_api", fake_mount)
+    monkeypatch.setattr(chroot_helpers, "umount_chroot_api", fake_umount)
+    monkeypatch.setattr(chroot_helpers, "_run_chroot_build", fake_run_chroot_build)
+    monkeypatch.setattr(
+        chroot_helpers, "_run_root_install_local", fake_run_root_install_local
+    )
 
     args = Namespace(
         root=str(tmp_path / "root"),
@@ -308,5 +555,5 @@ def test_buildchroot_installs_built_packages(tmp_path: Path, monkeypatch: pytest
     )
     rc = chroot_helpers.run_buildchroot(args)
     assert rc == 0
-    assert install_calls == [["demo"]]
-    assert (out / "repo" / built_blob.name).exists()
+    assert installed_artifacts == [out / "repo" / "demo-1-any.zst"]
+    assert (out / "repo" / "demo-1-any.zst").exists()
