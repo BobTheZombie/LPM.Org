@@ -250,10 +250,32 @@ def run_buildgen(args: Any) -> int:
     if not scripts:
         raise ValueError(f"no .lpmbuild scripts found under: {source}")
 
+    def _metadata_name(raw: Any) -> str:
+        try:
+            expr = lpm_app.parse_dep_expr(str(raw))
+            if getattr(expr, "kind", None) == "atom" and getattr(expr, "atom", None):
+                parsed_name = str(expr.atom.name).strip()
+                if parsed_name:
+                    return parsed_name
+        except Exception:
+            pass
+        token = str(raw).strip().split()[0] if str(raw).strip() else ""
+        token = (
+            token.split(">=")[0]
+            .split("<=")[0]
+            .split("==")[0]
+            .split("=")[0]
+            .split("<")[0]
+            .split(">")[0]
+        )
+        return token.strip()
+
     meta_by_pkg: dict[str, dict[str, Any]] = {}
     deps_by_pkg: dict[str, set[str]] = {}
+    raw_provides_by_pkg: dict[str, set[str]] = {}
+    mapped_provides_by_pkg: dict[str, set[str]] = {}
     for script in scripts:
-        scal, arr, _maps = lpm_app._capture_lpmbuild_metadata(script)
+        scal, arr, maps = lpm_app._capture_lpmbuild_metadata(script)
         name = str(scal.get("NAME") or scal.get("name") or "").strip()
         if not name:
             continue
@@ -262,21 +284,30 @@ def run_buildgen(args: Any) -> int:
             dep_fields.extend([str(x) for x in (arr.get(key) or []) if x])
         dep_names: set[str] = set()
         for raw in dep_fields:
-            try:
-                dep_names.add(lpm_app.parse_dep_expr(raw).name)
-                continue
-            except Exception:
-                pass
-            token = str(raw).strip().split()[0] if str(raw).strip() else ""
-            token = (
-                token.split(">=")[0]
-                .split("<=")[0]
-                .split("=")[0]
-                .split("<")[0]
-                .split(">")[0]
-            )
+            token = _metadata_name(raw)
             if token:
                 dep_names.add(token)
+
+        provides: set[str] = set()
+        for raw in arr.get("PROVIDES") or arr.get("provides") or []:
+            token = _metadata_name(raw)
+            if token:
+                provides.add(token)
+        raw_provides_by_pkg[name] = set(provides)
+
+        meta_provides = maps.get("META_PROVIDES") or maps.get("meta_provides") or {}
+        for provider, values in sorted(meta_provides.items()):
+            provider_name = str(provider).strip()
+            if not provider_name:
+                continue
+            provider_caps = mapped_provides_by_pkg.setdefault(provider_name, set())
+            for raw in values or []:
+                token = _metadata_name(raw)
+                if token:
+                    provider_caps.add(token)
+                    if provider_name == name:
+                        provides.add(token)
+
         version = str(scal.get("VERSION") or scal.get("version") or "")
         release = str(scal.get("RELEASE") or scal.get("release") or "1")
         arch = str(scal.get("ARCH") or scal.get("arch") or "noarch")
@@ -289,6 +320,7 @@ def run_buildgen(args: Any) -> int:
             "arch": arch,
             "script": _stable_path(script),
             "depends": sorted(dep_names),
+            "provides": sorted(provides),
             "build_output_dir": _stable_path(output_dir / "build" / name),
             "repo_dir": _stable_path(repo_dir),
             "planned_artifact": _stable_path(planned_artifact),
@@ -297,9 +329,34 @@ def run_buildgen(args: Any) -> int:
         deps_by_pkg[name] = set(dep_names)
 
     known = set(meta_by_pkg)
+    provider_index: dict[str, list[str]] = {}
+    for name in sorted(known):
+        provides = set(raw_provides_by_pkg.get(name, set()))
+        provides.update(mapped_provides_by_pkg.get(name, set()))
+        meta_by_pkg[name]["provides"] = sorted(provides)
+        for capability in sorted(provides):
+            provider_index.setdefault(capability, []).append(name)
+    provider_index = {
+        capability: sorted(set(providers))
+        for capability, providers in sorted(provider_index.items())
+    }
+
     for name, deps in deps_by_pkg.items():
-        deps.intersection_update(known)
-        meta_by_pkg[name]["depends"] = sorted(deps)
+        normalized_deps: set[str] = set()
+        for dep in sorted(deps):
+            if dep in known:
+                normalized_deps.add(dep)
+                continue
+            providers = provider_index.get(dep, [])
+            if len(providers) == 1:
+                normalized_deps.add(providers[0])
+            elif len(providers) > 1:
+                raise ValueError(
+                    f"ambiguous provider for dependency {dep!r}: "
+                    + ", ".join(providers)
+                )
+        deps_by_pkg[name] = normalized_deps
+        meta_by_pkg[name]["depends"] = sorted(normalized_deps)
 
     indeg = {k: 0 for k in known}
     rev: dict[str, set[str]] = {k: set() for k in known}
