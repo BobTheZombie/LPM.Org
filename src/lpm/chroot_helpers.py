@@ -19,6 +19,11 @@ def _normalize_root(root: str | None) -> Path:
     return Path(root or "/")
 
 
+def _stable_path(path: str | Path) -> str:
+    """Serialize paths consistently for deterministic JSON manifests."""
+    return Path(path).as_posix()
+
+
 def _read_manifest_packages(manifest: str | None) -> list[str]:
     if not manifest:
         return []
@@ -160,11 +165,22 @@ def run_buildgen(args: Any) -> int:
             token = token.split(">=")[0].split("<=")[0].split("=")[0].split("<")[0].split(">")[0]
             if token:
                 dep_names.add(token)
+        version = str(scal.get("VERSION") or scal.get("version") or "")
+        release = str(scal.get("RELEASE") or scal.get("release") or "1")
+        arch = str(scal.get("ARCH") or scal.get("arch") or "noarch")
+        repo_dir = output_dir / "repo"
+        planned_artifact = repo_dir / f"{name}-{version}-{release}.{arch}.zst"
         meta_by_pkg[name] = {
             "name": name,
-            "version": str(scal.get("VERSION") or scal.get("version") or ""),
-            "script": str(script),
+            "version": version,
+            "release": release,
+            "arch": arch,
+            "script": _stable_path(script),
             "depends": sorted(dep_names),
+            "build_output_dir": _stable_path(output_dir / "build" / name),
+            "repo_dir": _stable_path(repo_dir),
+            "planned_artifact": _stable_path(planned_artifact),
+            "planned_artifacts": [_stable_path(planned_artifact)],
         }
         deps_by_pkg[name] = set(dep_names)
 
@@ -194,10 +210,25 @@ def run_buildgen(args: Any) -> int:
         raise ValueError("Cycle detected in buildgen dependency graph. Cycle groups: " + ", ".join(remaining))
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    repo_dir = output_dir / "repo"
+    bootstrap_packages = sorted(
+        str(pkg)
+        for pkg in (getattr(args, "bootstrap_packages", None) or getattr(args, "packages", []) or [])
+    )
     manifest = {
-        "source": str(source),
+        "root": _stable_path(root),
+        "source": _stable_path(source),
+        "output_dir": _stable_path(output_dir),
+        "repo_dir": _stable_path(repo_dir),
+        "bootstrap_packages": bootstrap_packages,
         "package_order": order,
         "packages": [meta_by_pkg[n] for n in order],
+        "chroot_setup": {
+            "root": _stable_path(root),
+            "output_dir": _stable_path(output_dir),
+            "repo_dir": _stable_path(repo_dir),
+            "bootstrap_packages": bootstrap_packages,
+        },
     }
     manifest_path = output_dir / "build-manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -226,11 +257,27 @@ def run_buildchroot(args: Any) -> int:
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     else:
-        tmp_args = type("BuildGenArgs", (), {
-            "root": str(root), "source": str(source), "output_dir": str(output_dir), "dry_run": False, "verbose": verbose
-        })()
+        tmp_args = type(
+            "BuildGenArgs",
+            (),
+            {
+                "root": str(root),
+                "source": str(source),
+                "output_dir": str(output_dir),
+                "dry_run": False,
+                "verbose": verbose,
+            },
+        )()
         run_buildgen(tmp_args)
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    setup = manifest.get("chroot_setup", {}) if isinstance(manifest.get("chroot_setup", {}), dict) else {}
+    root = Path(str(manifest.get("root") or setup.get("root") or root))
+    output_dir = Path(str(manifest.get("output_dir") or setup.get("output_dir") or output_dir))
+    staged_repo = Path(str(manifest.get("repo_dir") or setup.get("repo_dir") or output_dir / "repo"))
+    bootstrap_packages = [
+        str(pkg) for pkg in (manifest.get("bootstrap_packages") or setup.get("bootstrap_packages") or [])
+    ]
 
     packages = manifest.get("packages", []) or []
     missing = [p.get("script") for p in packages if not Path(str(p.get("script", ""))).exists()]
@@ -241,14 +288,22 @@ def run_buildchroot(args: Any) -> int:
     cache_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    staged_repo = output_dir / "repo"
     staged_repo.mkdir(parents=True, exist_ok=True)
+    if bootstrap_packages:
+        bootstrap_result = _run_root_install(root, bootstrap_packages)
+        print(json.dumps(bootstrap_result, indent=2, sort_keys=True))
+        bootstrap_rc = int(bootstrap_result.get("returncode", 0))
+        if bootstrap_rc != 0:
+            return bootstrap_rc
+
     built_package_names: list[str] = []
     for idx, pkg in enumerate(packages, start=1):
         name = str(pkg.get("name", ""))
         script = Path(str(pkg.get("script", "")))
         print(f"[buildchroot {idx}/{len(packages)}] {name}")
-        blob, _elapsed, _size, _splits = lpm_app.run_lpmbuild(script, outdir=cache_dir, prompt_install=False, build_deps=True)
+        blob, _elapsed, _size, _splits = lpm_app.run_lpmbuild(
+            script, outdir=cache_dir, prompt_install=False, build_deps=True
+        )
         shutil.copy2(blob, staged_repo / Path(blob).name)
         if name:
             built_package_names.append(name)
