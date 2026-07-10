@@ -1,0 +1,9 @@
+[package]
+name = "lpm-gui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+lpm-core = { path = "../lpm-core" }
+clap = { version = "4", features = ["derive"] }
