@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from importlib import import_module
+import os
+import sys
+from pathlib import Path
 from typing import Any
 
 if __package__ in {None, ""}:
@@ -13,6 +16,8 @@ if __package__ in {None, ""}:
     if str(src_root) not in sys.path:
         sys.path.insert(0, str(src_root))
     __package__ = "lpm"
+
+from ._compat import register as _register_facade
 
 from .resolver import CDCLSolver, CNF, Implication, SATResult
 from .hooks import Hook, HookAction, HookError, HookTransactionManager, HookTrigger, load_hooks
@@ -63,6 +68,11 @@ def get_runtime_metadata():
 
 
 def __getattr__(name: str) -> Any:
+    if name in {"STATE_DIR", "CACHE_DIR", "SOURCE_CACHE_DIR"} and os.environ.get("LPM_STATE_DIR"):
+        state = Path(os.environ["LPM_STATE_DIR"])
+        paths = {"STATE_DIR": state, "CACHE_DIR": state / "cache", "SOURCE_CACHE_DIR": state / "cache/sources"}
+        paths[name].mkdir(parents=True, exist_ok=True)
+        return paths[name]
     if name == "ResolutionError":
         return getattr(_load_app(), name)
     if name in {"config", "fs_ops", "atomic_io", "privileges"}:
@@ -78,6 +88,17 @@ def __getattr__(name: str) -> Any:
         return getattr(app, name)
     except AttributeError:
         raise AttributeError(name) from None
+
+
+# ``lpm.app`` may outlive this facade when embedders deliberately reload the
+# public module.  Register every facade instance so app-level compatibility
+# overrides (including hooks) still reach the object the caller imported.
+_register_facade(sys.modules[__name__])
+_existing_app = sys.modules.get("lpm.app") or sys.modules.get("src.lpm.app")
+if _existing_app is not None:
+    _overrides = getattr(_existing_app, "_LPM_OVERRIDE_MODULES", None)
+    if isinstance(_overrides, list) and sys.modules[__name__] not in _overrides:
+        _overrides.append(sys.modules[__name__])
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation only

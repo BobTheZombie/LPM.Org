@@ -24,6 +24,10 @@ The Linux Package Manager
   `benchmarks/solver_bench.py`.
 - **.lpmbuild scripts** for reproducible package builds and a `build` command to
   package staged roots.
+- **Source-built system bootstrap** that orders local `.lpmbuild` recipes,
+  creates a target root, and installs the complete resulting package set.
+- **Validated partition and fstab management** with non-destructive dry runs
+  and an explicit confirmation gate before disk changes.
 
 ## Documentation
 
@@ -31,6 +35,9 @@ The new [Technical How-To](docs/TECHNICAL-HOWTO.md) walks through every
 end-user command in depth, including configuration, repository management,
 package workflows, snapshotting, verification, and package creation. Refer to
 it whenever you need detailed examples or flag reference material.
+
+For building an LFS-style target from source, including optional partitioning,
+see [Source bootstrap and full-system installation](docs/SOURCE-BOOTSTRAP.md).
 
 ## Building LPM and the graphical UI
 

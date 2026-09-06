@@ -267,6 +267,8 @@ RED    = "\033[1;31m"
 RESET  = "\033[0m"
 
 def _resolve_lpm_attr(name: str, default):
+    from ._compat import facades
+
     for module_name in ("lpm", "src.lpm"):
         module = sys.modules.get(module_name)
         if module is not None and module not in _LPM_OVERRIDE_MODULES:
@@ -275,6 +277,9 @@ def _resolve_lpm_attr(name: str, default):
     current_modules = [sys.modules.get("lpm"), sys.modules.get("src.lpm")]
     ordered_modules = [m for m in current_modules if m is not None]
     for module in _LPM_OVERRIDE_MODULES:
+        if module not in ordered_modules:
+            ordered_modules.append(module)
+    for module in facades:
         if module not in ordered_modules:
             ordered_modules.append(module)
 
@@ -1538,7 +1543,29 @@ def solve(
     inv: Dict[int,Tuple[str,str]] = {v:k for k,v in var_of.items()}
     if not res.sat:
         names = sorted({inv.get(abs(l))[0] for l in (res.unsat_core or []) if abs(l) in inv})
-        details = _summarize_unsat_packages(names)
+        # A SAT core is intentionally minimal and may contain only the package
+        # where the contradiction surfaced.  Expand it through package
+        # requirements before producing diagnostics so cycles and the actual
+        # conflicting pair are not hidden from the administrator.
+        diagnostic_names = set(names)
+        pending = list(names)
+        while pending:
+            current = pending.pop()
+            for candidate in universe.candidates_by_name.get(current, []):
+                for requirement in _iter_requires(candidate, include_build_requires):
+                    try:
+                        expression = parse_dep_expr(requirement)
+                    except Exception:
+                        continue
+                    parts = flatten_and(expression) if expression.kind == "and" else [expression]
+                    for part in parts:
+                        if part.kind != "atom" or not part.atom:
+                            continue
+                        for provider in providers_for(universe, part.atom):
+                            if provider.name not in diagnostic_names:
+                                diagnostic_names.add(provider.name)
+                                pending.append(provider.name)
+        details = _summarize_unsat_packages(sorted(diagnostic_names))
         raise ResolutionError(
             "Unsatisfiable dependency set involving: " + ", ".join(names) + details
         )
@@ -1550,20 +1577,42 @@ def solve(
         name,ver = key
         for p in universe.candidates_by_name.get(name, []):
             if p.version==ver: chosen[name]=p; break
-    # topo-ish order by requires depth
-    chosen_names=set(chosen.keys()); dep_depth: Dict[str,int]={}
-    def depth_of(p: PkgMeta)->int:
-        if p.name in dep_depth: return dep_depth[p.name]
-        d=0
-        for s in p.requires:
-            e=parse_dep_expr(s); parts=flatten_and(e) if e.kind=="and" else [e]
+    # Stable dependency-first ordering.  Cycles are legal when the selected
+    # packages are otherwise satisfiable, so collapse them naturally by
+    # stopping recursion at the active DFS stack instead of recursing forever.
+    chosen_names = set(chosen)
+    ordered: List[PkgMeta] = []
+    permanent: Set[str] = set()
+    visiting: Set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in permanent or name in visiting:
+            return
+        visiting.add(name)
+        package = chosen[name]
+        dependencies: Set[str] = set()
+        for requirement in _iter_requires(package, include_build_requires):
+            expression = parse_dep_expr(requirement)
+            parts = flatten_and(expression) if expression.kind == "and" else [expression]
             for part in parts:
-                if part.kind=="atom":
-                    for q in providers_for(universe, part.atom):
-                        if q.name in chosen_names:
-                            d=max(d, 1+depth_of(chosen[q.name]))
-        dep_depth[p.name]=d; return d
-    return sorted(chosen.values(), key=lambda p: depth_of(p))
+                if part.kind != "atom" or not part.atom:
+                    continue
+                selected = sorted(
+                    provider.name
+                    for provider in providers_for(universe, part.atom)
+                    if provider.name in chosen_names
+                )
+                if selected:
+                    dependencies.add(selected[0])
+        for dependency in sorted(dependencies):
+            visit(dependency)
+        visiting.remove(name)
+        permanent.add(name)
+        ordered.append(package)
+
+    for name in sorted(chosen):
+        visit(name)
+    return ordered
 
 # =========================== Hooks =============================================
 def _detect_python_interpreter() -> Optional[str]:
@@ -5920,8 +5969,10 @@ def cmd_createiso(a):
     ok(f"Created ISO image at {output}")
 
 def cmd_clean_cache(_):
-    if CACHE_DIR.exists():
-        for p in CACHE_DIR.iterdir():
+    cache_dir = _current_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    if cache_dir.exists():
+        for p in cache_dir.iterdir():
             if p.is_dir():
                 shutil.rmtree(p)
             else:
@@ -7029,13 +7080,25 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--bootloader")
     sp.add_argument("--kernel")
     sp.add_argument("--config")
-    sp.add_argument("--resume", action="store_true")
-    sp.add_argument("--dry-run", action="store_true")
-    sp.add_argument("--verbose", action="store_true")
-    sp.add_argument("--force", action="store_true")
+    sp.add_argument("--resume", action="store_true", default=None)
+    sp.add_argument("--dry-run", action="store_true", default=None)
+    sp.add_argument("--verbose", action="store_true", default=None)
+    sp.add_argument("--force", action="store_true", default=None)
     sp.add_argument("--efi-dir")
     sp.add_argument("--boot-device")
     sp.add_argument("--network")
+    sp.add_argument("--plan-file", help="JSON package-order manifest")
+    sp.add_argument("--lpmbuild-root", help="build and install all local .lpmbuild recipes")
+    sp.add_argument("--source-output", help="directory for source-built package artifacts")
+    sp.add_argument("--include-packages", help="comma-separated source packages to include")
+    sp.add_argument("--exclude-packages", help="comma-separated source packages to exclude")
+    sp.add_argument("--partition-plan", help="validated JSON disk layout")
+    sp.add_argument(
+        "--partition-confirm",
+        action="store_true",
+        default=None,
+        help="confirm destructive partition-table and filesystem creation",
+    )
     sp.set_defaults(func=cmd_bootstrap)
 
     sp=sub.add_parser("bootstrap-chroot", help="Bootstrap a chroot target root")
@@ -7102,7 +7165,6 @@ def main(argv=None):
         elif cmd in _STATE_COMMANDS:
             _initialize_cli_state()
         if cmd in _PRIVILEGED_COMMANDS:
-            require_root(cmd)
             with operation_phase(privileged=True):
                 require_root(cmd)
                 args.func(args)

@@ -160,7 +160,7 @@ UI_BIN_TARGET = $(BUILD_DIR)/$(UI_APP_NAME).bin
 ALL_BIN_TARGETS = $(BIN_TARGET) $(UI_BIN_TARGET)
 STAGING_DIR = $(DIST_DIR)/$(APP)-$(SAFE_VERSION)
 TARBALL = $(DIST_DIR)/$(APP)-$(SAFE_VERSION).tar.gz
-HOOK_SRC = usr/share/lpm/hooks
+HOOK_SRC = usr/share/liblpm/hooks
 LIBLPM_HOOK_SRC = usr/libexec/lpm/hooks
 NUITKA_SOURCE_DIR ?= build/nuitka-src
 NUITKA_STAMP_FILE := $(abspath $(NUITKA_SOURCE_DIR)/.installed-commit)
@@ -244,9 +244,8 @@ $(STAGING_DIR): $(ALL_BIN_TARGETS) README.md LICENSE etc/lpm/lpm.conf $(BUILD_IN
 	cp $(UI_BIN_TARGET) $@/bin/$(UI_APP_NAME)
 	mkdir -p $@/usr/share/lpm
 	cp $(BUILD_INFO_JSON) $@/usr/share/lpm/build-info.json
-	cp -R $(HOOK_SRC) $@/usr/share/lpm/
 	mkdir -p $@/usr/share/liblpm
-	cp -R usr/share/liblpm/hooks $@/usr/share/liblpm/
+	cp -R $(HOOK_SRC) $@/usr/share/liblpm/
 	mkdir -p $@/usr/libexec/lpm
 	cp -R $(LIBLPM_HOOK_SRC) $@/usr/libexec/lpm/
 	mkdir -p $@/etc/lpm
