@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import logging
+import sys
 from pathlib import Path
 from typing import Dict, Mapping, Tuple
 
@@ -21,7 +22,21 @@ PIN_FILE  = STATE_DIR / "pins.json"        # {"hold":["pkg"], "prefer":{"pkg":"~
 HOOK_DIR  = Path("/usr/share/lpm/hooks")
 LIBLPM_SYSTEM_HOOK_DIR = Path("/usr/share/liblpm/hooks")
 LIBLPM_ADMIN_HOOK_DIR = Path("/etc/lpm/hooks")
-LIBLPM_HOOK_DIRS = (LIBLPM_SYSTEM_HOOK_DIR, LIBLPM_ADMIN_HOOK_DIR)
+
+
+def _runtime_hook_dirs() -> tuple[Path, ...]:
+    """Locate hooks in system, wheel/venv, source, and frozen layouts."""
+    candidates = [LIBLPM_SYSTEM_HOOK_DIR, LIBLPM_ADMIN_HOOK_DIR]
+    candidates.append(Path(sys.prefix) / "share/liblpm/hooks")
+    try:
+        candidates.append(Path(sys.executable).resolve().parent.parent / "share/liblpm/hooks")
+    except OSError:
+        pass
+    candidates.append(Path(__file__).resolve().parents[2] / "usr/share/liblpm/hooks")
+    return tuple(dict.fromkeys(candidates))
+
+
+LIBLPM_HOOK_DIRS = _runtime_hook_dirs()
 SIGN_KEY  = Path("/etc/lpm/private/lpm_signing.pem")   # OpenSSL PEM private key for signing
 TRUST_DIR = Path("/etc/lpm/trust")                     # dir of *.pem public keys for verification
 DEFAULT_ROOT = "/"
