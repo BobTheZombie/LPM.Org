@@ -46,3 +46,10 @@ def test_partition_plan_rejects_missing_root() -> None:
     plan = PartitionPlan("/dev/sda", partitions=(PartitionSpec(1, "1G", "swap"),))
     with pytest.raises(ValueError, match="root mountpoint"):
         validate_partition_plan(plan)
+
+
+def test_partition_execution_preflights_partprobe(monkeypatch) -> None:
+    monkeypatch.setattr("lpm.partitioning.validate_partition_plan", lambda *args, **kwargs: None)
+    monkeypatch.setattr("lpm.partitioning.shutil.which", lambda tool: None if tool == "partprobe" else f"/usr/bin/{tool}")
+    with pytest.raises(RuntimeError, match="partprobe"):
+        apply_partition_plan(_plan(), confirm=True)

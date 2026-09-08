@@ -487,6 +487,7 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
                 dry_run=cfg.dry_run,
                 include=cfg.include_packages,
                 exclude=cfg.exclude_packages,
+                architecture=cfg.architecture,
             )
             state["source_build"] = result
 
@@ -558,11 +559,28 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
 def run_bootstrap(args: Any) -> int:
     cfg = load_config(args)
     _safe_target(cfg.target)
-    state = load_state(cfg)
-    done = completed_stages(state)
     mount_state = ChrootMountState()
 
     try:
+        # The state file lives on the target root.  On resume, mount the
+        # existing layout before reading it and never repartition implicitly.
+        if cfg.resume and cfg.partition_plan and not cfg.dry_run:
+            from .partitioning import load_partition_plan, mount_partition_plan
+
+            cfg.target.mkdir(parents=True, exist_ok=True)
+            plan = load_partition_plan(cfg.partition_plan)
+            cfg.mounted_partitions.extend(mount_partition_plan(plan, cfg.target))
+            if not cfg.state_path.exists():
+                raise RuntimeError(
+                    "cannot resume: target has no bootstrap state; rerun without --resume "
+                    "and explicitly confirm partitioning"
+                )
+        state = load_state(cfg)
+        done = completed_stages(state)
+        if cfg.resume and cfg.partition_plan and not cfg.dry_run and Stage.PARTITION.value not in done:
+            raise RuntimeError(
+                "cannot resume: bootstrap state does not record completed partitioning"
+            )
         for stage in STAGES:
             if cfg.resume and stage.value in done:
                 _log(cfg, f"skip completed stage={stage.value}")

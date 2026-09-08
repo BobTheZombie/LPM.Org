@@ -4954,7 +4954,7 @@ def run_lpmbuild(
     return out, duration, phase_count, split_records
 
 # =========================== CLI commands =====================================
-_PRIVILEGED_COMMANDS = {"install", "installpkg", "remove", "removepkg", "upgrade", "upgradepkg", "rollback"}
+_PRIVILEGED_COMMANDS = {"install", "installpkg", "remove", "removepkg", "upgrade", "upgradepkg", "rollback", "systemiso"}
 _STATE_COMMANDS = {
     "autoremove",
     "bootstrap",
@@ -4962,6 +4962,7 @@ _STATE_COMMANDS = {
     "build",
     "buildchroot",
     "buildpkg",
+    "systemiso",
     "clean",
     "files",
     "history",
@@ -5941,6 +5942,13 @@ def cmd_createiso(a):
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
         ok(f"Created bootable ISO image at {result['output']}")
+
+
+def cmd_systemiso(a):
+    from .system_iso import build_system_iso
+
+    result = build_system_iso(a)
+    print(json.dumps(result, indent=2, sort_keys=True))
 
 def cmd_clean_cache(_):
     cache_dir = _current_cache_dir()
@@ -7028,6 +7036,19 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true", help="validate and print the ISO build plan")
     sp.set_defaults(func=cmd_createiso)
 
+    sp=sub.add_parser("systemiso", help="Build a complete source-based target root and bootable live ISO")
+    sp.add_argument("--lpmbuild-root", required=True, help="root of the package recipe repository")
+    sp.add_argument("--package-profile", required=True, help="newline-delimited live-system package profile")
+    sp.add_argument("--root", required=True, help="target root directory")
+    sp.add_argument("--output", required=True, help="output ISO path")
+    sp.add_argument("--artifact-dir", help="directory for built LPM packages")
+    sp.add_argument("--iso-staging", help="persistent ISO staging directory")
+    sp.add_argument("--architecture", choices=["x86_64", "x86_64-v2"], default="x86_64-v2")
+    sp.add_argument("--hostname", default="lpm-live")
+    sp.add_argument("--volume-id", default="LPM_LIVE")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.set_defaults(func=cmd_systemiso)
+
     if maintainer_mode.is_enabled():
         sp=sub.add_parser("lpmspec", help="Generate an lpmspec description for Nebula installers")
         sp.add_argument(
@@ -7075,6 +7096,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--lpmbuild-root", help="build and install all local .lpmbuild recipes")
     sp.add_argument("--source-output", help="directory for source-built package artifacts")
     sp.add_argument("--include-packages", help="comma-separated source packages to include")
+    sp.add_argument("--package-profile", help="newline-delimited package selection profile")
     sp.add_argument("--exclude-packages", help="comma-separated source packages to exclude")
     sp.add_argument("--partition-plan", help="validated JSON disk layout")
     sp.add_argument(

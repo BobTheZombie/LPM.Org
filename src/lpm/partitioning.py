@@ -141,7 +141,7 @@ def apply_partition_plan(
     commands.extend(_mkfs_command(plan.device, part) for part in sorted(plan.partitions, key=lambda item: item.number))
     if dry_run:
         return commands
-    required = {command[0] for command in commands}
+    required = {command[0] for command in commands} | {"partprobe"}
     missing = sorted(tool for tool in required if shutil.which(tool) is None)
     if missing:
         raise RuntimeError("missing partitioning tools: " + ", ".join(missing))
