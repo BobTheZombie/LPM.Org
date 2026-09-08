@@ -54,7 +54,7 @@ class HookAction:
     exec: List[str]
     needs_targets: bool = False
     depends: List[str] = field(default_factory=list)
-    abort_on_fail: bool = False
+    abort_on_fail: Optional[bool] = None
 
 
 @dataclass
@@ -199,7 +199,7 @@ def _parse_hook(path: Path) -> Hook:
     depends: List[str] = []
     for dep_line in action_data.get("Depends", []):
         depends.extend(part for part in dep_line.split() if part)
-    abort_on_fail = False
+    abort_on_fail: Optional[bool] = None
     if "AbortOnFail" in action_data:
         abort_on_fail = any(_str_to_bool(val) for val in action_data["AbortOnFail"])
 
@@ -244,6 +244,19 @@ def load_hooks(paths: Sequence[Path]) -> Dict[str, Hook]:
             continue
         hooks[hook.name] = hook
     return hooks
+
+
+def _resolve_hook_executable(hook: Hook, executable: str) -> str:
+    """Resolve installed absolute hook paths in source and bundled layouts."""
+    requested = Path(executable)
+    if not requested.is_absolute() or requested.exists():
+        return executable
+    try:
+        usr_root = hook.path.resolve().parents[3]
+    except (IndexError, OSError):
+        return executable
+    bundled = usr_root / "libexec/lpm/hooks" / requested.name
+    return str(bundled) if bundled.is_file() else executable
 
 
 @dataclass
@@ -398,6 +411,7 @@ class HookTransactionManager:
         action = hook.action
         base_argv = list(action.exec)
         if base_argv:
+            base_argv[0] = _resolve_hook_executable(hook, base_argv[0])
             exec_path = Path(base_argv[0])
             if exec_path.is_absolute():
                 _ensure_executable(exec_path)
@@ -448,21 +462,33 @@ class HookTransactionManager:
                     targets=targets,
                 )
                 return
-            self._handle_failure(HookExecutionError(
+            error = HookExecutionError(
                 hook_name=hook.name,
                 hook_path=hook.path,
                 package_context=package_context,
                 command=argv,
                 reason=str(exc),
-            ))
+            )
+            if action.abort_on_fail is not False:
+                self._handle_failure(error)
+            else:
+                self.failures.append(error)
+                logger.error("%s", error)
         except subprocess.CalledProcessError as exc:
-            self._handle_failure(HookExecutionError(
+            if action.abort_on_fail is True:
+                raise
+            error = HookExecutionError(
                 hook_name=hook.name,
                 hook_path=hook.path,
                 package_context=package_context,
                 command=argv,
                 reason=f"exit={exc.returncode}",
-            ))
+            )
+            if action.abort_on_fail is False:
+                self.failures.append(error)
+                logger.error("%s", error)
+            else:
+                self._handle_failure(error)
 
     def _handle_failure(self, error: HookExecutionError) -> None:
         if self.failure_mode == HookFailureMode.COLLECT:

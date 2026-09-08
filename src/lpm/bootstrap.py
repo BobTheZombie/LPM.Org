@@ -6,8 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
-from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -23,9 +22,11 @@ else:  # pragma: no cover - exercised on Python 3.10
 
 class Stage(str, Enum):
     VALIDATE = "validate"
+    PARTITION = "partition"
     PREPARE_DIRS = "prepare-dirs"
     SEED_LPM = "seed-lpm"
     RESOLVE_BUILD_PLAN = "resolve-build-plan"
+    BUILD_SOURCES = "build-sources"
     INSTALL_BASE = "install-base"
     CONFIGURE_SYSTEM = "configure-system"
     GENERATE_INITRAMFS = "generate-initramfs"
@@ -35,9 +36,11 @@ class Stage(str, Enum):
 
 STAGES: list[Stage] = [
     Stage.VALIDATE,
+    Stage.PARTITION,
     Stage.PREPARE_DIRS,
     Stage.SEED_LPM,
     Stage.RESOLVE_BUILD_PLAN,
+    Stage.BUILD_SOURCES,
     Stage.INSTALL_BASE,
     Stage.CONFIGURE_SYSTEM,
     Stage.GENERATE_INITRAMFS,
@@ -49,6 +52,8 @@ STAGES: list[Stage] = [
 @dataclass
 class BootstrapConfig:
     target: Path
+    architecture: str = "x86_64-v2"
+    initramfs_tool: str = "mkinitcpio"
     hostname: Optional[str] = None
     timezone: Optional[str] = None
     locale: Optional[str] = None
@@ -66,7 +71,12 @@ class BootstrapConfig:
     plan_file: Optional[Path] = None
     lpmbuild_root: Optional[Path] = None
     include_packages: tuple[str, ...] = ()
+    package_profile: Optional[Path] = None
     exclude_packages: tuple[str, ...] = ()
+    partition_plan: Optional[Path] = None
+    partition_confirm: bool = False
+    source_output: Optional[Path] = None
+    mounted_partitions: list[Path] = field(default_factory=list, repr=False)
 
     @property
     def state_path(self) -> Path:
@@ -163,6 +173,16 @@ def grub_install_command(boot_mode: str, efi_dir: Path | None, boot_device: str 
     return ["grub-install", "--target=i386-pc", boot_device]
 
 
+def _parent_disk(device: str | None) -> str | None:
+    if not device:
+        return None
+    if re.fullmatch(r"/dev/(?:nvme\d+n\d+|mmcblk\d+)p\d+", device):
+        return re.sub(r"p\d+$", "", device)
+    if re.fullmatch(r"/dev/(?:[hsv]d[a-z]+|xvd[a-z]+)\d+", device):
+        return re.sub(r"\d+$", "", device)
+    return device
+
+
 def verify_bootstrap(target: Path, kernel: str, boot_mode: str, package_count: int, devices: dict[str, str]) -> dict[str, object]:
     required = [target / "etc/fstab", target / "etc/hostname", target / "etc/locale.conf"]
     return {
@@ -196,6 +216,17 @@ def _parse_pkg_list(value: Any) -> tuple[str, ...]:
     return ()
 
 
+def _read_package_profile(path: Path | None) -> tuple[str, ...]:
+    if path is None:
+        return ()
+    if not path.is_file():
+        raise ValueError(f"package profile not found: {path}")
+    return tuple(
+        line for raw in path.read_text(encoding="utf-8").splitlines()
+        if (line := raw.strip()) and not line.startswith("#")
+    )
+
+
 def _bootstrap_packages(cfg: BootstrapConfig, kernel: str, network_backend: str, bootloader: str, state: Dict[str, Any]) -> list[str]:
     resolution = state.get("plan_resolution") if isinstance(state, dict) else None
     if isinstance(resolution, dict):
@@ -226,37 +257,9 @@ def _extract_depends_from_lpmbuild(script_path: Path) -> list[str]:
 
 
 def _resolve_from_lpmbuild_root(root: Path) -> list[str]:
-    scripts = sorted(root.glob("**/*.lpmbuild"))
-    graph: dict[str, set[str]] = {}
-    indegree: dict[str, int] = defaultdict(int)
-    reverse: dict[str, set[str]] = defaultdict(set)
-    names: set[str] = set()
+    from .source_bootstrap import discover_source_packages, source_build_order
 
-    for script in scripts:
-        name = script.stem
-        names.add(name)
-        deps = [d for d in _extract_depends_from_lpmbuild(script) if d in names or (root / d / f"{d}.lpmbuild").exists()]
-        graph[name] = set(deps)
-
-    for pkg, deps in graph.items():
-        indegree[pkg] = len(deps)
-        for dep in deps:
-            reverse[dep].add(pkg)
-
-    queue = deque(sorted(pkg for pkg in graph if indegree[pkg] == 0))
-    order: list[str] = []
-    while queue:
-        cur = queue.popleft()
-        order.append(cur)
-        for nxt in sorted(reverse.get(cur, set())):
-            indegree[nxt] -= 1
-            if indegree[nxt] == 0:
-                queue.append(nxt)
-
-    if len(order) != len(graph):
-        unresolved = sorted(set(graph) - set(order))
-        raise ValueError(f"cycle or unresolved dependency in lpmbuild metadata: {', '.join(unresolved)}")
-    return order
+    return [package.name for package in source_build_order(discover_source_packages(root))]
 
 
 def _resolve_build_plan(cfg: BootstrapConfig, state: Dict[str, Any]) -> Dict[str, Any]:
@@ -325,8 +328,12 @@ def load_config(cli_args: Any) -> BootstrapConfig:
     if target is None:
         raise ValueError("bootstrap target is required")
 
+    profile = _as_path(pick("package_profile"))
+    include_packages = tuple(dict.fromkeys((*_parse_pkg_list(pick("include_packages")), *_read_package_profile(profile))))
     return BootstrapConfig(
         target=target,
+        architecture=pick("architecture", "x86_64-v2"),
+        initramfs_tool=pick("initramfs_tool", "mkinitcpio"),
         hostname=pick("hostname"),
         timezone=pick("timezone"),
         locale=pick("locale"),
@@ -343,8 +350,12 @@ def load_config(cli_args: Any) -> BootstrapConfig:
         network=pick("network"),
         plan_file=_as_path(pick("plan_file")),
         lpmbuild_root=_as_path(pick("lpmbuild_root")),
-        include_packages=_parse_pkg_list(pick("include_packages")),
+        include_packages=include_packages,
+        package_profile=profile,
         exclude_packages=_parse_pkg_list(pick("exclude_packages")),
+        partition_plan=_as_path(pick("partition_plan")),
+        partition_confirm=bool(pick("partition_confirm", False)),
+        source_output=_as_path(pick("source_output")),
     )
 
 
@@ -400,10 +411,13 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
             elif "root" not in devices:
                 devices["root"] = part
     if stage == Stage.VALIDATE:
-        if not cfg.target.exists() and not cfg.dry_run:
+        if not cfg.target.exists() and not cfg.dry_run and cfg.partition_plan is None:
             raise FileNotFoundError(f"target does not exist: {cfg.target}")
-        missing = [tool for tool in ("lpm", "chroot", "mount", "umount") if shutil.which(tool) is None]
-        if missing:
+        required_tools = ["chroot", "mount", "umount"]
+        if cfg.lpmbuild_root is None:
+            required_tools.append("lpm")
+        missing = [tool for tool in required_tools if shutil.which(tool) is None]
+        if missing and not cfg.dry_run:
             raise RuntimeError(f"missing required tools: {', '.join(missing)}")
         if boot_mode not in {"uefi", "bios"}:
             raise ValueError(f"unsupported boot mode: {boot_mode}")
@@ -413,6 +427,21 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
             raise ValueError("boot device mapping must include root=DEVICE")
         if boot_mode == "uefi" and "efi" not in devices:
             _log(cfg, "warning: missing efi=DEVICE mapping; fstab/verification will omit EFI UUID")
+
+    elif stage == Stage.PARTITION:
+        if cfg.partition_plan:
+            from .partitioning import apply_partition_plan, load_partition_plan, mount_partition_plan
+
+            plan = load_partition_plan(cfg.partition_plan)
+            commands = apply_partition_plan(
+                plan, confirm=cfg.partition_confirm, dry_run=cfg.dry_run
+            )
+            if cfg.dry_run:
+                for command in commands:
+                    print(f"[bootstrap][dry-run] {' '.join(command)}")
+            else:
+                cfg.target.mkdir(parents=True, exist_ok=True)
+                cfg.mounted_partitions.extend(mount_partition_plan(plan, cfg.target))
 
     elif stage == Stage.PREPARE_DIRS:
         dirs = [cfg.target / "etc", cfg.target / "var", cfg.target / "usr", cfg.target / "boot"]
@@ -429,6 +458,9 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
             mount_chroot_api(cfg.target, mount_state)
 
     elif stage == Stage.SEED_LPM:
+        if cfg.lpmbuild_root:
+            _log(cfg, "source package set is responsible for installing LPM")
+            return state
         src_root = Path(__file__).resolve().parents[1]
         dst_root = cfg.target / "usr/lib/lpm"
         if cfg.dry_run:
@@ -443,7 +475,26 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
             state["plan_resolution"] = resolution
             _log(cfg, f"resolved plan source={resolution['source']} packages={len(resolution['package_order'])}")
 
+    elif stage == Stage.BUILD_SOURCES:
+        if cfg.lpmbuild_root:
+            from .source_bootstrap import build_and_install_sources
+
+            output = cfg.source_output or (cfg.target / "var/cache/lpm/source-bootstrap")
+            result = build_and_install_sources(
+                cfg.lpmbuild_root,
+                cfg.target,
+                output,
+                dry_run=cfg.dry_run,
+                include=cfg.include_packages,
+                exclude=cfg.exclude_packages,
+                architecture=cfg.architecture,
+            )
+            state["source_build"] = result
+
     elif stage == Stage.INSTALL_BASE:
+        if cfg.lpmbuild_root:
+            _log(cfg, "source bootstrap already installed the target package set")
+            return state
         cmd = generate_lpm_root_install_command(cfg.target, _bootstrap_packages(cfg, kernel, network_backend, bootloader, state))
         if cfg.dry_run:
             print(f"[bootstrap][dry-run] {' '.join(cmd)}")
@@ -456,9 +507,26 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
         else:
             write_system_identity(cfg.target, hostname, locale, keymap, timezone)
             write_network_config(cfg.target, backend=network_backend, use_iwd=(network_backend == "iwd"))
-            generate_fstab(cfg.target, boot_mode, cfg.efi_dir, devices)
+            if cfg.partition_plan:
+                from .partitioning import load_partition_plan, write_fstab
+
+                write_fstab(load_partition_plan(cfg.partition_plan), cfg.target)
+            else:
+                generate_fstab(cfg.target, boot_mode, cfg.efi_dir, devices)
 
     elif stage == Stage.GENERATE_INITRAMFS:
+        if cfg.initramfs_tool not in {"mkinitcpio", "dracut"}:
+            raise ValueError(f"unsupported initramfs tool: {cfg.initramfs_tool}")
+        if cfg.initramfs_tool == "dracut":
+            command = [
+                "dracut", "--force", "--add", "dmsquash-live",
+                f"/boot/initramfs-{kernel}.img", kernel,
+            ]
+            if cfg.dry_run:
+                print(f"[bootstrap][dry-run] {' '.join(generate_chroot_command(cfg.target, command))}")
+            else:
+                subprocess.run(generate_chroot_command(cfg.target, command), check=True)
+            return state
         if cfg.dry_run:
             print("[bootstrap][dry-run] generate mkinitcpio and run mkinitcpio -P in chroot")
         else:
@@ -468,7 +536,13 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
     elif stage == Stage.INSTALL_BOOTLOADER:
         if bootloader != "grub":
             raise ValueError(f"unsupported bootloader: {bootloader}")
-        cmd = grub_install_command(boot_mode, cfg.efi_dir, devices.get("boot") or cfg.boot_device)
+        partition_disk = None
+        if cfg.partition_plan:
+            from .partitioning import load_partition_plan
+
+            partition_disk = load_partition_plan(cfg.partition_plan).device
+        bios_disk = devices.get("disk") or partition_disk or _parent_disk(devices.get("root"))
+        cmd = grub_install_command(boot_mode, cfg.efi_dir, bios_disk)
         chroot_cmd = generate_chroot_command(cfg.target, cmd)
         if cfg.dry_run:
             print(f"[bootstrap][dry-run] {' '.join(chroot_cmd)}")
@@ -505,3 +579,8 @@ def run_bootstrap(args: Any) -> int:
                 umount_chroot_api(cfg.target, mount_state)
             except Exception as exc:
                 print(f"[bootstrap] warning: failed to unmount API mounts: {exc}")
+            for mounted in reversed(cfg.mounted_partitions):
+                try:
+                    subprocess.run(["umount", str(mounted)], check=True)
+                except Exception as exc:
+                    print(f"[bootstrap] warning: failed to unmount {mounted}: {exc}")

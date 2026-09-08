@@ -285,12 +285,8 @@ def test_installpkg_upgrade_is_atomic_replace(tmp_path, monkeypatch):
         shutil.rmtree(staged)
         return out
 
-    pkg_v1 = build_pkg("1", {"/etc/old.conf": "old
-", "/etc/common.conf": "v1
-"})
-    pkg_v2 = build_pkg("2", {"/etc/new.conf": "new
-", "/etc/common.conf": "v2
-"})
+    pkg_v1 = build_pkg("1", {"/etc/old.conf": "old\n", "/etc/common.conf": "v1\n"})
+    pkg_v2 = build_pkg("2", {"/etc/new.conf": "new\n", "/etc/common.conf": "v2\n"})
 
     lpm.installpkg(pkg_v1, root=root, dry_run=False, verify=False, force=False, explicit=True)
 
@@ -301,7 +297,5 @@ def test_installpkg_upgrade_is_atomic_replace(tmp_path, monkeypatch):
     lpm.installpkg(pkg_v2, root=root, dry_run=False, verify=False, force=False, explicit=True)
 
     assert not (root / "etc" / "old.conf").exists()
-    assert (root / "etc" / "new.conf").read_text() == "new
-"
-    assert (root / "etc" / "common.conf").read_text() == "v2
-"
+    assert (root / "etc" / "new.conf").read_text() == "new\n"
+    assert (root / "etc" / "common.conf").read_text() == "v2\n"

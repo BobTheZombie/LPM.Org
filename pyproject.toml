@@ -15,6 +15,7 @@ authors = [{ name = "Derek Midkiff" }]
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = [
+    "tqdm>=4.66",
     "tomli>=2.0.0; python_version < '3.11'",
 ]
 
@@ -37,7 +38,7 @@ lpm = ["bin/*"]
 [tool.setuptools.data-files]
 "etc/lpm" = ["etc/lpm/lpm.conf"]
 "share/liblpm/hooks" = ["usr/share/liblpm/hooks/*.hook"]
-"libexec/lpm/hooks" = ["usr/libexec/lpm/hooks/*"]
+"libexec/lpm/hooks" = ["usr/libexec/lpm/hooks/[a-z]*", "usr/libexec/lpm/hooks/_targets.py"]
 "share/lpm/packages" = ["packages/lpm/lpm.lpmbuild"]
 "lib/tmpfiles.d" = ["usr/lib/tmpfiles.d/lpm.conf"]
 "lib/sysusers.d" = ["usr/lib/sysusers.d/lpm.conf"]

@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -85,3 +86,24 @@ def test_install_base_uses_lpm_not_dnf(monkeypatch, tmp_path: Path) -> None:
     assert calls
     assert calls[0][0] == 'lpm'
     assert 'dnf' not in calls[0]
+
+
+def test_load_config_merges_package_profile(tmp_path: Path) -> None:
+    profile = tmp_path / "live.txt"
+    profile.write_text("# live profile\nfilesystem\nlinux\n", encoding="utf-8")
+    args = SimpleNamespace(
+        target=str(tmp_path / "root"), config=None, package_profile=str(profile),
+        include_packages="lpm,linux", architecture="x86_64-v2",
+    )
+    cfg = bootstrap.load_config(args)
+    assert cfg.include_packages == ("lpm", "linux", "filesystem")
+    assert cfg.architecture == "x86_64-v2"
+
+
+def test_dracut_live_initramfs_command(tmp_path: Path, capsys) -> None:
+    cfg = bootstrap.BootstrapConfig(
+        target=tmp_path, kernel="7.0.6", initramfs_tool="dracut", dry_run=True
+    )
+    bootstrap._run_stage(cfg, bootstrap.Stage.GENERATE_INITRAMFS, bootstrap.ChrootMountState(), {})
+    output = capsys.readouterr().out
+    assert "dracut --force --add dmsquash-live" in output

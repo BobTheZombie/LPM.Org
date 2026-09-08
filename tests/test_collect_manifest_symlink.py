@@ -16,3 +16,10 @@ def test_collect_manifest_handles_broken_symlink(tmp_path):
     assert entry["size"] == os.lstat(link).st_size
     assert "symbols" not in entry
 
+
+def test_collect_manifest_handles_directory_symlink(tmp_path):
+    (tmp_path / "usr/bin").mkdir(parents=True)
+    (tmp_path / "bin").symlink_to("usr/bin")
+    mani = collect_manifest(tmp_path)
+    entry = next(e for e in mani if e["path"] == "/bin")
+    assert entry["link"] == "usr/bin"

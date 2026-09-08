@@ -267,6 +267,8 @@ RED    = "\033[1;31m"
 RESET  = "\033[0m"
 
 def _resolve_lpm_attr(name: str, default):
+    from ._compat import facades
+
     for module_name in ("lpm", "src.lpm"):
         module = sys.modules.get(module_name)
         if module is not None and module not in _LPM_OVERRIDE_MODULES:
@@ -275,6 +277,9 @@ def _resolve_lpm_attr(name: str, default):
     current_modules = [sys.modules.get("lpm"), sys.modules.get("src.lpm")]
     ordered_modules = [m for m in current_modules if m is not None]
     for module in _LPM_OVERRIDE_MODULES:
+        if module not in ordered_modules:
+            ordered_modules.append(module)
+    for module in facades:
         if module not in ordered_modules:
             ordered_modules.append(module)
 
@@ -1538,7 +1543,29 @@ def solve(
     inv: Dict[int,Tuple[str,str]] = {v:k for k,v in var_of.items()}
     if not res.sat:
         names = sorted({inv.get(abs(l))[0] for l in (res.unsat_core or []) if abs(l) in inv})
-        details = _summarize_unsat_packages(names)
+        # A SAT core is intentionally minimal and may contain only the package
+        # where the contradiction surfaced.  Expand it through package
+        # requirements before producing diagnostics so cycles and the actual
+        # conflicting pair are not hidden from the administrator.
+        diagnostic_names = set(names)
+        pending = list(names)
+        while pending:
+            current = pending.pop()
+            for candidate in universe.candidates_by_name.get(current, []):
+                for requirement in _iter_requires(candidate, include_build_requires):
+                    try:
+                        expression = parse_dep_expr(requirement)
+                    except Exception:
+                        continue
+                    parts = flatten_and(expression) if expression.kind == "and" else [expression]
+                    for part in parts:
+                        if part.kind != "atom" or not part.atom:
+                            continue
+                        for provider in providers_for(universe, part.atom):
+                            if provider.name not in diagnostic_names:
+                                diagnostic_names.add(provider.name)
+                                pending.append(provider.name)
+        details = _summarize_unsat_packages(sorted(diagnostic_names))
         raise ResolutionError(
             "Unsatisfiable dependency set involving: " + ", ".join(names) + details
         )
@@ -1550,20 +1577,42 @@ def solve(
         name,ver = key
         for p in universe.candidates_by_name.get(name, []):
             if p.version==ver: chosen[name]=p; break
-    # topo-ish order by requires depth
-    chosen_names=set(chosen.keys()); dep_depth: Dict[str,int]={}
-    def depth_of(p: PkgMeta)->int:
-        if p.name in dep_depth: return dep_depth[p.name]
-        d=0
-        for s in p.requires:
-            e=parse_dep_expr(s); parts=flatten_and(e) if e.kind=="and" else [e]
+    # Stable dependency-first ordering.  Cycles are legal when the selected
+    # packages are otherwise satisfiable, so collapse them naturally by
+    # stopping recursion at the active DFS stack instead of recursing forever.
+    chosen_names = set(chosen)
+    ordered: List[PkgMeta] = []
+    permanent: Set[str] = set()
+    visiting: Set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in permanent or name in visiting:
+            return
+        visiting.add(name)
+        package = chosen[name]
+        dependencies: Set[str] = set()
+        for requirement in _iter_requires(package, include_build_requires):
+            expression = parse_dep_expr(requirement)
+            parts = flatten_and(expression) if expression.kind == "and" else [expression]
             for part in parts:
-                if part.kind=="atom":
-                    for q in providers_for(universe, part.atom):
-                        if q.name in chosen_names:
-                            d=max(d, 1+depth_of(chosen[q.name]))
-        dep_depth[p.name]=d; return d
-    return sorted(chosen.values(), key=lambda p: depth_of(p))
+                if part.kind != "atom" or not part.atom:
+                    continue
+                selected = sorted(
+                    provider.name
+                    for provider in providers_for(universe, part.atom)
+                    if provider.name in chosen_names
+                )
+                if selected:
+                    dependencies.add(selected[0])
+        for dependency in sorted(dependencies):
+            visit(dependency)
+        visiting.remove(name)
+        permanent.add(name)
+        ordered.append(package)
+
+    for name in sorted(chosen):
+        visit(name)
+    return ordered
 
 # =========================== Hooks =============================================
 def _detect_python_interpreter() -> Optional[str]:
@@ -2049,9 +2098,13 @@ def collect_manifest(stagedir: Path) -> List[Dict[str, object]]:
     mani: List[Dict[str, object]] = []
     skip = {".lpm-meta.json", ".lpm-manifest.json"}
 
-    for root, _, files in os.walk(stagedir):
+    for root, dirs, files in os.walk(stagedir):
         root_path = Path(root)
-        for fn in files:
+        # os.walk reports symlinks to directories in ``dirs`` even though it
+        # does not descend into them. Include them in the package manifest.
+        symlink_dirs = [name for name in dirs if (root_path / name).is_symlink()]
+        dirs[:] = [name for name in dirs if name not in symlink_dirs]
+        for fn in [*files, *symlink_dirs]:
             if fn in skip:
                 continue
             f = root_path / fn
@@ -4535,8 +4588,10 @@ def run_lpmbuild(
             sources.append(entry)
 
     fetch_url_opt_in = scal.get("FETCH_URL", "").strip().lower() in {"1", "true", "yes", "on"}
-    if fetch_url_opt_in or not sources:
-        # Auto-fetch source if URL provided and explicitly requested or no SOURCE entries exist
+    if fetch_url_opt_in:
+        # URL is project metadata unless the recipe explicitly opts in to
+        # treating it as a source archive.  Source-less metapackages and
+        # filesystem recipes must not download their homepage.
         _maybe_fetch_source(url, srcroot)
 
     base_repo = CONF.get("LPMBUILD_REPO", "https://gitlab.com/lpm-org/packages/-/raw/main").rstrip("/")
@@ -5875,53 +5930,23 @@ def cmd_genindex(a):
     gen_index(repo_dir, a.base_url, arch_filter=a.arch)
 
 def cmd_createiso(a):
-    source_root = Path(a.source_root or "/").resolve()
-    output = Path(a.output).resolve()
-    volume_id = a.volume_id.strip() if a.volume_id else "LPM_PRELOAD"
+    from .live_iso import build_live_iso
 
-    if not source_root.exists() or not source_root.is_dir():
-        die(f"Source root does not exist or is not a directory: {source_root}")
-    if source_root == Path("/"):
-        log("[lpm] Creating system image from / (excluding transient and user-home paths)")
-    output.parent.mkdir(parents=True, exist_ok=True)
-
-    xorriso = shutil.which("xorriso")
-    if not xorriso:
-        die("xorriso is required. Install xorriso and try again.")
-
-    exclusions = [
-        "home",
-        "proc",
-        "sys",
-        "dev",
-        "run",
-        "tmp",
-        "mnt",
-        "media",
-        "lost+found",
-    ]
-    exclude_args = [arg for item in exclusions for arg in ("-m", item)]
-    cmd = [
-        xorriso,
-        "-as",
-        "mkisofs",
-        "-R",
-        "-J",
-        "-V",
-        volume_id,
-        "-o",
-        str(output),
-        *exclude_args,
-        str(source_root),
-    ]
-    res = subprocess.run(cmd, check=False)
-    if res.returncode != 0:
-        die(f"ISO creation failed with exit code {res.returncode}")
-    ok(f"Created ISO image at {output}")
+    result = build_live_iso(
+        a.source_root or "/", a.output, volume_id=a.volume_id,
+        architecture=a.architecture, kernel=a.kernel, initramfs=a.initramfs,
+        dry_run=a.dry_run, staging_root=a.staging_root,
+    )
+    if a.dry_run:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        ok(f"Created bootable ISO image at {result['output']}")
 
 def cmd_clean_cache(_):
-    if CACHE_DIR.exists():
-        for p in CACHE_DIR.iterdir():
+    cache_dir = _current_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    if cache_dir.exists():
+        for p in cache_dir.iterdir():
             if p.is_dir():
                 shutil.rmtree(p)
             else:
@@ -6312,7 +6337,10 @@ def installpkg(
                             dest = root / rel
                             dest.parent.mkdir(parents=True, exist_ok=True)
 
-                            if src.is_dir():
+                            # Path.is_dir() follows symlinks. Handle links
+                            # first so directory links such as /bin -> usr/bin
+                            # are not materialized as real directories.
+                            if src.is_dir() and not src.is_symlink():
                                 dest.mkdir(parents=True, exist_ok=True)
                                 continue
 
@@ -6989,10 +7017,15 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--arch", help="only include this arch (noarch always included)", default=None)
     sp.set_defaults(func=cmd_genindex)
 
-    sp=sub.add_parser("createiso", help="Create a bootable-style recovery ISO from the system with LPM preloaded")
+    sp=sub.add_parser("createiso", help="Create a GRUB bootable live ISO from a populated target root")
     sp.add_argument("--source-root", default="/", help="filesystem root to package (default: /)")
     sp.add_argument("--output", required=True, help="output .iso file path")
-    sp.add_argument("--volume-id", default="LPM_PRELOAD", help="ISO volume identifier")
+    sp.add_argument("--volume-id", default="LPM_LIVE", help="ISO volume identifier")
+    sp.add_argument("--architecture", choices=["x86_64", "x86_64-v2"], default="x86_64-v2")
+    sp.add_argument("--kernel", help="kernel path, absolute or relative to source root")
+    sp.add_argument("--initramfs", help="initramfs path, absolute or relative to source root")
+    sp.add_argument("--staging-root", help="retain/use a specific ISO staging directory")
+    sp.add_argument("--dry-run", action="store_true", help="validate and print the ISO build plan")
     sp.set_defaults(func=cmd_createiso)
 
     if maintainer_mode.is_enabled():
@@ -7022,6 +7055,8 @@ def build_parser()->argparse.ArgumentParser:
 
     sp=sub.add_parser("bootstrap", help="Bootstrap a new target system")
     sp.add_argument("--target")
+    sp.add_argument("--architecture", choices=["x86_64", "x86_64-v2"], default=None)
+    sp.add_argument("--initramfs-tool", choices=["mkinitcpio", "dracut"], default=None)
     sp.add_argument("--hostname")
     sp.add_argument("--timezone")
     sp.add_argument("--locale")
@@ -7029,13 +7064,26 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--bootloader")
     sp.add_argument("--kernel")
     sp.add_argument("--config")
-    sp.add_argument("--resume", action="store_true")
-    sp.add_argument("--dry-run", action="store_true")
-    sp.add_argument("--verbose", action="store_true")
-    sp.add_argument("--force", action="store_true")
+    sp.add_argument("--resume", action="store_true", default=None)
+    sp.add_argument("--dry-run", action="store_true", default=None)
+    sp.add_argument("--verbose", action="store_true", default=None)
+    sp.add_argument("--force", action="store_true", default=None)
     sp.add_argument("--efi-dir")
     sp.add_argument("--boot-device")
     sp.add_argument("--network")
+    sp.add_argument("--plan-file", help="JSON package-order manifest")
+    sp.add_argument("--lpmbuild-root", help="build and install all local .lpmbuild recipes")
+    sp.add_argument("--source-output", help="directory for source-built package artifacts")
+    sp.add_argument("--include-packages", help="comma-separated source packages to include")
+    sp.add_argument("--package-profile", help="newline-delimited package selection profile")
+    sp.add_argument("--exclude-packages", help="comma-separated source packages to exclude")
+    sp.add_argument("--partition-plan", help="validated JSON disk layout")
+    sp.add_argument(
+        "--partition-confirm",
+        action="store_true",
+        default=None,
+        help="confirm destructive partition-table and filesystem creation",
+    )
     sp.set_defaults(func=cmd_bootstrap)
 
     sp=sub.add_parser("bootstrap-chroot", help="Bootstrap a chroot target root")
@@ -7102,7 +7150,6 @@ def main(argv=None):
         elif cmd in _STATE_COMMANDS:
             _initialize_cli_state()
         if cmd in _PRIVILEGED_COMMANDS:
-            require_root(cmd)
             with operation_phase(privileged=True):
                 require_root(cmd)
                 args.func(args)
