@@ -487,7 +487,6 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
                 dry_run=cfg.dry_run,
                 include=cfg.include_packages,
                 exclude=cfg.exclude_packages,
-                architecture=cfg.architecture,
             )
             state["source_build"] = result
 

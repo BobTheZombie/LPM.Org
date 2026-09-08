@@ -7075,7 +7075,6 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--lpmbuild-root", help="build and install all local .lpmbuild recipes")
     sp.add_argument("--source-output", help="directory for source-built package artifacts")
     sp.add_argument("--include-packages", help="comma-separated source packages to include")
-    sp.add_argument("--package-profile", help="newline-delimited package selection profile")
     sp.add_argument("--exclude-packages", help="comma-separated source packages to exclude")
     sp.add_argument("--partition-plan", help="validated JSON disk layout")
     sp.add_argument(

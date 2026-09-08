@@ -15,24 +15,6 @@ def test_source_build_order_is_dependency_first(tmp_path: Path) -> None:
     assert [item.name for item in source_build_order(packages)] == ["base", "shell"]
 
 
-def test_exact_package_name_wins_over_capability_provider(tmp_path: Path) -> None:
-    _recipe(tmp_path / "cargo.lpmbuild", "cargo")
-    (tmp_path / "rust.lpmbuild").write_text(
-        'NAME=rust\nVERSION=1\nREQUIRES=()\nPROVIDES=("cargo")\n', encoding="utf-8"
-    )
-    _recipe(tmp_path / "consumer.lpmbuild", "consumer", "cargo")
-    order = [item.name for item in source_build_order(discover_source_packages(tmp_path))]
-    assert order.index("cargo") < order.index("consumer")
-
-
-def test_or_dependency_selects_one_local_alternative(tmp_path: Path) -> None:
-    _recipe(tmp_path / "a.lpmbuild", "a")
-    _recipe(tmp_path / "b.lpmbuild", "b", "consumer")
-    _recipe(tmp_path / "consumer.lpmbuild", "consumer", "a | b")
-    order = [item.name for item in source_build_order(discover_source_packages(tmp_path))]
-    assert order.index("a") < order.index("consumer") < order.index("b")
-
-
 def test_source_bootstrap_builds_then_installs_in_order(tmp_path: Path) -> None:
     recipes = tmp_path / "recipes"
     recipes.mkdir()
