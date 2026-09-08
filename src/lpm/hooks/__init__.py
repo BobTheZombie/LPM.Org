@@ -246,6 +246,19 @@ def load_hooks(paths: Sequence[Path]) -> Dict[str, Hook]:
     return hooks
 
 
+def _resolve_hook_executable(hook: Hook, executable: str) -> str:
+    """Resolve installed absolute hook paths in source and bundled layouts."""
+    requested = Path(executable)
+    if not requested.is_absolute() or requested.exists():
+        return executable
+    try:
+        usr_root = hook.path.resolve().parents[3]
+    except (IndexError, OSError):
+        return executable
+    bundled = usr_root / "libexec/lpm/hooks" / requested.name
+    return str(bundled) if bundled.is_file() else executable
+
+
 @dataclass
 class _TransactionEvent:
     name: str
@@ -398,6 +411,7 @@ class HookTransactionManager:
         action = hook.action
         base_argv = list(action.exec)
         if base_argv:
+            base_argv[0] = _resolve_hook_executable(hook, base_argv[0])
             exec_path = Path(base_argv[0])
             if exec_path.is_absolute():
                 _ensure_executable(exec_path)

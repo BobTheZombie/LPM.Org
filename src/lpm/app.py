@@ -2098,9 +2098,13 @@ def collect_manifest(stagedir: Path) -> List[Dict[str, object]]:
     mani: List[Dict[str, object]] = []
     skip = {".lpm-meta.json", ".lpm-manifest.json"}
 
-    for root, _, files in os.walk(stagedir):
+    for root, dirs, files in os.walk(stagedir):
         root_path = Path(root)
-        for fn in files:
+        # os.walk reports symlinks to directories in ``dirs`` even though it
+        # does not descend into them. Include them in the package manifest.
+        symlink_dirs = [name for name in dirs if (root_path / name).is_symlink()]
+        dirs[:] = [name for name in dirs if name not in symlink_dirs]
+        for fn in [*files, *symlink_dirs]:
             if fn in skip:
                 continue
             f = root_path / fn
@@ -4584,8 +4588,10 @@ def run_lpmbuild(
             sources.append(entry)
 
     fetch_url_opt_in = scal.get("FETCH_URL", "").strip().lower() in {"1", "true", "yes", "on"}
-    if fetch_url_opt_in or not sources:
-        # Auto-fetch source if URL provided and explicitly requested or no SOURCE entries exist
+    if fetch_url_opt_in:
+        # URL is project metadata unless the recipe explicitly opts in to
+        # treating it as a source archive.  Source-less metapackages and
+        # filesystem recipes must not download their homepage.
         _maybe_fetch_source(url, srcroot)
 
     base_repo = CONF.get("LPMBUILD_REPO", "https://gitlab.com/lpm-org/packages/-/raw/main").rstrip("/")
@@ -5924,49 +5930,17 @@ def cmd_genindex(a):
     gen_index(repo_dir, a.base_url, arch_filter=a.arch)
 
 def cmd_createiso(a):
-    source_root = Path(a.source_root or "/").resolve()
-    output = Path(a.output).resolve()
-    volume_id = a.volume_id.strip() if a.volume_id else "LPM_PRELOAD"
+    from .live_iso import build_live_iso
 
-    if not source_root.exists() or not source_root.is_dir():
-        die(f"Source root does not exist or is not a directory: {source_root}")
-    if source_root == Path("/"):
-        log("[lpm] Creating system image from / (excluding transient and user-home paths)")
-    output.parent.mkdir(parents=True, exist_ok=True)
-
-    xorriso = shutil.which("xorriso")
-    if not xorriso:
-        die("xorriso is required. Install xorriso and try again.")
-
-    exclusions = [
-        "home",
-        "proc",
-        "sys",
-        "dev",
-        "run",
-        "tmp",
-        "mnt",
-        "media",
-        "lost+found",
-    ]
-    exclude_args = [arg for item in exclusions for arg in ("-m", item)]
-    cmd = [
-        xorriso,
-        "-as",
-        "mkisofs",
-        "-R",
-        "-J",
-        "-V",
-        volume_id,
-        "-o",
-        str(output),
-        *exclude_args,
-        str(source_root),
-    ]
-    res = subprocess.run(cmd, check=False)
-    if res.returncode != 0:
-        die(f"ISO creation failed with exit code {res.returncode}")
-    ok(f"Created ISO image at {output}")
+    result = build_live_iso(
+        a.source_root or "/", a.output, volume_id=a.volume_id,
+        architecture=a.architecture, kernel=a.kernel, initramfs=a.initramfs,
+        dry_run=a.dry_run, staging_root=a.staging_root,
+    )
+    if a.dry_run:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        ok(f"Created bootable ISO image at {result['output']}")
 
 def cmd_clean_cache(_):
     cache_dir = _current_cache_dir()
@@ -6363,7 +6337,10 @@ def installpkg(
                             dest = root / rel
                             dest.parent.mkdir(parents=True, exist_ok=True)
 
-                            if src.is_dir():
+                            # Path.is_dir() follows symlinks. Handle links
+                            # first so directory links such as /bin -> usr/bin
+                            # are not materialized as real directories.
+                            if src.is_dir() and not src.is_symlink():
                                 dest.mkdir(parents=True, exist_ok=True)
                                 continue
 
@@ -7040,10 +7017,15 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--arch", help="only include this arch (noarch always included)", default=None)
     sp.set_defaults(func=cmd_genindex)
 
-    sp=sub.add_parser("createiso", help="Create a bootable-style recovery ISO from the system with LPM preloaded")
+    sp=sub.add_parser("createiso", help="Create a GRUB bootable live ISO from a populated target root")
     sp.add_argument("--source-root", default="/", help="filesystem root to package (default: /)")
     sp.add_argument("--output", required=True, help="output .iso file path")
-    sp.add_argument("--volume-id", default="LPM_PRELOAD", help="ISO volume identifier")
+    sp.add_argument("--volume-id", default="LPM_LIVE", help="ISO volume identifier")
+    sp.add_argument("--architecture", choices=["x86_64", "x86_64-v2"], default="x86_64-v2")
+    sp.add_argument("--kernel", help="kernel path, absolute or relative to source root")
+    sp.add_argument("--initramfs", help="initramfs path, absolute or relative to source root")
+    sp.add_argument("--staging-root", help="retain/use a specific ISO staging directory")
+    sp.add_argument("--dry-run", action="store_true", help="validate and print the ISO build plan")
     sp.set_defaults(func=cmd_createiso)
 
     if maintainer_mode.is_enabled():
@@ -7073,6 +7055,8 @@ def build_parser()->argparse.ArgumentParser:
 
     sp=sub.add_parser("bootstrap", help="Bootstrap a new target system")
     sp.add_argument("--target")
+    sp.add_argument("--architecture", choices=["x86_64", "x86_64-v2"], default=None)
+    sp.add_argument("--initramfs-tool", choices=["mkinitcpio", "dracut"], default=None)
     sp.add_argument("--hostname")
     sp.add_argument("--timezone")
     sp.add_argument("--locale")

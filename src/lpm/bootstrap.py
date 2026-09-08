@@ -52,6 +52,8 @@ STAGES: list[Stage] = [
 @dataclass
 class BootstrapConfig:
     target: Path
+    architecture: str = "x86_64-v2"
+    initramfs_tool: str = "mkinitcpio"
     hostname: Optional[str] = None
     timezone: Optional[str] = None
     locale: Optional[str] = None
@@ -69,6 +71,7 @@ class BootstrapConfig:
     plan_file: Optional[Path] = None
     lpmbuild_root: Optional[Path] = None
     include_packages: tuple[str, ...] = ()
+    package_profile: Optional[Path] = None
     exclude_packages: tuple[str, ...] = ()
     partition_plan: Optional[Path] = None
     partition_confirm: bool = False
@@ -213,6 +216,17 @@ def _parse_pkg_list(value: Any) -> tuple[str, ...]:
     return ()
 
 
+def _read_package_profile(path: Path | None) -> tuple[str, ...]:
+    if path is None:
+        return ()
+    if not path.is_file():
+        raise ValueError(f"package profile not found: {path}")
+    return tuple(
+        line for raw in path.read_text(encoding="utf-8").splitlines()
+        if (line := raw.strip()) and not line.startswith("#")
+    )
+
+
 def _bootstrap_packages(cfg: BootstrapConfig, kernel: str, network_backend: str, bootloader: str, state: Dict[str, Any]) -> list[str]:
     resolution = state.get("plan_resolution") if isinstance(state, dict) else None
     if isinstance(resolution, dict):
@@ -314,8 +328,12 @@ def load_config(cli_args: Any) -> BootstrapConfig:
     if target is None:
         raise ValueError("bootstrap target is required")
 
+    profile = _as_path(pick("package_profile"))
+    include_packages = tuple(dict.fromkeys((*_parse_pkg_list(pick("include_packages")), *_read_package_profile(profile))))
     return BootstrapConfig(
         target=target,
+        architecture=pick("architecture", "x86_64-v2"),
+        initramfs_tool=pick("initramfs_tool", "mkinitcpio"),
         hostname=pick("hostname"),
         timezone=pick("timezone"),
         locale=pick("locale"),
@@ -332,7 +350,8 @@ def load_config(cli_args: Any) -> BootstrapConfig:
         network=pick("network"),
         plan_file=_as_path(pick("plan_file")),
         lpmbuild_root=_as_path(pick("lpmbuild_root")),
-        include_packages=_parse_pkg_list(pick("include_packages")),
+        include_packages=include_packages,
+        package_profile=profile,
         exclude_packages=_parse_pkg_list(pick("exclude_packages")),
         partition_plan=_as_path(pick("partition_plan")),
         partition_confirm=bool(pick("partition_confirm", False)),
@@ -495,6 +514,18 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
                 generate_fstab(cfg.target, boot_mode, cfg.efi_dir, devices)
 
     elif stage == Stage.GENERATE_INITRAMFS:
+        if cfg.initramfs_tool not in {"mkinitcpio", "dracut"}:
+            raise ValueError(f"unsupported initramfs tool: {cfg.initramfs_tool}")
+        if cfg.initramfs_tool == "dracut":
+            command = [
+                "dracut", "--force", "--add", "dmsquash-live",
+                f"/boot/initramfs-{kernel}.img", kernel,
+            ]
+            if cfg.dry_run:
+                print(f"[bootstrap][dry-run] {' '.join(generate_chroot_command(cfg.target, command))}")
+            else:
+                subprocess.run(generate_chroot_command(cfg.target, command), check=True)
+            return state
         if cfg.dry_run:
             print("[bootstrap][dry-run] generate mkinitcpio and run mkinitcpio -P in chroot")
         else:
