@@ -38,14 +38,15 @@ prepare() {{
     assert arrays["REQUIRES"] == ["bash", "glibc>=2.40"]
 
 
-def test_metadata_parser_rejects_command_substitution(tmp_path: Path) -> None:
+def test_metadata_parser_skips_command_substitution(tmp_path: Path) -> None:
     recipe = tmp_path / "unsafe.lpmbuild"
     recipe.write_text(
-        "NAME=unsafe\nVERSION=$(touch should-not-exist)\n",
+        "NAME=unsafe\\nVERSION=$(touch should-not-exist)\\nRELEASE=1\\n",
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="substitution is not allowed"):
-        app._capture_lpmbuild_metadata(recipe)
+    scalars, _arrays, _maps = app._capture_lpmbuild_metadata(recipe)
 
+    assert scalars["NAME"] == "unsafe"
+    assert "VERSION" not in scalars
     assert not (tmp_path / "should-not-exist").exists()
