@@ -41,7 +41,7 @@ prepare() {{
 def test_metadata_parser_skips_command_substitution(tmp_path: Path) -> None:
     recipe = tmp_path / "unsafe.lpmbuild"
     recipe.write_text(
-        "NAME=unsafe\\nVERSION=$(touch should-not-exist)\\nRELEASE=1\\n",
+        "NAME=unsafe\nVERSION=$(touch should-not-exist)\nRELEASE=1\n",
         encoding="utf-8",
     )
 
