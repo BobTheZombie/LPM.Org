@@ -262,10 +262,12 @@ $(STAGING_DIR): $(ALL_BIN_TARGETS) README.md LICENSE etc/lpm/lpm.conf $(BUILD_IN
 	install -m 0755 "$${ROOT}/bin/lpm" "$${DESTDIR}$${PREFIX}/bin/lpm"
 	install -m 0755 "$${ROOT}/bin/$(UI_APP_NAME)" "$${DESTDIR}$${PREFIX}/bin/$(UI_APP_NAME)"
 	
-	HOOK_DEST="$${DESTDIR}/usr/share/lpm"
-	rm -rf "$${HOOK_DEST}/hooks"
-	mkdir -p "$${HOOK_DEST}"
-	cp -R "$${ROOT}/usr/share/lpm/hooks" "$${HOOK_DEST}/"
+	HOOK_DEST="${DESTDIR}/usr/share/lpm"
+	mkdir -p "${HOOK_DEST}"
+	if [ -d "${ROOT}/usr/share/lpm/hooks" ]; then
+	    rm -rf "${HOOK_DEST}/hooks"
+	    cp -R "${ROOT}/usr/share/lpm/hooks" "${HOOK_DEST}/"
+	fi
 	BUILD_INFO_SRC="$${ROOT}/usr/share/lpm/build-info.json"
 	if [ -f "$${BUILD_INFO_SRC}" ]; then
 	    install -m 0644 "$${BUILD_INFO_SRC}" "$${HOOK_DEST}/build-info.json"
