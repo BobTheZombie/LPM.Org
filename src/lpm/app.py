@@ -3628,8 +3628,13 @@ def _capture_lpmbuild_metadata(
     bcmd = "\n".join(lines)
 
     try:
-        proc = subprocess.run(["bash", "-c", bcmd], capture_output=True, check=True)
-    except subprocess.CalledProcessError as e:
+        proc = subprocess.run(
+            ["bash", "-c", bcmd],
+            capture_output=True,
+            check=True,
+            timeout=10,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         warn(f"lpmbuild parse failed: {e}")
         return {}, {}, {"META_PROVIDES": {}}
 
