@@ -9,10 +9,26 @@ from pathlib import Path
 from typing import Dict, Mapping, Tuple
 
 # =========================== Config / Defaults ================================
-CONF_FILE = Path("/etc/lpm/lpm.conf")      # KEY=VALUE, e.g. ARCH=znver2
+def _runtime_path(env_name: str, system_path: str, user_path: Path) -> Path:
+    override = os.environ.get(env_name)
+    if override:
+        return Path(override).expanduser()
+    system = Path(system_path)
+    if system.exists() or (hasattr(os, "geteuid") and os.geteuid() == 0):
+        return system
+    return user_path.expanduser()
+
+
+_XDG_CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config"))
+_XDG_STATE_HOME = Path(os.environ.get("XDG_STATE_HOME", "~/.local/state"))
+CONF_FILE = _runtime_path(
+    "LPM_CONFIG_FILE", "/etc/lpm/lpm.conf", _XDG_CONFIG_HOME / "lpm/lpm.conf"
+)
 TEMPLATE_CONF = Path(__file__).resolve().parents[2] / "etc" / "lpm" / "lpm.conf"
-STATE_DIR = Path(os.environ.get("LPM_STATE_DIR", "/var/lib/lpm"))
-LOCK_PATH = Path(os.environ.get("LPM_LOCK_PATH", "/var/lib/lpm/lock"))
+STATE_DIR = _runtime_path(
+    "LPM_STATE_DIR", "/var/lib/lpm", _XDG_STATE_HOME / "lpm"
+)
+LOCK_PATH = Path(os.environ.get("LPM_LOCK_PATH", str(STATE_DIR / "lock")))
 DB_PATH   = STATE_DIR / "state.db"
 CACHE_DIR = STATE_DIR / "cache"
 SOURCE_CACHE_DIR = CACHE_DIR / "sources"
