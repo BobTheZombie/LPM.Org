@@ -3461,6 +3461,7 @@ def _safe_lpmbuild_metadata_program(script: Path) -> str:
     lines = source.splitlines()
     declarations: List[str] = []
     index = 0
+    in_function = False
 
     def _paren_delta(line: str) -> int:
         depth = 0
@@ -3490,6 +3491,19 @@ def _safe_lpmbuild_metadata_program(script: Path) -> str:
 
     while index < len(lines):
         line = lines[index]
+        if in_function:
+            if re.match(r"^\\s*}\\s*(?:#.*)?$", line):
+                in_function = False
+            index += 1
+            continue
+        if re.match(
+            r"^\\s*(?:function\\s+)?[A-Za-z_][A-Za-z0-9_]*"
+            r"\\s*(?:\\(\\s*\\))?\\s*\\{",
+            line,
+        ):
+            in_function = True
+            index += 1
+            continue
         if not _LPMBUILD_ASSIGNMENT_RE.match(line):
             index += 1
             continue
@@ -3503,9 +3517,8 @@ def _safe_lpmbuild_metadata_program(script: Path) -> str:
 
         declaration = "\n".join(block)
         if "$(" in declaration or "`" in declaration or "<(" in declaration or ">(" in declaration:
-            raise ValueError(
-                f"{script}: command/process substitution is not allowed in lpmbuild metadata"
-            )
+            index += 1
+            continue
         declarations.append(declaration)
         index += 1
 
