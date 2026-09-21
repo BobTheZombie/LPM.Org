@@ -3440,14 +3440,86 @@ def _merge_provides_with_map(
     return merged, normalized
 
 
+_LPMBUILD_ASSIGNMENT_RE = re.compile(
+    r"^\\s*(?:(?:export|readonly)\\s+)?"
+    r"(?:(?:declare|typeset)\\s+(?:-[A-Za-z]+\\s+)*)?"
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\\[[^]]+\\])?\\s*(?:\\+=|=)"
+)
+
+
+def _safe_lpmbuild_metadata_program(script: Path) -> str:
+    """Return metadata assignments without executing recipe build commands.
+
+    A recipe is executable shell code.  Sourcing it merely to inspect NAME,
+    VERSION, and dependency arrays lets accidental top-level commands modify
+    the host.  Keep only shell assignment statements (including multiline
+    arrays), then let bash perform ordinary quoting and variable expansion on
+    that inert subset.
+    """
+
+    source = script.read_text(encoding="utf-8")
+    lines = source.splitlines()
+    declarations: List[str] = []
+    index = 0
+
+    def _paren_delta(line: str) -> int:
+        depth = 0
+        quote: Optional[str] = None
+        escaped = False
+        for pos, char in enumerate(line):
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\" and quote != "'":
+                escaped = True
+                continue
+            if quote:
+                if char == quote:
+                    quote = None
+                continue
+            if char in {"'", '"'}:
+                quote = char
+                continue
+            if char == "#":
+                break
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+        return depth
+
+    while index < len(lines):
+        line = lines[index]
+        if not _LPMBUILD_ASSIGNMENT_RE.match(line):
+            index += 1
+            continue
+
+        block = [line]
+        depth = _paren_delta(line)
+        while (depth > 0 or block[-1].rstrip().endswith("\\")) and index + 1 < len(lines):
+            index += 1
+            block.append(lines[index])
+            depth += _paren_delta(lines[index])
+
+        declaration = "\n".join(block)
+        if "$(" in declaration or "`" in declaration or "<(" in declaration or ">(" in declaration:
+            raise ValueError(
+                f"{script}: command/process substitution is not allowed in lpmbuild metadata"
+            )
+        declarations.append(declaration)
+        index += 1
+
+    if not declarations:
+        raise ValueError(f"{script}: no metadata assignments found")
+    return "\n".join(declarations)
+
+
 def _capture_lpmbuild_metadata(
     script: Path,
 ) -> Tuple[Dict[str, str], Dict[str, List[str]], Dict[str, Dict[str, List[str]]]]:
-    """
-    Source the .lpmbuild (bash) and dump scalars, arrays, and associative maps.
-    """
+    """Parse recipe metadata without sourcing executable recipe code."""
 
-    script_path = str(script.resolve())
+    metadata_program = _safe_lpmbuild_metadata_program(script)
 
     def _emit_scalar_line(canonical: str, *aliases: str) -> str:
         names = " ".join(f'"{name}"' for name in (canonical, canonical, *aliases))
@@ -3514,7 +3586,7 @@ def _capture_lpmbuild_metadata(
         '  done',
         '  printf "\n"',
         "}",
-        f'source "{script_path}"',
+        metadata_program,
         _emit_scalar_line("NAME", "name", "pkgname"),
         _emit_scalar_line("VERSION", "version", "pkgver"),
         _emit_scalar_line("RELEASE", "release", "pkgrel"),
