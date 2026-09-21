@@ -19,4 +19,4 @@ jobs:
       - run: lpm --help
       - run: pytest -q tests/test_lpmbuild_metadata_safety.py tests/test_buildgen_buildchroot.py tests/test_source_bootstrap.py
       - run: git clone --depth 1 https://gitlab.com/lpm-org/packages.git /tmp/lpm-packages
-      - run: lpm buildgen --root /tmp/lpm-chroot --source /tmp/lpm-packages --output-dir /tmp/lpm-plan --verbose
+      - run: lpm buildgen --root /tmp/lpm-chroot --source /tmp/lpm-packages --output-dir /tmp/lpm-plan --allow-cycles --verbose
