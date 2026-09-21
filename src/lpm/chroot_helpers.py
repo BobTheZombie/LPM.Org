@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -274,8 +275,15 @@ def run_buildgen(args: Any) -> int:
     deps_by_pkg: dict[str, set[str]] = {}
     raw_provides_by_pkg: dict[str, set[str]] = {}
     mapped_provides_by_pkg: dict[str, set[str]] = {}
-    for script in scripts:
-        scal, arr, maps = lpm_app._capture_lpmbuild_metadata(script)
+
+    def _read_script_metadata(script: Path):
+        return script, *lpm_app._capture_lpmbuild_metadata(script)
+
+    workers = min(16, max(1, len(scripts)))
+    with ThreadPoolExecutor(max_workers=workers) as metadata_pool:
+        metadata_records = list(metadata_pool.map(_read_script_metadata, scripts))
+
+    for script, scal, arr, maps in metadata_records:
         name = str(scal.get("NAME") or scal.get("name") or "").strip()
         if not name:
             continue
