@@ -382,12 +382,17 @@ def run_buildgen(args: Any) -> int:
             if indeg[nxt] == 0:
                 queue.append(nxt)
                 queue.sort()
+    cycle_breaks: list[str] = []
     if len(order) != len(known):
         remaining = sorted([k for k, d in indeg.items() if d > 0])
-        raise ValueError(
-            "Cycle detected in buildgen dependency graph. Cycle groups: "
-            + ", ".join(remaining)
-        )
+        if not bool(getattr(args, "allow_cycles", False)):
+            raise ValueError(
+                "Cycle detected in buildgen dependency graph. Cycle groups: "
+                + ", ".join(remaining)
+                + ". Re-run with --allow-cycles to use deterministic bootstrap ordering."
+            )
+        cycle_breaks = remaining
+        order.extend(remaining)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     repo_dir = output_dir / "repo"
@@ -406,6 +411,7 @@ def run_buildgen(args: Any) -> int:
         "repo_dir": _stable_path(repo_dir),
         "bootstrap_packages": bootstrap_packages,
         "package_order": order,
+        "cycle_breaks": cycle_breaks,
         "packages": [meta_by_pkg[n] for n in order],
         "chroot_setup": {
             "root": _stable_path(root),
@@ -450,6 +456,7 @@ def run_buildchroot(args: Any) -> int:
                 "output_dir": str(output_dir),
                 "dry_run": False,
                 "verbose": verbose,
+                "allow_cycles": bool(getattr(args, "allow_cycles", False)),
             },
         )()
         run_buildgen(tmp_args)
