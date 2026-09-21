@@ -3491,17 +3491,18 @@ def _safe_lpmbuild_metadata_program(script: Path) -> str:
 
     while index < len(lines):
         line = lines[index]
-        if in_function:
-            if re.match(r"^\\s*}\\s*(?:#.*)?$", line):
-                in_function = False
+        if function_end is not None:
+            if re.match(rf"^\s*{re.escape(function_end)}\s*(?:#.*)?$", line):
+                function_end = None
             index += 1
             continue
-        if re.match(
-            r"^\\s*(?:function\\s+)?[A-Za-z_][A-Za-z0-9_]*"
-            r"\\s*(?:\\(\\s*\\))?\\s*\\{",
+        function_match = re.match(
+            r"^\s*(?:function\s+)?[A-Za-z_][A-Za-z0-9_]*"
+            r"\s*(?:\(\s*\))?\s*([({])",
             line,
-        ):
-            in_function = True
+        )
+        if function_match:
+            function_end = "}" if function_match.group(1) == "{" else ")"
             index += 1
             continue
         if not _LPMBUILD_ASSIGNMENT_RE.match(line):
