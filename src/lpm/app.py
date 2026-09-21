@@ -3441,9 +3441,9 @@ def _merge_provides_with_map(
 
 
 _LPMBUILD_ASSIGNMENT_RE = re.compile(
-    r"^\\s*(?:(?:export|readonly)\\s+)?"
-    r"(?:(?:declare|typeset)\\s+(?:-[A-Za-z]+\\s+)*)?"
-    r"[A-Za-z_][A-Za-z0-9_]*(?:\\[[^]]+\\])?\\s*(?:\\+=|=)"
+    r"^\s*(?:(?:export|readonly)\s+)?"
+    r"(?:(?:declare|typeset)\s+(?:-[A-Za-z]+\s+)*)?"
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]+\])?\s*(?:\+=|=)"
 )
 
 
