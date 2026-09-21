@@ -17,6 +17,9 @@ DB_PATH   = STATE_DIR / "state.db"
 CACHE_DIR = STATE_DIR / "cache"
 SOURCE_CACHE_DIR = CACHE_DIR / "sources"
 SNAPSHOT_DIR = STATE_DIR / "snapshots"
+# Transaction payloads are intentionally kept outside the package cache.  This
+# path may be a dedicated mount/partition and is never touched by `lpm clean`.
+VERSION_STORE_DIR = Path(os.environ.get("LPM_VERSION_STORE_DIR", str(STATE_DIR / "versions")))
 REPO_LIST = STATE_DIR / "repos.json"       # [{"name":"core","url":"file:///srv/repo","priority":10}, ...]
 PIN_FILE  = STATE_DIR / "pins.json"        # {"hold":["pkg"], "prefer":{"pkg":"~=3.3"}}
 HOOK_DIR  = Path("/usr/share/lpm/hooks")
@@ -77,7 +80,7 @@ ZSTD_MIN_VERSION = "1.5.5"
 
 def initialize_state() -> None:
     os.umask(UMASK)
-    for d in (STATE_DIR, CACHE_DIR, SOURCE_CACHE_DIR, SNAPSHOT_DIR):
+    for d in (STATE_DIR, CACHE_DIR, SOURCE_CACHE_DIR, SNAPSHOT_DIR, VERSION_STORE_DIR):
         d.mkdir(parents=True, exist_ok=True)
     try:
         from lpm.privileges import state_owner_ids
@@ -97,7 +100,7 @@ def initialize_state() -> None:
         except OSError:
             pass
 
-    for d in (STATE_DIR, CACHE_DIR, SOURCE_CACHE_DIR, SNAPSHOT_DIR):
+    for d in (STATE_DIR, CACHE_DIR, SOURCE_CACHE_DIR, SNAPSHOT_DIR, VERSION_STORE_DIR):
         _set_state_perms(d)
     if not REPO_LIST.exists():
         REPO_LIST.write_text("[]", encoding="utf-8")
@@ -219,8 +222,13 @@ def _apply_conf(conf: Mapping[str, str]) -> None:
     global DISTRO_GIT_ENABLED, DISTRO_GIT_REMOTE, DISTRO_GIT_BRANCH, DISTRO_GIT_ROOT
     global DISTRO_LPMSPEC_PATH
     global USE_DELTAS, ZSTD_MIN_VERSION
+    global VERSION_STORE_DIR
 
     CONF = dict(conf)
+    version_store = os.environ.get("LPM_VERSION_STORE_DIR") or CONF.get(
+        "VERSION_STORE_DIR", str(STATE_DIR / "versions")
+    )
+    VERSION_STORE_DIR = Path(os.path.expanduser(version_store)).resolve()
     ARCH = CONF.get("ARCH", os.uname().machine if hasattr(os, "uname") else "x86_64")
 
     OPT_LEVEL = CONF.get("OPT_LEVEL", "-O2")
@@ -414,6 +422,7 @@ __all__ = [
     "DB_PATH",
     "CACHE_DIR",
     "SNAPSHOT_DIR",
+    "VERSION_STORE_DIR",
     "REPO_LIST",
     "PIN_FILE",
     "HOOK_DIR",

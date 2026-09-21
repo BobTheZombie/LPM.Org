@@ -420,13 +420,23 @@ from `/proc/cpuinfo`, mapping common family 6 CPUs to GCC's
 `x86-64` micro-architecture levels such as `x86-64-v2`, `x86-64-v3` and
 `x86-64-v4`.
 
-## Snapshots
+## Package version snapshots and rollback
 
-LPM stores filesystem snapshots in `/var/lib/lpm/snapshots`. Configure
+Before install, upgrade, and removal transactions, LPM stores both the affected
+files and the previous package database records in `/var/lib/lpm/versions`.
+Rollback therefore restores the actual payload, removes paths introduced by a
+new version, and returns the installed-package database to the same version.
+Set `VERSION_STORE_DIR=/your/mount/lpm-versions` in `lpm.conf` (or use the
+`LPM_VERSION_STORE_DIR` environment override) to place this store on a dedicated
+mounted partition; `lpm clean` never removes it. Legacy snapshots in
+`/var/lib/lpm/snapshots` remain supported. Configure
 `MAX_SNAPSHOTS` in `/etc/lpm/lpm.conf` to limit how many snapshots are kept
 (default `10`). Older entries beyond the limit are automatically pruned after
 creating a new snapshot. You can trigger cleanup manually with
 `lpm snapshots --prune`.
+
+Use `lpm rollback ID` to restore a transaction. Snapshots made for an alternate
+root remember that root; `--root PATH` can explicitly select another target.
 
 By default hardened installations disable the GitLab fallback that fetches
 `.lpmbuild` scripts when a repository download fails. Set
