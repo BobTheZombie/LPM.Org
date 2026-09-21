@@ -3461,7 +3461,7 @@ def _safe_lpmbuild_metadata_program(script: Path) -> str:
     lines = source.splitlines()
     declarations: List[str] = []
     index = 0
-    in_function = False
+    function_end: Optional[str] = None
 
     def _paren_delta(line: str) -> int:
         depth = 0
@@ -7199,6 +7199,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--source", required=True, help="path to .lpmbuild source")
     sp.add_argument("--output-dir", default=str(Path.cwd()), help="output directory")
     sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--allow-cycles", action="store_true", help="order cyclic recipe groups deterministically")
     sp.add_argument("--verbose", action="store_true")
     sp.set_defaults(func=cmd_buildgen)
 
@@ -7208,6 +7209,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--cache-dir", default=CACHE_DIR, help="package cache directory")
     sp.add_argument("--output-dir", default=str(Path.cwd()), help="output directory")
     sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--allow-cycles", action="store_true", help="order cyclic recipe groups deterministically")
     sp.add_argument("--verbose", action="store_true")
     sp.set_defaults(func=cmd_buildchroot)
 
