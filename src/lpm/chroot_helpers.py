@@ -624,7 +624,9 @@ def run_buildchroot(args: Any) -> int:
     stage0_completed: set[str] = set()
     force_stage0 = bool(getattr(args, "stage0", False))
     stage0_requested = list(getattr(args, "stage0_packages", []) or [])
-    if force_stage0 or not _target_stage0_ready(root):
+    manifest_names = {str(pkg.get("name", "")) for pkg in packages}
+    auto_stage0 = not _target_stage0_ready(root) and "lpm" in manifest_names
+    if force_stage0 or auto_stage0:
         stage0_names = _stage0_package_names(packages, stage0_requested)
         _echo(
             "[stage0] seed packages: " + ", ".join(
