@@ -601,3 +601,93 @@ def test_buildchroot_installs_built_local_artifacts(
     assert rc == 0
     assert installed_artifacts == [out / "repo" / "demo-1-any.zst"]
     assert (out / "repo" / "demo-1-any.zst").exists()
+
+
+
+def test_stage0_package_selection_includes_dependency_closure() -> None:
+    packages = [
+        {"name": "glibc", "depends": []},
+        {"name": "bash", "depends": ["glibc"]},
+        {"name": "python", "depends": ["glibc"]},
+        {"name": "lpm", "depends": ["python", "bash"]},
+        {"name": "desktop", "depends": ["lpm"]},
+    ]
+
+    selected = chroot_helpers._stage0_package_names(packages, ["lpm"])
+
+    assert selected == {"glibc", "bash", "python", "lpm"}
+    assert "desktop" not in selected
+
+
+def test_stage0_builds_and_installs_seed_in_manifest_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "root"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    packages = []
+    for name in ("glibc", "bash", "lpm"):
+        script = scripts / f"{name}.lpmbuild"
+        script.write_text("# stub\n", encoding="utf-8")
+        packages.append({"name": name, "script": str(script), "depends": []})
+
+    built: list[str] = []
+    installed: list[str] = []
+
+    def fake_build(script: Path, outdir: Path) -> int:
+        name = script.stem
+        built.append(name)
+        (outdir / f"{name}-1-1.x86_64.zst").write_text("blob", encoding="utf-8")
+        return 0
+
+    def fake_install(target: Path, artifacts: list[Path], *, dry_run: bool = False):
+        name = artifacts[0].name.split("-1-1.")[0]
+        installed.append(name)
+        if name == "bash":
+            shell = target / "usr/bin/bash"
+            shell.parent.mkdir(parents=True, exist_ok=True)
+            shell.write_text("stub", encoding="utf-8")
+        if name == "lpm":
+            binary = target / "usr/bin/lpm"
+            binary.parent.mkdir(parents=True, exist_ok=True)
+            binary.write_text("stub", encoding="utf-8")
+        return {"returncode": 0, "dry_run": dry_run}
+
+    monkeypatch.setattr(chroot_helpers, "_run_host_build", fake_build)
+    monkeypatch.setattr(chroot_helpers, "_run_root_install_local", fake_install)
+
+    rc, artifacts, completed = chroot_helpers._run_stage0(
+        root, packages, repo, {"glibc", "bash", "lpm"}
+    )
+
+    assert rc == 0
+    assert built == ["glibc", "bash", "lpm"]
+    assert installed == built
+    assert completed == {"glibc", "bash", "lpm"}
+    assert len(artifacts) == 3
+
+
+def test_cli_exposes_stage0_buildchroot_controls() -> None:
+    from lpm import app as lpm_app
+
+    parser = lpm_app.build_parser()
+    args = parser.parse_args(
+        [
+            "buildchroot",
+            "--root",
+            "/tmp/lpm-root",
+            "--source",
+            "/tmp/packages",
+            "--stage0",
+            "--stage0-package",
+            "gcc",
+            "--stage0-package",
+            "lpm",
+        ]
+    )
+
+    assert args.stage0 is True
+    assert args.stage0_packages == ["gcc", "lpm"]
+    assert args.func is lpm_app.cmd_buildchroot
