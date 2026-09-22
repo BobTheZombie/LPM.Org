@@ -4954,7 +4954,7 @@ def run_lpmbuild(
     return out, duration, phase_count, split_records
 
 # =========================== CLI commands =====================================
-_PRIVILEGED_COMMANDS = {"install", "installpkg", "remove", "removepkg", "upgrade", "upgradepkg", "rollback"}
+_PRIVILEGED_COMMANDS = {"install", "installpkg", "remove", "removepkg", "upgrade", "upgradepkg", "rollback", "bootstrap-chroot", "installroot", "buildchroot"}
 _STATE_COMMANDS = {
     "autoremove",
     "bootstrap",
@@ -7117,6 +7117,18 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--source", required=True, help="path to .lpmbuild source")
     sp.add_argument("--cache-dir", default=CACHE_DIR, help="package cache directory")
     sp.add_argument("--output-dir", default=str(Path.cwd()), help="output directory")
+    sp.add_argument(
+        "--stage0",
+        action="store_true",
+        help="force a host-built stage-0 seed even when the target already contains LPM",
+    )
+    sp.add_argument(
+        "--stage0-package",
+        dest="stage0_packages",
+        action="append",
+        default=[],
+        help="package to seed during stage-0 (repeatable; dependency closure is automatic)",
+    )
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--verbose", action="store_true")
     sp.set_defaults(func=cmd_buildchroot)
