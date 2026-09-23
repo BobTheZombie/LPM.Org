@@ -690,4 +690,17 @@ def test_cli_exposes_stage0_buildchroot_controls() -> None:
 
     assert args.stage0 is True
     assert args.stage0_packages == ["gcc", "lpm"]
+def test_cli_exposes_buildchroot_command() -> None:
+    from lpm import app as lpm_app
+
+    parser = lpm_app.build_parser()
+    args = parser.parse_args([
+        "buildchroot",
+        "--root", "/tmp/lpm-root",
+        "--source", "/tmp/lpmbuilds",
+    ])
+
+    assert args.cmd == "buildchroot"
+    assert args.root == "/tmp/lpm-root"
+    assert args.source == "/tmp/lpmbuilds"
     assert args.func is lpm_app.cmd_buildchroot
