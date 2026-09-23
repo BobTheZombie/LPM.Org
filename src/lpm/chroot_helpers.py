@@ -134,6 +134,141 @@ def _stage_build_inputs(root: Path, packages: list[dict[str, Any]]) -> dict[str,
     return staged
 
 
+
+# Packages that make a source-built target capable of building the rest of the
+# graph itself.  Only names present in the manifest are selected.  Their full
+# dependency closure is included automatically.
+DEFAULT_STAGE0_PACKAGES = (
+    "filesystem",
+    "glibc",
+    "binutils",
+    "gcc",
+    "bash",
+    "coreutils",
+    "make",
+    "python",
+    "pkgconf",
+    "sed",
+    "grep",
+    "gawk",
+    "findutils",
+    "diffutils",
+    "tar",
+    "gzip",
+    "bzip2",
+    "xz",
+    "patch",
+    "file",
+    "util-linux",
+    "lpm-filesystem",
+    "lpm",
+)
+
+
+def _stage0_package_names(
+    packages: list[dict[str, Any]], requested: list[str] | None = None
+) -> set[str]:
+    by_name = {str(pkg.get("name", "")): pkg for pkg in packages}
+    targets = list(requested or [])
+    if not targets:
+        targets = [name for name in DEFAULT_STAGE0_PACKAGES if name in by_name]
+
+    missing = sorted(name for name in targets if name not in by_name)
+    if missing:
+        raise ValueError(
+            "stage-0 package(s) are not present in the build manifest: "
+            + ", ".join(missing)
+        )
+    if "lpm" not in by_name:
+        raise ValueError(
+            "true stage-0 bootstrap requires an lpm.lpmbuild in --source"
+        )
+    if "lpm" not in targets:
+        targets.append("lpm")
+
+    selected: set[str] = set()
+
+    def add_closure(name: str) -> None:
+        if name in selected:
+            return
+        selected.add(name)
+        for dep in by_name[name].get("depends", []) or []:
+            dep_name = str(dep)
+            if dep_name in by_name:
+                add_closure(dep_name)
+
+    for target in targets:
+        add_closure(target)
+    return selected
+
+
+def _run_host_build(script: Path, outdir: Path) -> int:
+    cmd = [
+        "lpm",
+        "buildpkg",
+        str(script),
+        "--outdir",
+        str(outdir),
+        "--install-default",
+        "n",
+        "--no-deps",
+    ]
+    return subprocess.run(cmd, check=False).returncode
+
+
+def _target_stage0_ready(root: Path) -> bool:
+    lpm = root / "usr/bin/lpm"
+    shells = (root / "usr/bin/bash", root / "bin/bash", root / "bin/sh")
+    return lpm.exists() and any(shell.exists() for shell in shells)
+
+
+def _run_stage0(
+    root: Path,
+    packages: list[dict[str, Any]],
+    staged_repo: Path,
+    stage0_names: set[str],
+    *,
+    verbose: bool = False,
+) -> tuple[int, list[Path], set[str]]:
+    """Build the seed graph on the host and install it into an empty target."""
+    built_artifacts: list[Path] = []
+    completed: set[str] = set()
+
+    for idx, pkg in enumerate(packages, start=1):
+        name = str(pkg.get("name", ""))
+        if name not in stage0_names:
+            continue
+        script = Path(str(pkg.get("script", "")))
+        print(f"[stage0 {len(completed) + 1}/{len(stage0_names)}] {name}")
+        before = set(staged_repo.glob("*.zst"))
+        rc = _run_host_build(script, staged_repo)
+        if rc != 0:
+            return rc, built_artifacts, completed
+
+        artifacts = _collect_chroot_artifacts(staged_repo, before, pkg)
+        if not artifacts:
+            raise RuntimeError(f"stage-0 build produced no package artifact for {name}")
+
+        result = _run_root_install_local(root, artifacts)
+        rc = int(result.get("returncode", 0))
+        if rc != 0:
+            return rc, built_artifacts, completed
+
+        built_artifacts.extend(artifacts)
+        completed.add(name)
+        _echo(f"[stage0] installed {name} into {root}", verbose=verbose)
+
+    if completed != stage0_names:
+        missing = sorted(stage0_names - completed)
+        raise RuntimeError("stage-0 did not build required packages: " + ", ".join(missing))
+    if not _target_stage0_ready(root):
+        raise RuntimeError(
+            "stage-0 completed but target is not chroot-ready; "
+            "expected /usr/bin/lpm and a usable shell"
+        )
+    return 0, built_artifacts, completed
+
+
 def _run_chroot_build(root: Path, script: Path, outdir: Path) -> int:
     cmd = generate_chroot_command(
         root,
@@ -482,6 +617,33 @@ def run_buildchroot(args: Any) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     staged_repo.mkdir(parents=True, exist_ok=True)
 
+    # A genuinely empty target cannot execute `lpm buildpkg`.  Seed a
+    # minimal source-built toolchain from the host first, installing every
+    # resulting package into the target.  Once LPM + a shell exist there, the
+    # remainder of the graph is built from inside the target itself.
+    stage0_completed: set[str] = set()
+    force_stage0 = bool(getattr(args, "stage0", False))
+    stage0_requested = list(getattr(args, "stage0_packages", []) or [])
+    manifest_names = {str(pkg.get("name", "")) for pkg in packages}
+    auto_stage0 = not _target_stage0_ready(root) and "lpm" in manifest_names
+    if force_stage0 or auto_stage0:
+        stage0_names = _stage0_package_names(packages, stage0_requested)
+        _echo(
+            "[stage0] seed packages: " + ", ".join(
+                name for name in manifest.get("package_order", []) if name in stage0_names
+            ),
+            verbose=verbose,
+        )
+        stage0_rc, _stage0_artifacts, stage0_completed = _run_stage0(
+            root,
+            packages,
+            staged_repo,
+            stage0_names,
+            verbose=verbose,
+        )
+        if stage0_rc != 0:
+            return stage0_rc
+
     chroot_outdir = root / "var/cache/lpm/buildchroot"
     chroot_outdir.mkdir(parents=True, exist_ok=True)
     staged_scripts = _stage_build_inputs(root, packages)
@@ -497,24 +659,32 @@ def run_buildchroot(args: Any) -> int:
                 return bootstrap_rc
 
         built_artifacts: list[Path] = []
-        for idx, pkg in enumerate(packages, start=1):
+        remaining = [pkg for pkg in packages if str(pkg.get("name", "")) not in stage0_completed]
+        for idx, pkg in enumerate(remaining, start=1):
             name = str(pkg.get("name", ""))
             staged_script = staged_scripts.get(name)
             if staged_script is None:
-                staged_script = next(iter(staged_scripts.values()))
-            print(f"[buildchroot {idx}/{len(packages)}] {name}")
+                raise RuntimeError(f"no staged .lpmbuild found for {name}")
+            print(f"[buildchroot {idx}/{len(remaining)}] {name}")
             before = set(chroot_outdir.glob("*.zst"))
             build_rc = _run_chroot_build(root, staged_script, chroot_outdir)
             if build_rc != 0:
                 return build_rc
             artifacts = _collect_chroot_artifacts(chroot_outdir, before, pkg)
+            if not artifacts:
+                raise RuntimeError(f"chroot build produced no package artifact for {name}")
             for blob in artifacts:
                 dest = staged_repo / blob.name
                 shutil.copy2(blob, dest)
                 built_artifacts.append(dest)
 
-        install_result = _run_root_install_local(root, built_artifacts)
-        print(json.dumps(install_result, indent=2, sort_keys=True))
-        return int(install_result.get("returncode", 0))
+            # Install each package immediately.  Later recipes can therefore
+            # consume BUILD_REQUIRES produced earlier in the topological order.
+            install_result = _run_root_install_local(root, [staged_repo / blob.name for blob in artifacts])
+            install_rc = int(install_result.get("returncode", 0))
+            if install_rc != 0:
+                return install_rc
+
+        return 0
     finally:
         umount_chroot_api(root, mount_state)
