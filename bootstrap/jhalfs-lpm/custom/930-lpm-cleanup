@@ -1,0 +1,23 @@
+PKG="lpm-cleanup"
+PKG_VERSION="1"
+PKG_FILE=""
+URL=""
+MD5=""
+for i in PATCH{1..10}; do
+    unset "$i"
+done
+
+( cat << "xEOFx"
+set -eux
+
+rm -rf /tmp/* /var/tmp/*
+rm -rf /var/cache/lpm-bootstrap
+
+find /usr/lib /usr/lib64 -name '*.la' -delete 2>/dev/null || true
+
+/usr/bin/lpm verify || {
+    echo "LPM database verification failed" >&2
+    exit 1
+}
+xEOFx
+) > tmp
