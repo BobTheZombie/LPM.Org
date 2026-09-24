@@ -1,0 +1,9 @@
+# Packages are built and installed in this order. LPM resolves their transitive
+# build dependencies from the local package repository snapshot.
+dbus-broker
+wireless-regdb
+iw
+wpa_supplicant
+NetworkManager
+linux-firmware
+mkinitcpio
