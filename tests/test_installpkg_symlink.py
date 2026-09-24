@@ -299,3 +299,27 @@ def test_installpkg_upgrade_is_atomic_replace(tmp_path, monkeypatch):
     assert not (root / "etc" / "old.conf").exists()
     assert (root / "etc" / "new.conf").read_text() == "new\n"
     assert (root / "etc" / "common.conf").read_text() == "v2\n"
+
+    # Corrupt a payload after it is moved into place.  The post-commit audit
+    # must reject the upgrade, restore v2 on disk, and retain v2 in SQLite.
+    pkg_v3 = build_pkg("3", {"/etc/new.conf": "new-v3\n", "/etc/common.conf": "v3\n"})
+    real_move = lpm.shutil.move
+
+    def corrupt_move(src, dst, *args, **kwargs):
+        result = real_move(src, dst, *args, **kwargs)
+        if Path(dst).name == ".common.conf.tmp":
+            Path(dst).write_text("corrupted\n")
+        return result
+
+    monkeypatch.setattr(lpm.shutil, "move", corrupt_move)
+    with pytest.raises(SystemExit):
+        lpm.installpkg(pkg_v3, root=root, dry_run=False, verify=False, force=False, explicit=True)
+
+    assert (root / "etc/new.conf").read_text() == "new\n"
+    assert (root / "etc/common.conf").read_text() == "v2\n"
+    row = lpm.db().execute(
+        "SELECT version, manifest FROM installed WHERE name=?", ("atomicpkg",)
+    ).fetchone()
+    assert row[0] == "2"
+    recorded = json.loads(row[1])
+    assert {entry["path"] for entry in recorded} == {"/etc/new.conf", "/etc/common.conf"}

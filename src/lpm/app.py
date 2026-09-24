@@ -3002,7 +3002,9 @@ def transaction(conn: sqlite3.Connection, action: str, dry: bool):
             conn.execute("BEGIN")
             try:
                 yield
-            except Exception:
+            # ``die()`` raises SystemExit. Package validation can call it from
+            # inside a transaction, so always restore SQLite before propagating.
+            except BaseException:
                 conn.execute("ROLLBACK")
                 raise
             else:
@@ -6136,6 +6138,138 @@ def installpkg(
             except FileNotFoundError:
                 return
 
+        def _verify_committed_payload(
+            manifest: Iterable[dict], *, verify_content: bool = True
+        ) -> None:
+            """Prove every manifest payload exists at its final destination."""
+            failures: List[str] = []
+            for entry in manifest:
+                raw_path = entry.get("path")
+                if not raw_path:
+                    failures.append("manifest entry has no path")
+                    continue
+                dest = root / str(raw_path).lstrip("/")
+                if not dest.exists() and not dest.is_symlink():
+                    failures.append(f"{raw_path}: missing")
+                    continue
+
+                expected_link = entry.get("link")
+                if expected_link is not None:
+                    if not dest.is_symlink():
+                        failures.append(f"{raw_path}: expected symlink")
+                        continue
+                    actual_link = os.readlink(dest)
+                    if actual_link != expected_link:
+                        failures.append(
+                            f"{raw_path}: link target is {actual_link!r}, expected {expected_link!r}"
+                        )
+                    expected_hash = entry.get("sha256")
+                    actual_hash = hashlib.sha256(actual_link.encode()).hexdigest()
+                    # Older manifests hash the symlink's referenced payload
+                    # instead of its target string. Continue accepting both.
+                    payload_hash = None
+                    payload = (
+                        root / actual_link.lstrip("/")
+                        if actual_link.startswith("/")
+                        else dest.parent / actual_link
+                    )
+                    try:
+                        if payload.resolve().is_file():
+                            payload_hash = sha256sum(payload.resolve())
+                    except (FileNotFoundError, OSError, RuntimeError):
+                        pass
+                    if expected_hash and expected_hash not in (actual_hash, payload_hash):
+                        failures.append(f"{raw_path}: symlink digest mismatch")
+                    continue
+
+                if dest.is_symlink() or not dest.is_file():
+                    failures.append(f"{raw_path}: expected regular file")
+                    continue
+                dest_stat = dest.stat()
+                expected_size = entry.get("size")
+                if verify_content and expected_size is not None and dest_stat.st_size != int(expected_size):
+                    failures.append(f"{raw_path}: size mismatch")
+                expected_hash = entry.get("sha256")
+                if verify_content and expected_hash and sha256sum(dest) != expected_hash:
+                    failures.append(f"{raw_path}: digest mismatch")
+                if "mode" in entry and stat.S_IMODE(dest_stat.st_mode) != stat.S_IMODE(int(entry["mode"])):
+                    failures.append(f"{raw_path}: mode mismatch")
+                if "uid" in entry and dest_stat.st_uid != int(entry["uid"]):
+                    failures.append(f"{raw_path}: uid mismatch")
+                if "gid" in entry and dest_stat.st_gid != int(entry["gid"]):
+                    failures.append(f"{raw_path}: gid mismatch")
+
+            if failures:
+                preview = "; ".join(failures[:8])
+                if len(failures) > 8:
+                    preview += f"; and {len(failures) - 8} more"
+                raise RuntimeError(f"payload commit verification failed: {preview}")
+
+        def _refresh_manifest_state(manifest: Iterable[dict]) -> List[dict]:
+            """Record the payload state that is actually present on disk."""
+            realized: List[dict] = []
+            for original in manifest:
+                entry = dict(original)
+                dest = root / str(entry["path"]).lstrip("/")
+                st = dest.lstat()
+                entry["mode"] = stat.S_IMODE(st.st_mode)
+                entry["uid"] = st.st_uid
+                entry["gid"] = st.st_gid
+                entry["size"] = st.st_size
+                if dest.is_symlink():
+                    target = os.readlink(dest)
+                    entry["link"] = target
+                    entry["sha256"] = hashlib.sha256(target.encode()).hexdigest()
+                else:
+                    entry.pop("link", None)
+                    entry["sha256"] = sha256sum(dest)
+                realized.append(entry)
+            return realized
+
+        @contextlib.contextmanager
+        def _payload_filesystem_transaction(paths: Iterable[str]):
+            """Restore all touched payload paths if an install cannot commit."""
+            backup_root = Path(tempfile.mkdtemp(prefix="lpm-payload-rollback-", dir="/tmp"))
+            records: List[Tuple[Path, Optional[Path]]] = []
+            seen: Set[Path] = set()
+            try:
+                for index, raw_path in enumerate(paths):
+                    dest = root / str(raw_path).lstrip("/")
+                    if dest in seen:
+                        continue
+                    seen.add(dest)
+                    backup = backup_root / str(index)
+                    if dest.is_symlink():
+                        backup.symlink_to(os.readlink(dest))
+                        records.append((dest, backup))
+                    elif dest.is_dir():
+                        shutil.copytree(dest, backup, symlinks=True)
+                        records.append((dest, backup))
+                    elif dest.exists():
+                        shutil.copy2(dest, backup, follow_symlinks=False)
+                        records.append((dest, backup))
+                    else:
+                        records.append((dest, None))
+                yield
+            except BaseException:
+                # First remove every path the failed transaction may have made,
+                # then restore the exact pre-transaction objects.
+                for dest, _backup in reversed(records):
+                    _replace_path(dest)
+                for dest, backup in records:
+                    if backup is None:
+                        continue
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    if backup.is_symlink():
+                        dest.symlink_to(os.readlink(backup))
+                    elif backup.is_dir():
+                        shutil.copytree(backup, dest, symlinks=True)
+                    else:
+                        shutil.copy2(backup, dest, follow_symlinks=False)
+                raise
+            finally:
+                shutil.rmtree(backup_root, ignore_errors=True)
+
         def _install_single(pkg_file: Path) -> PkgMeta:
             # --- Step 1: Validate extension + magic ---
             if pkg_file.suffix != EXT:
@@ -6249,6 +6383,8 @@ def installpkg(
                 run_hook("pre_install", dict(hook_env), failure_mode=hook_failure_mode, package_context=meta.name)
 
                 tmp_root = Path(tempfile.mkdtemp(prefix=f"lpm-{meta.name}-", dir="/tmp"))
+                payload_tx = None
+                payload_committed = False
                 try:
                     manifest = extract_tar(pkg_file, tmp_root)
 
@@ -6317,6 +6453,15 @@ def installpkg(
                                 f"Hash mismatch for {e['path']}: expected {expected_hash}, got {actual_hash}"
                             )
 
+                    touched_paths = list(manifest_paths)
+                    touched_paths.extend(
+                        str(entry.get("path"))
+                        for entry in previous_manifest
+                        if isinstance(entry, dict) and entry.get("path")
+                    )
+                    touched_paths.extend(("/.lpm-install.sh", "/.lpm/install.sh"))
+                    payload_tx = _payload_filesystem_transaction(touched_paths)
+                    payload_tx.__enter__()
                     with operation_phase(privileged=True):
                         # Atomic package replace for upgrades: remove all previously-owned
                         # files before materializing the new payload so stale paths and
@@ -6333,6 +6478,8 @@ def installpkg(
                         replace_all = True
                         for e in mani:
                             rel = e["path"].lstrip("/")
+                            if "/" + rel in ("/.lpm-install.sh", "/.lpm/install.sh"):
+                                continue
                             src = tmp_root / rel
                             dest = root / rel
                             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -6373,8 +6520,10 @@ def installpkg(
                             if "uid" in e and "gid" in e:
                                 try:
                                     os.chown(dest, e["uid"], e["gid"])
-                                except PermissionError:
-                                    warn(f"Permission denied setting ownership for {dest}")
+                                except PermissionError as exc:
+                                    raise RuntimeError(
+                                        f"cannot set ownership for manifest payload {e['path']}"
+                                    ) from exc
 
                         # Handle install scripts
                         install_script_rel = None
@@ -6418,13 +6567,10 @@ def installpkg(
                                 generate_deltas(pkg_file, meta, mani, staged_script, installed_script)
                             except Exception as e:
                                 warn(f"Delta generation failed: {e}")
-                                try:
-                                    for candidate in (installed_script, staged_script):
-                                        candidate.unlink()
-                                except FileNotFoundError:
-                                    pass
-                                if install_script_rel is not None:
-                                    mani = [e for e in mani if e["path"] != install_script_rel]
+
+                        # Verify the archive payload before allowing its
+                        # maintainer script to make intentional adjustments.
+                        _verify_committed_payload(mani)
 
                         if install_script_rel is not None and installed_script is not None and installed_script.exists():
                             install_action = "upgrade" if previous_version is not None else "install"
@@ -6445,6 +6591,11 @@ def installpkg(
                                 with contextlib.suppress(FileNotFoundError):
                                     installed_script.unlink()
                                 mani = [e for e in mani if e["path"] != install_script_rel]
+
+                        # Never publish package state to SQLite until every
+                        # promised payload has been re-read from its final path.
+                        _verify_committed_payload(mani, verify_content=False)
+                        mani = _refresh_manifest_state(mani)
 
                     # Update DB
                     conn.execute(
@@ -6474,7 +6625,15 @@ def installpkg(
                             json.dumps(dataclasses.asdict(meta)),
                         ),
                     )
+                    payload_tx.__exit__(None, None, None)
+                    payload_committed = True
                 finally:
+                    if payload_tx is not None and not payload_committed:
+                        rollback_error = RuntimeError("package transaction did not commit")
+                        with contextlib.suppress(RuntimeError):
+                            payload_tx.__exit__(
+                                RuntimeError, rollback_error, rollback_error.__traceback__
+                            )
                     shutil.rmtree(tmp_root, ignore_errors=True)
 
                 run_hook("post_install", dict(hook_env), failure_mode=hook_failure_mode, package_context=meta.name)
