@@ -41,6 +41,15 @@ see [Source bootstrap and full-system installation](docs/SOURCE-BOOTSTRAP.md).
 
 ## Building LPM and the graphical UI
 
+Install the CLI's Python dependencies once before running from source or
+building the binaries:
+
+```sh
+python -m pip install -r requirements.txt
+```
+
+This installs the `packaging`, `tqdm`, and `zstandard` modules used by the CLI.
+
 The project ships with a `Makefile` that invokes Nuitka to produce stand-alone
 executables for both the command-line client and the Qt-based graphical
 frontend.
