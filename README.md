@@ -326,6 +326,22 @@ contents and runs common maintenance commands based on what it finds:
   distribution names, skips entries already provided by packages exposing
   `pypi(<name>)`, and otherwise invokes the built-in pip builder (with
   dependency resolution enabled) before executing your script.【F:src/lpm/app.py†L3663-L3721】
+  Recipes can also select build behavior with `BUILD_OPTIONS`:
+
+  ```bash
+  BUILD_OPTIONS=(
+      "@--stripping"
+      "@--lto"
+      "@--optimize=3"
+  )
+  ```
+
+  `@--stripping` strips staged ELF binaries and archives before packaging,
+  `@--lto` adds `-flto` to compiler and linker flags, and
+  `@--optimize=` accepts `0`, `1`, `2`, `3`, `s`, or `g`. A recipe-level
+  optimization setting overrides both `OPT_LEVEL` from `lpm.conf` and any
+  inherited optimization flag while retaining all unrelated flags. Unknown,
+  invalid, or conflicting options stop the build.
   Meta-packages can also map individual dependencies to virtual provides by
   declaring an associative array named `META_PROVIDES` (or the lowercase
   `meta_provides`). Each key corresponds to a required package while the value
@@ -399,7 +415,8 @@ level. The `/etc/lpm/lpm.conf` file accepts an `OPT_LEVEL` entry (`-Os`, `-O2`,
 and automatically sets `-march`/`-mtune` along with `-pipe` and `-fPIC` plus the
 configured optimisation level for `CFLAGS` and `CXXFLAGS` while `LDFLAGS` uses
 only the optimisation level. Any `CFLAGS` defined in a `.lpmbuild` script are
-appended to the defaults.
+appended to the defaults. A `BUILD_OPTIONS` entry such as `@--optimize=3`
+overrides the configured level for that package.
 
 CPU detection can be overridden by specifying `CPU_TYPE` in `lpm.conf`. Set it
 to one of `x86_64v1`, `x86_64v2`, `x86_64v3` or `x86_64v4` (underscores or

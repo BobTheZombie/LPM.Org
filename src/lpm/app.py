@@ -3533,6 +3533,7 @@ def _capture_lpmbuild_metadata(
         _emit_array_line("SOURCE", "source"),
         _emit_array_line("REQUIRES", "requires", "depends"),
         _emit_array_line("BUILD_REQUIRES", "build_requires", "makedepends"),
+        _emit_array_line("BUILD_OPTIONS", "build_options"),
         _emit_array_line("REQUIRES_PYTHON_DEPENDENCIES", "requires_python_dependencies"),
         _emit_array_line("PROVIDES", "provides"),
         _emit_array_line("CONFLICTS", "conflicts"),
@@ -3558,6 +3559,7 @@ def _capture_lpmbuild_metadata(
             "SOURCE",
             "REQUIRES",
             "BUILD_REQUIRES",
+            "BUILD_OPTIONS",
             "REQUIRES_PYTHON_DEPENDENCIES",
             "PROVIDES",
             "CONFLICTS",
@@ -3653,6 +3655,117 @@ def _capture_lpmbuild_metadata(
         scalars["INSTALL"] = install_value
 
     return scalars, arrays, maps
+
+
+@dataclass(frozen=True)
+class LpmBuildOptions:
+    stripping: bool = False
+    lto: bool = False
+    optimize: Optional[str] = None
+
+
+_LPM_OPTIMIZE_FLAGS = {
+    "0": "-O0",
+    "1": "-O1",
+    "2": "-O2",
+    "3": "-O3",
+    "s": "-Os",
+    "g": "-Og",
+}
+_LPM_OPTIMIZATION_FLAG_RE = re.compile(r"^-O(?:0|1|2|3|s|g|fast|z)$")
+
+
+def _parse_lpmbuild_options(values: Iterable[str]) -> LpmBuildOptions:
+    stripping = False
+    lto = False
+    optimize: Optional[str] = None
+
+    for raw_value in values:
+        value = str(raw_value).strip()
+        if not value:
+            continue
+        if value == "@--stripping":
+            stripping = True
+            continue
+        if value == "@--lto":
+            lto = True
+            continue
+        if value.startswith("@--optimize="):
+            requested = value.split("=", 1)[1].strip().lower()
+            if requested not in _LPM_OPTIMIZE_FLAGS:
+                allowed = ", ".join(_LPM_OPTIMIZE_FLAGS)
+                die(f"invalid BUILD_OPTIONS optimization '{requested}'; expected one of: {allowed}")
+            if optimize is not None and optimize != requested:
+                die(
+                    "conflicting BUILD_OPTIONS optimization levels: "
+                    f"'{optimize}' and '{requested}'"
+                )
+            optimize = requested
+            continue
+        die(f"unsupported BUILD_OPTIONS entry: {value}")
+
+    return LpmBuildOptions(stripping=stripping, lto=lto, optimize=optimize)
+
+
+def _replace_optimization_level(flags: str, optimization_flag: str) -> str:
+    try:
+        parts = shlex.split(flags or "")
+    except ValueError as exc:
+        die(f"unable to parse compiler flags while applying {optimization_flag}: {exc}")
+    parts = [part for part in parts if not _LPM_OPTIMIZATION_FLAG_RE.fullmatch(part)]
+    parts.append(optimization_flag)
+    return shlex.join(parts)
+
+
+def _append_build_flag(flags: str, flag: str) -> str:
+    try:
+        parts = shlex.split(flags or "")
+    except ValueError as exc:
+        die(f"unable to parse compiler flags while applying {flag}: {exc}")
+    if flag not in parts:
+        parts.append(flag)
+    return shlex.join(parts)
+
+
+def _strip_staged_payload(stagedir: Path) -> int:
+    strip_program = shutil.which("strip")
+    if not strip_program:
+        die("BUILD_OPTIONS requests @--stripping, but 'strip' is not installed")
+
+    stripped = 0
+    debug_root = stagedir / "usr/lib/debug"
+    for path in stagedir.rglob("*"):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            path.relative_to(debug_root)
+        except ValueError:
+            pass
+        else:
+            continue
+
+        try:
+            with path.open("rb") as stream:
+                magic = stream.read(8)
+        except OSError as exc:
+            die(f"unable to inspect staged file {path}: {exc}")
+
+        if magic.startswith(b"\x7fELF"):
+            strip_args = [strip_program, "--strip-unneeded", str(path)]
+        elif magic in {b"!<arch>\n", b"!<thin>\n"}:
+            strip_args = [strip_program, "--strip-debug", str(path)]
+        else:
+            continue
+
+        try:
+            subprocess.run(strip_args, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or "").strip()
+            suffix = f": {detail}" if detail else ""
+            die(f"failed to strip staged file {path}{suffix}")
+        stripped += 1
+
+    return stripped
 
 def _url_digest(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
@@ -4023,6 +4136,7 @@ def run_lpmbuild(
     mkinitcpio_preset = scal.get("MKINITCPIO_PRESET") or None
     if not name or not version:
         die("lpmbuild missing NAME or VERSION")
+    build_options = _parse_lpmbuild_options(arr.get("BUILD_OPTIONS", []))
 
     building_stack = tuple(_building_stack or ())
     if name in building_stack:
@@ -4370,6 +4484,7 @@ def run_lpmbuild(
         "suggests": arr.get("SUGGESTS", []),
         "kernel": kernel,
         "mkinitcpio_preset": mkinitcpio_preset,
+        "build_options": arr.get("BUILD_OPTIONS", []),
     }
     tmp_files: List[Path] = []
 
@@ -4534,6 +4649,11 @@ def run_lpmbuild(
     host_cflags = env.get("CFLAGS", "").strip()
     host_cxxflags = env.get("CXXFLAGS", "").strip()
     host_ldflags = env.get("LDFLAGS", "").strip()
+    effective_opt_level = (
+        _LPM_OPTIMIZE_FLAGS[build_options.optimize]
+        if build_options.optimize is not None
+        else OPT_LEVEL
+    )
 
     def _set_env_value(key: str, value: str) -> None:
         if value:
@@ -4543,7 +4663,7 @@ def run_lpmbuild(
 
     if ENABLE_CPU_OPTIMIZATIONS:
         base_parts = [
-            OPT_LEVEL,
+            effective_opt_level,
             f"-march={march_value}",
             f"-mtune={mtune_value}",
             "-pipe",
@@ -4554,7 +4674,7 @@ def run_lpmbuild(
         combined_cxxflags = " ".join(filter(None, [base_flags, host_cxxflags])).strip() or base_flags
         _set_env_value("CFLAGS", combined_cflags)
         _set_env_value("CXXFLAGS", combined_cxxflags)
-        ldflags_base = " ".join(filter(None, [OPT_LEVEL, host_ldflags])).strip() or OPT_LEVEL
+        ldflags_base = " ".join(filter(None, [effective_opt_level, host_ldflags])).strip() or effective_opt_level
         _set_env_value("LDFLAGS", ldflags_base)
         env["LPM_CPU_MARCH"] = march_value
         env["LPM_CPU_MTUNE"] = mtune_value
@@ -4566,6 +4686,40 @@ def run_lpmbuild(
         _set_env_value("LDFLAGS", host_ldflags)
         env.pop("LPM_CPU_MARCH", None)
         env.pop("LPM_CPU_MTUNE", None)
+
+    # A recipe-level optimization selection is authoritative over both the
+    # configured OPT_LEVEL and optimization flags inherited from the caller.
+    if build_options.optimize is not None:
+        optimization_flag = _LPM_OPTIMIZE_FLAGS[build_options.optimize]
+        for flag_var in ("CFLAGS", "CXXFLAGS", "LDFLAGS"):
+            _set_env_value(
+                flag_var,
+                _replace_optimization_level(env.get(flag_var, ""), optimization_flag),
+            )
+        env["LPM_BUILD_OPTIMIZE"] = build_options.optimize
+    else:
+        env.pop("LPM_BUILD_OPTIMIZE", None)
+
+    if build_options.lto:
+        for flag_var in ("CFLAGS", "CXXFLAGS", "LDFLAGS"):
+            _set_env_value(flag_var, _append_build_flag(env.get(flag_var, ""), "-flto"))
+        env["LPM_BUILD_LTO"] = "1"
+    else:
+        env.pop("LPM_BUILD_LTO", None)
+
+    if build_options.stripping:
+        env["LPM_BUILD_STRIPPING"] = "1"
+    else:
+        env.pop("LPM_BUILD_STRIPPING", None)
+    env["LPM_BUILD_OPTIONS"] = " ".join(arr.get("BUILD_OPTIONS", []))
+
+    if arr.get("BUILD_OPTIONS"):
+        log(
+            "[build-options] "
+            f"optimize={build_options.optimize or 'config'} "
+            f"lto={'on' if build_options.lto else 'off'} "
+            f"stripping={'on' if build_options.stripping else 'off'}"
+        )
 
     env["ARCH"] = arch
     env["LPM_ARCH"] = arch
@@ -4787,6 +4941,10 @@ def run_lpmbuild(
                 die(f"{script.name}: function '{phase}' failed with code {e.returncode}")
     phase_count = getattr(pbar, "completed", pbar.n)
     duration = getattr(pbar, "end_time", time.time()) - getattr(pbar, "start_time", 0.0)
+
+    if build_options.stripping:
+        stripped_count = _strip_staged_payload(stagedir)
+        log(f"[build-options] stripped {stripped_count} staged file(s)")
 
     # --- Generate or capture install script ---
     install_sh = stagedir / ".lpm-install.sh"
@@ -5455,6 +5613,13 @@ def cmd_splitpkg(a):
             warn(f"Could not read split package defaults: {e}")
             base_meta_file = None
 
+    raw_build_options = base_meta.get("build_options", [])
+    if not isinstance(raw_build_options, list):
+        raw_build_options = []
+    split_build_options = _parse_lpmbuild_options(
+        str(value) for value in raw_build_options
+    )
+
     def _get_default(key: str, fallback=None):
         value = getattr(a, key, None)
         if value is not None:
@@ -5520,6 +5685,10 @@ def cmd_splitpkg(a):
     else:
         out = outdir / f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}"
     prepare_directory(out.parent, privileged=False)
+
+    if split_build_options.stripping:
+        stripped_count = _strip_staged_payload(stagedir)
+        log(f"[build-options] stripped {stripped_count} staged split-package file(s)")
 
     install_sh = stagedir / ".lpm-install.sh"
     if install_sh.exists():
