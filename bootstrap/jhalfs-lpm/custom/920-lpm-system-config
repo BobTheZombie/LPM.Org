@@ -1,0 +1,66 @@
+PKG="lpm-system-config"
+PKG_VERSION="1"
+PKG_FILE=""
+URL=""
+MD5=""
+for i in PATCH{1..10}; do
+    unset "$i"
+done
+
+( cat << "xEOFx"
+set -eux
+
+install -d /etc/NetworkManager/conf.d
+cat > /etc/NetworkManager/conf.d/10-lpm.conf <<'EOF'
+[main]
+dns=systemd-resolved
+
+[connection]
+wifi.powersave=2
+
+[device]
+wifi.scan-rand-mac-address=yes
+EOF
+
+ln -sfn /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+
+unitdir=/usr/lib/systemd/system
+test -f "$unitdir/dbus-broker.service"
+ln -sfn dbus-broker.service "$unitdir/dbus.service"
+ln -sfn dbus-broker.service "$unitdir/dbus-org.freedesktop.DBus.service"
+
+systemctl enable dbus-broker.service
+systemctl enable NetworkManager.service
+systemctl enable systemd-resolved.service
+systemctl enable systemd-timesyncd.service
+
+install -d /etc/mkinitcpio.d
+cat > /etc/mkinitcpio.conf <<'EOF'
+MODULES=()
+BINARIES=()
+FILES=()
+HOOKS=(base systemd autodetect microcode modconf kms keyboard sd-vconsole block filesystems fsck)
+COMPRESSION="zstd"
+EOF
+
+if command -v depmod >/dev/null 2>&1; then
+    kernel_version="$(find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V | tail -n1)"
+    if [ -n "$kernel_version" ]; then
+        depmod -a "$kernel_version"
+    fi
+fi
+
+if command -v mkinitcpio >/dev/null 2>&1 && compgen -G '/etc/mkinitcpio.d/*.preset' >/dev/null; then
+    mkinitcpio -P
+fi
+
+systemd-machine-id-setup
+printf '%s\n' lpm-bootstrap > /etc/hostname
+
+cat > /etc/hosts <<'EOF'
+127.0.0.1 localhost
+::1       localhost
+127.0.1.1 lpm-bootstrap.localdomain lpm-bootstrap
+EOF
+xEOFx
+) > tmp

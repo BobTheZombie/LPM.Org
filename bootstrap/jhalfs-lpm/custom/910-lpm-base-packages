@@ -1,0 +1,33 @@
+PKG="lpm-base-packages"
+PKG_VERSION="1"
+PKG_FILE=""
+URL=""
+MD5=""
+for i in PATCH{1..10}; do
+    unset "$i"
+done
+
+( cat << "xEOFx"
+set -eux
+
+export HOME=/root
+export PATH=/usr/bin:/usr/sbin
+export LPM_STATE_DIR=/var/lib/lpm
+
+while IFS= read -r package || [ -n "$package" ]; do
+    case "$package" in
+        ""|\#*) continue ;;
+    esac
+
+    recipe="/sources/lpm-packages/$package/$package.lpmbuild"
+    if [ ! -f "$recipe" ]; then
+        echo "Missing required LPM recipe: $recipe" >&2
+        exit 1
+    fi
+
+    /usr/bin/lpm buildpkg "$recipe" \
+        --outdir /var/cache/lpm-bootstrap \
+        --install-default y
+done < /sources/lpm-bootstrap/packages.list
+xEOFx
+) > tmp

@@ -1,0 +1,29 @@
+PKG="lpm-bootstrap"
+PKG_VERSION="1"
+PKG_FILE=""
+URL=""
+MD5=""
+for i in PATCH{1..10}; do
+    unset "$i"
+done
+
+( cat << "xEOFx"
+set -eux
+
+install -Dm755 /sources/lpm-bootstrap/lpm /usr/bin/lpm
+install -Dm644 /sources/lpm-bootstrap/lpm.conf /etc/lpm/lpm.conf
+
+install -d \
+    /var/lib/lpm/cache/sources \
+    /var/lib/lpm/snapshots \
+    /var/lib/lpm/trust \
+    /usr/share \
+    /usr/libexec
+
+cp -a /sources/lpm-bootstrap/share/liblpm /usr/share/
+cp -a /sources/lpm-bootstrap/libexec/lpm /usr/libexec/
+
+test -x /usr/bin/lpm
+/usr/bin/lpm --help >/dev/null
+xEOFx
+) > tmp
