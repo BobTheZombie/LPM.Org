@@ -2891,7 +2891,7 @@ def _attempt_delta(pkg: PkgMeta, dst: Path) -> bool:
                 )
             continue
         min_tool = str(entry.get("min_tool", ""))
-        min_match = re.fullmatch(r"zstd>=(\\d+(?:\\.\\d+){1,2})", min_tool)
+        min_match = re.fullmatch(r"zstd>=(\d+(?:\.\d+){1,2})", min_tool)
         if min_tool and not min_match:
             if mode == "always":
                 raise RuntimeError(
