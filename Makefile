@@ -28,7 +28,7 @@ $(BUILD_INFO_JSON):
 
 NUITKA_FLAGS ?= \
         --onefile \
-        --include-package=src \
+        --include-package=lpm \
         --include-package=packaging \
         --follow-imports \
         --lto=yes \
@@ -130,7 +130,7 @@ STATIC_MODULES := \
 	re \
 	shlex \
 	shutil \
-	src \
+	lpm \
 	stat \
 	subprocess \
 	sys \
@@ -151,7 +151,7 @@ STATIC_MODULE_FLAGS := $(addprefix --include-module=,$(STATIC_MODULES))
 
 NUITKA_FLAGS += $(if $(filter yes,$(STATIC_LIBPYTHON_EFFECTIVE)),$(STATIC_MODULE_FLAGS))
 
-export PYTHONPATH := $(PWD)$(if $(PYTHONPATH),:$(PYTHONPATH),)
+export PYTHONPATH := $(PWD)/src:$(PWD)$(if $(PYTHONPATH),:$(PYTHONPATH),)
 
 PREFIX ?= /usr
 
@@ -197,10 +197,17 @@ $(STATIC_PYTHON_MODULES_STAMP): $(STATIC_PYTHON_BUILD_STAMP)
 	@$(STATIC_PYTHON_BIN) -m compileall -q -f $(STATIC_PYTHON_PREFIX)/lib/python$(STATIC_PYTHON_MAJOR_MINOR)
 	@touch "$@"
 
-.PHONY: all stage tarball clean distclean nuitka-install install
+.PHONY: all check-binaries stage tarball clean distclean nuitka-install install
 .ONESHELL:
 
 all: $(ALL_BIN_TARGETS)
+
+# Exercise the frozen entry points before they are staged into a package. A
+# successful Nuitka compilation is not sufficient: a missing included package
+# otherwise remains hidden until the installed onefile executable starts.
+check-binaries: $(ALL_BIN_TARGETS)
+	$(BIN_TARGET) --help >/dev/null
+	$(BIN_TARGET) buildpkg --help >/dev/null
 
 $(NUITKA_SOURCE_DIR):
 	@mkdir -p $(dir $(NUITKA_SOURCE_DIR))
@@ -228,15 +235,15 @@ $(NUITKA_STAMP_FILE): $(STATIC_PYTHON_READY) | $(NUITKA_SOURCE_DIR)
 		printf 'Nuitka already installed at %s; skipping reinstall.\n' "$$REV"; \
 	fi
 
-$(BIN_TARGET): src/lpm/__main__.py $(SRC_FILES) | nuitka-install
+$(BIN_TARGET): Makefile src/lpm/__main__.py $(SRC_FILES) | nuitka-install
 	@mkdir -p $(BUILD_DIR)
 	$(NUITKA) $(NUITKA_FLAGS) --output-dir=$(BUILD_DIR) --output-filename=$(APP).bin $(ENTRY)
 
-$(UI_BIN_TARGET): lpm_ui.py $(SRC_FILES) | nuitka-install
+$(UI_BIN_TARGET): Makefile lpm_ui.py $(SRC_FILES) | nuitka-install
 	@mkdir -p $(BUILD_DIR)
 	$(NUITKA) $(NUITKA_FLAGS) $(NUITKA_UI_FLAGS) --output-dir=$(BUILD_DIR) --output-filename=$(UI_APP_NAME).bin $(UI_ENTRY)
 
-$(STAGING_DIR): $(ALL_BIN_TARGETS) README.md LICENSE etc/lpm/lpm.conf $(BUILD_INFO_JSON)
+$(STAGING_DIR): check-binaries README.md LICENSE etc/lpm/lpm.conf $(BUILD_INFO_JSON)
 	@mkdir -p $(DIST_DIR)
 	@rm -rf $@
 	mkdir -p $@/bin
