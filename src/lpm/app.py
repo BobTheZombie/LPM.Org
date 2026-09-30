@@ -6719,7 +6719,20 @@ def installpkg(
                                 staged_script.chmod(staged_script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
                             except OSError:
                                 pass
-                            staged_script.rename(installed_script)
+                            # The extraction directory commonly lives on /tmp,
+                            # which may be a tmpfs while the target root lives on
+                            # another filesystem. Path.rename() cannot cross that
+                            # boundary (EXDEV). Copy beside the final destination
+                            # first, then atomically replace it on the target
+                            # filesystem. The script remains transaction metadata
+                            # and is removed after execution below.
+                            script_tmp = installed_script.with_name(
+                                f".{installed_script.name}.tmp"
+                            )
+                            if script_tmp.exists() or script_tmp.is_symlink():
+                                _replace_path(script_tmp)
+                            shutil.copy2(staged_script, script_tmp)
+                            os.replace(script_tmp, installed_script)
                             mani.append(
                                 {
                                     "path": install_script_rel,
