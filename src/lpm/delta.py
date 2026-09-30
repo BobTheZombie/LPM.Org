@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import re
+import os
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
-from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
@@ -25,7 +26,6 @@ class DeltaMeta:
     min_tool: str
 
 
-@lru_cache(maxsize=512)
 def _hash(path: Path) -> str:
     h = sha256()
     with path.open("rb", buffering=1024 * 1024) as f:
@@ -67,18 +67,31 @@ def delta_relpath(name: str, version: str, arch: str, base_version: str) -> Path
 def generate_delta(base: Path, target: Path, output: Path, minimum_version: str) -> Optional[DeltaMeta]:
     """Generate a delta between *base* and *target* using zstd."""
 
+    base = Path(base)
+    target = Path(target)
+    output = Path(output)
+    if not base.is_file() or not target.is_file():
+        raise FileNotFoundError("delta base and target must both be regular files")
     version = zstd_version()
     if not version_at_least(version, minimum_version):
         return None
     if not ZSTD_BIN:
         return None
     output.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [ZSTD_BIN, f"--patch-from={str(base)}", str(target), "-o", str(output)]
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{output.name}.", dir=output.parent)
+    os.close(fd)
+    tmp_output = Path(tmp_name)
+    cmd = [ZSTD_BIN, f"--patch-from={str(base)}", str(target), "-f", "-o", str(tmp_output)]
     try:
         subprocess.check_call(cmd)
-    except subprocess.CalledProcessError:
-        if output.exists():
-            output.unlink()
+        # A delta larger than the target package wastes bandwidth and storage.
+        if tmp_output.stat().st_size >= target.stat().st_size:
+            tmp_output.unlink()
+            return None
+        os.replace(tmp_output, output)
+    except (OSError, subprocess.CalledProcessError):
+        if tmp_output.exists():
+            tmp_output.unlink()
         return None
     return DeltaMeta(
         algorithm="zstd-patch",
@@ -93,8 +106,23 @@ def generate_delta(base: Path, target: Path, output: Path, minimum_version: str)
 def apply_delta(base: Path, patch: Path, output: Path) -> None:
     if not ZSTD_BIN:
         raise RuntimeError("zstd binary not available for delta application")
-    cmd = [ZSTD_BIN, f"--patch-from={str(base)}", str(patch), "-d", "-o", str(output)]
-    subprocess.check_call(cmd)
+    base = Path(base)
+    patch = Path(patch)
+    output = Path(output)
+    if not base.is_file() or not patch.is_file():
+        raise FileNotFoundError("delta base and patch must both be regular files")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{output.name}.", dir=output.parent)
+    os.close(fd)
+    tmp_output = Path(tmp_name)
+    cmd = [ZSTD_BIN, f"--patch-from={str(base)}", str(patch), "-d", "-f", "-o", str(tmp_output)]
+    try:
+        subprocess.check_call(cmd)
+        os.replace(tmp_output, output)
+    except Exception:
+        if tmp_output.exists():
+            tmp_output.unlink()
+        raise
 
 
 def find_cached_by_sha(cache_dirs: Sequence[Path], digest: str) -> Optional[Path]:
@@ -114,4 +142,3 @@ def find_cached_by_sha(cache_dirs: Sequence[Path], digest: str) -> Optional[Path
             except Exception:
                 continue
     return None
-
