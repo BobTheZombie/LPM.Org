@@ -59,6 +59,7 @@ build() {
     fi
 
     make VERSION="${VERSION}" BUILD_DATE="${build_date}" all
+    make VERSION="${VERSION}" BUILD_DATE="${build_date}" check-binaries
     make VERSION="${VERSION}" BUILD_DATE="${build_date}" build/build-info.json
 }
 
