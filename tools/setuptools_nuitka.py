@@ -63,7 +63,7 @@ class BuildNuitka(Command):
             f"--output-dir={output_dir}",
             "--onefile",
             "--follow-imports",
-            "--include-package=src",
+            "--include-package=lpm",
             "--include-package=packaging",
             "--lto=yes",
             f"--jobs={cpu_count}",
@@ -87,8 +87,17 @@ class BuildNuitka(Command):
         if script_path is None or not script_path.exists():
             raise FileNotFoundError(f"Unable to locate launcher: {script_name}")
         command = self._nuitka_invocation(flags, script_path)
+        project_root = Path(__file__).resolve().parents[1]
+        source_root = str(project_root / "src")
+        env = os.environ.copy()
+        current_pythonpath = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = (
+            f"{source_root}{os.pathsep}{current_pythonpath}"
+            if current_pythonpath
+            else source_root
+        )
         self.announce(f"Building {script_name} with Nuitka", level=2)
-        subprocess.check_call(command)
+        subprocess.check_call(command, env=env)
 
 
 class BuildPyWithNuitka(build_py):
