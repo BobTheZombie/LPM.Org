@@ -8,6 +8,12 @@ import sys
 import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from packaging.version import InvalidVersion, Version
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from lpm.config import ZSTD_MIN_VERSION, load_conf
 from lpm.delta import DeltaMeta, delta_relpath, generate_delta
@@ -46,8 +52,17 @@ def _select_previous(packages: List[Dict[str, Any]], pkg: Dict[str, Any]) -> Opt
     if not candidates:
         return None
 
-    def _key(entry: Dict[str, Any]) -> tuple[str, str]:
-        return str(entry.get("version", "")), str(entry.get("release", "1"))
+    def _key(entry: Dict[str, Any]) -> tuple[int, Version, int, str]:
+        raw_version = str(entry.get("version", ""))
+        raw_release = str(entry.get("release", "1"))
+        try:
+            parsed = Version(raw_version)
+            valid = 1
+        except InvalidVersion:
+            parsed = Version("0")
+            valid = 0
+        release_number = int(raw_release) if raw_release.isdigit() else 0
+        return valid, parsed, release_number, raw_release
 
     candidates.sort(key=_key)
     previous: Optional[Dict[str, Any]] = None
@@ -104,6 +119,8 @@ def generate_deltas(repo_root: Path, index_path: Path, config_path: Path) -> boo
 
         meta = generate_delta(base_path, target_path, out_path, min_version)
         if not meta:
+            if out_path.exists():
+                out_path.unlink()
             continue
 
         meta.base_version = base_version
