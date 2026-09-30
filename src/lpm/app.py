@@ -2883,6 +2883,27 @@ def _attempt_delta(pkg: PkgMeta, dst: Path) -> bool:
 
     candidates = sorted(pkg.deltas, key=lambda d: d.get("base_version", ""))
     for entry in reversed(candidates):
+        if entry.get("algorithm") != "zstd-patch":
+            if mode == "always":
+                raise RuntimeError(
+                    f"delta required for {pkg.name} but algorithm "
+                    f"{entry.get('algorithm', '<missing>')} is unsupported"
+                )
+            continue
+        min_tool = str(entry.get("min_tool", ""))
+        min_match = re.fullmatch(r"zstd>=(\\d+(?:\\.\\d+){1,2})", min_tool)
+        if min_tool and not min_match:
+            if mode == "always":
+                raise RuntimeError(
+                    f"delta required for {pkg.name} but min_tool metadata is invalid"
+                )
+            continue
+        if min_match and not version_at_least(version, min_match.group(1)):
+            if mode == "always":
+                raise RuntimeError(
+                    f"delta required for {pkg.name} but {min_tool} is unavailable"
+                )
+            continue
         base_sha = entry.get("base_sha256")
         if not base_sha:
             continue
@@ -2902,6 +2923,14 @@ def _attempt_delta(pkg: PkgMeta, dst: Path) -> bool:
             with tempfile.TemporaryDirectory(prefix="lpm-delta-") as tmpdir:
                 patch_path = Path(tmpdir) / "delta.zstpatch"
                 _download_to(location, patch_path)
+                expected_size = entry.get("size")
+                if expected_size is not None and patch_path.stat().st_size != int(expected_size):
+                    raise RuntimeError("delta size mismatch")
+                expected_patch_sha = entry.get("sha256")
+                if not expected_patch_sha:
+                    raise RuntimeError("delta checksum is missing")
+                if file_sha256(patch_path) != str(expected_patch_sha):
+                    raise RuntimeError("delta patch checksum mismatch")
                 out_path = Path(tmpdir) / "reconstructed.zst"
                 apply_delta(base_path, patch_path, out_path)
                 if file_sha256(out_path) != pkg.sha256:
@@ -6742,13 +6771,6 @@ def installpkg(
                                     "sha256": sha256sum(installed_script),
                                 }
                             )
-
-                        # Handle delta generation
-                        if staged_script is not None and installed_script is not None:
-                            try:
-                                generate_deltas(pkg_file, meta, mani, staged_script, installed_script)
-                            except Exception as e:
-                                warn(f"Delta generation failed: {e}")
 
                         # Verify the archive payload before allowing its
                         # maintainer script to make intentional adjustments.
