@@ -1,4 +1,5 @@
 import dataclasses
+import errno
 import importlib
 import json
 import shutil
@@ -214,6 +215,28 @@ def test_installpkg_runs_embedded_script(tmp_path, monkeypatch):
     assert row is not None
     manifest = json.loads(row[0])
     assert all(entry["path"] != "/.lpm-install.sh" for entry in manifest)
+
+
+def test_installpkg_install_script_does_not_rename_from_staging(tmp_path, monkeypatch):
+    """Maintainer scripts must work when /tmp and the target use different filesystems."""
+    lpm = _import_lpm(tmp_path, monkeypatch)
+    root = tmp_path / "root-cross-device"
+    root.mkdir()
+    pkg = _make_install_script_pkg(lpm, tmp_path)
+
+    real_rename = Path.rename
+
+    def reject_staging_rename(source, target):
+        if Path(source).name == ".lpm-install.sh":
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real_rename(source, target)
+
+    monkeypatch.setattr(Path, "rename", reject_staging_rename)
+
+    lpm.installpkg(pkg, root=root, dry_run=False, verify=False, force=False, explicit=True)
+
+    assert (root / "foo").read_text() == "from script"
+    assert not (root / ".lpm-install.sh").exists()
 
 
 def test_post_upgrade_hook_runs_with_previous_version(tmp_path, monkeypatch):
