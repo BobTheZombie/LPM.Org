@@ -318,6 +318,7 @@ contents and runs common maintenance commands based on what it finds:
   produce a package. `.lpmbuild` scripts may declare a `SOURCE=()` array; entries
   without a URL scheme automatically resolve to
   `{LPMBUILD_REPO}/{pkgname}/{filename}`, matching Arch Linux's `source=()`
+
   behaviour, while explicit URLs and `foo::https://example.com/src` rename
   syntax are honoured as-is.【F:src/lpm/app.py†L4044-L4092】
   For Python dependencies that should be sourced from PyPI, add a
@@ -395,6 +396,42 @@ either of the following formats:
 metadata or when the recorded digest matches the resolved file content, LPM
 falls back to hashing the extracted payload so that older packages remain
 compatible.
+
+### Delta package updates
+
+LPM can reconstruct a new package archive from a cached older archive and a
+repository-provided zstd patch. Delta creation belongs to repository publishing,
+not package installation, because a patch is computed between two complete,
+signed package archives.
+
+Generate the normal repository index first, then publish deltas:
+
+```sh
+lpm genindex /srv/lpm-repo --base-url https://packages.example.invalid/
+make deltas \
+    DELTA_REPO_ROOT=/srv/lpm-repo \
+    DELTA_INDEX=/srv/lpm-repo/index.json
+```
+
+The publisher selects the previous version of each package with the same
+architecture, writes patches below `deltas/`, and records the base-package hash,
+patch hash, patch size, algorithm, and minimum zstd version in `index.json`.
+Patches that are not smaller than the complete target archive are discarded.
+
+During `install` or `upgrade`, LPM uses a delta only when the exact base archive
+is still present in `/var/lib/lpm/cache`. Before reconstruction it verifies the
+patch size and SHA-256; afterward it verifies the reconstructed package against
+the target package SHA-256 from the repository index. Any failure in `auto` mode
+falls back to downloading the complete package. Configuration:
+
+```ini
+USE_DELTAS=auto       # auto | always | never
+ZSTD_MIN_VERSION=1.5.5
+```
+
+Use `--no-delta` for a single install or upgrade operation. `USE_DELTAS=always`
+is strict mode and fails rather than downloading a full package when no usable
+delta is available.
 
 ## First run configuration
 
