@@ -26,6 +26,65 @@ class BuildInstruction:
     sha256: str
 
 
+@dataclass(frozen=True)
+class BuildSection:
+    number: int
+    section: str
+    title: str
+    chapter: int
+    phase: str
+    context: str
+    commands: tuple[str, ...]
+    script: str
+    sha256: str
+    automatic: bool
+    reason: str = ""
+
+
+PHASES: tuple[dict[str, object], ...] = (
+    {"name": "cross-toolchain", "chapters": (5,), "context": "lfs-user"},
+    {"name": "temporary-tools", "chapters": (6,), "context": "lfs-user"},
+    {"name": "chroot-tools", "chapters": (7,), "context": "chroot"},
+    {"name": "final-system", "chapters": (8,), "context": "chroot"},
+    {"name": "system-configuration", "chapters": (9,), "context": "chroot"},
+    {"name": "boot", "chapters": (10,), "context": "chroot"},
+)
+
+
+def _chapter(section: str, title: str) -> int:
+    match = re.search(r"chapter(?:0?)(\d+)", section, re.IGNORECASE)
+    if not match:
+        match = re.match(r"\s*(\d+)\.", title)
+    return int(match.group(1)) if match else 0
+
+
+def _phase_for(chapter: int) -> tuple[str, str]:
+    for phase in PHASES:
+        if chapter in phase["chapters"]:
+            return str(phase["name"]), str(phase["context"])
+    return "manual", "host-root"
+
+
+def _context_for(section: str, chapter: int, default: str) -> str:
+    lowered = section.lower()
+    if chapter == 7 and any(marker in lowered for marker in ("changingowner", "ownership")):
+        return "host-root"
+    return default
+
+
+def _automation_policy(section: str, chapter: int) -> tuple[bool, str]:
+    if chapter not in {5, 6, 7, 8, 9, 10}:
+        return False, "outside executable LFS build chapters"
+    lowered = section.lower()
+    # These sections change the execution boundary itself.  The bootstrap
+    # runner owns those operations and must not recursively chroot or mount.
+    if chapter == 7 and any(marker in lowered for marker in ("kernfs", "virtual", "chroot")):
+        return False, "execution-boundary operation is managed by lpm"
+    if any(marker in lowered for marker in ("setrootpassword", "root-password")):
+        return False, "interactive password configuration"
+    return True, ""
+
+
 class _BookParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -282,6 +341,55 @@ def extract_build_instructions(book_path: Path, output_dir: Path) -> dict[str, o
             )
         )
 
+    # A jhalfs execution unit is a complete book section, not an individual
+    # <pre> block.  Keeping all blocks from a section in one shell preserves
+    # cd/export state and matches how package build instructions are written.
+    grouped: list[tuple[str, str, list[str]]] = []
+    for section, title, command in parser.instructions:
+        if grouped and grouped[-1][0] == section:
+            grouped[-1][2].append(command)
+        else:
+            grouped.append((section, title, [command]))
+
+    sections_dir = Path(output_dir) / "sections"
+    sections_dir.mkdir(parents=True, exist_ok=True)
+    for old_script in sections_dir.glob("*.sh"):
+        old_script.unlink()
+
+    sections: list[BuildSection] = []
+    for number, (section, title, commands) in enumerate(grouped, start=1):
+        chapter = _chapter(section, title)
+        phase, default_context = _phase_for(chapter)
+        context = _context_for(section, chapter, default_context)
+        automatic, reason = _automation_policy(section, chapter)
+        slug_source = section or title
+        slug = re.sub(r"[^a-z0-9]+", "-", slug_source.lower()).strip("-")
+        filename = f"{number:04d}-{(slug[:72] or 'section')}.sh"
+        body = (
+            "#!/bin/bash\n"
+            "set -euo pipefail\n\n"
+            "umask 022\n\n"
+            + "\n\n".join(command.rstrip() for command in commands)
+            + "\n"
+        )
+        script_path = sections_dir / filename
+        _atomic_text(script_path, body, mode=0o755)
+        sections.append(
+            BuildSection(
+                number=number,
+                section=section,
+                title=title,
+                chapter=chapter,
+                phase=phase,
+                context=context,
+                commands=tuple(commands),
+                script=str(script_path),
+                sha256=_sha256(script_path),
+                automatic=automatic,
+                reason=reason,
+            )
+        )
+
     index = {
         "format": "lpm-lfs-instructions",
         "format_version": 1,
@@ -292,7 +400,25 @@ def extract_build_instructions(book_path: Path, output_dir: Path) -> dict[str, o
     }
     index_path = Path(output_dir) / "instructions.json"
     _atomic_json(index_path, index)
-    return {**index, "index": str(index_path), "scripts_dir": str(scripts_dir)}
+    phase_plan = {
+        "format": "lpm-lfs-phase-plan",
+        "format_version": 1,
+        "book": str(Path(book_path)),
+        "book_sha256": index["book_sha256"],
+        "phases": list(PHASES),
+        "section_count": len(sections),
+        "sections": [asdict(record) for record in sections],
+    }
+    plan_path = Path(output_dir) / "phase-plan.json"
+    _atomic_json(plan_path, phase_plan)
+    return {
+        **index,
+        "index": str(index_path),
+        "scripts_dir": str(scripts_dir),
+        "phase_plan": str(plan_path),
+        "sections_dir": str(sections_dir),
+        "section_count": len(sections),
+    }
 
 
 def prepare_book(
@@ -319,7 +445,9 @@ def prepare_book(
 
 __all__ = [
     "BuildInstruction",
+    "BuildSection",
     "DEFAULT_BOOK_VERSION",
+    "PHASES",
     "cache_book",
     "default_book_url",
     "extract_build_instructions",

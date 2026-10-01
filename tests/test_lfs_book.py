@@ -38,6 +38,10 @@ def test_extract_build_instructions_creates_numbered_scripts(tmp_path: Path) -> 
     assert first.stat().st_mode & 0o111
     assert "../configure --prefix=$LFS/tools" in first.read_text(encoding="utf-8")
     assert "This output must not become a script" not in first.read_text(encoding="utf-8")
+    plan = json.loads(Path(result["phase_plan"]).read_text(encoding="utf-8"))
+    assert plan["section_count"] == 2
+    assert plan["sections"][0]["phase"] == "cross-toolchain"
+    assert plan["sections"][0]["context"] == "lfs-user"
 
 
 def test_cache_book_reuses_verified_cached_copy(tmp_path: Path, monkeypatch) -> None:

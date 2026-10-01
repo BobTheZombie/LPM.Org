@@ -25,6 +25,7 @@ class Stage(str, Enum):
     PARTITION = "partition"
     PREPARE_DIRS = "prepare-dirs"
     PREPARE_LFS_BOOK = "prepare-lfs-book"
+    EXECUTE_LFS_PHASES = "execute-lfs-phases"
     SEED_LPM = "seed-lpm"
     RESOLVE_BUILD_PLAN = "resolve-build-plan"
     BUILD_SOURCES = "build-sources"
@@ -40,6 +41,7 @@ STAGES: list[Stage] = [
     Stage.PARTITION,
     Stage.PREPARE_DIRS,
     Stage.PREPARE_LFS_BOOK,
+    Stage.EXECUTE_LFS_PHASES,
     Stage.SEED_LPM,
     Stage.RESOLVE_BUILD_PLAN,
     Stage.BUILD_SOURCES,
@@ -86,6 +88,11 @@ class BootstrapConfig:
     book_cache: Optional[Path] = None
     book_offline: bool = False
     book_refresh: bool = False
+    lfs_execute: bool = False
+    lfs_phases: tuple[str, ...] = ()
+    lfs_user: str = "lfs"
+    lfs_allow_manual: bool = False
+    lfs_only: bool = False
     mounted_partitions: list[Path] = field(default_factory=list, repr=False)
 
     @property
@@ -379,6 +386,11 @@ def load_config(cli_args: Any) -> BootstrapConfig:
         book_cache=_as_path(pick("book_cache")),
         book_offline=bool(pick("book_offline", False)),
         book_refresh=bool(pick("book_refresh", False)),
+        lfs_execute=bool(pick("lfs_execute", False)),
+        lfs_phases=_parse_pkg_list(pick("lfs_phases")),
+        lfs_user=str(pick("lfs_user", "lfs")),
+        lfs_allow_manual=bool(pick("lfs_allow_manual", False)),
+        lfs_only=bool(pick("lfs_only", False)),
     )
 
 
@@ -450,6 +462,8 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
             raise ValueError("boot device mapping must include root=DEVICE")
         if boot_mode == "uefi" and "efi" not in devices:
             _log(cfg, "warning: missing efi=DEVICE mapping; fstab/verification will omit EFI UUID")
+        if cfg.lfs_only and not cfg.lfs_execute:
+            raise ValueError("--lfs-only requires --execute-lfs-phases")
 
     elif stage == Stage.PARTITION:
         if cfg.partition_plan:
@@ -512,6 +526,48 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
                 f"version={cfg.book_version} "
                 f"instructions={result['extracted']['instruction_count']}",
             )
+
+    elif stage == Stage.EXECUTE_LFS_PHASES:
+        from .lfs_phases import prepare_sources, run_phase_plan
+
+        output_dir = cfg.target / "var/lib/lpm/jhalfs" / cfg.book_version
+        plan_path = output_dir / "phase-plan.json"
+        if cfg.dry_run and not plan_path.is_file():
+            print(
+                "[bootstrap][dry-run] execute LFS phases "
+                f"{','.join(cfg.lfs_phases) if cfg.lfs_phases else 'all'} "
+                f"from {plan_path} as {cfg.lfs_user}"
+            )
+            return state
+        if not plan_path.is_file():
+            raise FileNotFoundError(
+                f"LFS phase plan not found: {plan_path}; use --prepare-lfs-book"
+            )
+        cache_dir = cfg.book_cache or (cfg.target / "var/cache/lpm/books")
+        version_cache = cache_dir / cfg.book_version
+        source_result = prepare_sources(
+            wget_list=version_cache / "wget-list",
+            md5sums=version_cache / "md5sums",
+            destination=cfg.target / "sources",
+            offline=cfg.book_offline,
+        )
+        result = run_phase_plan(
+            plan_path=plan_path,
+            target=cfg.target,
+            phases=cfg.lfs_phases,
+            lfs_user=cfg.lfs_user,
+            resume=cfg.resume,
+            dry_run=cfg.dry_run,
+            allow_manual=cfg.lfs_allow_manual,
+            force=cfg.force,
+        )
+        state["lfs_execution"] = result
+        state["lfs_sources"] = source_result
+        _log(
+            cfg,
+            f"executed LFS phases={','.join(result['selected_phases'])} "
+            f"sections={len(result['executed'])} skipped={len(result['skipped'])}",
+        )
 
     elif stage == Stage.SEED_LPM:
         if cfg.lpmbuild_root:
@@ -622,12 +678,27 @@ def run_bootstrap(args: Any) -> int:
         for stage in STAGES:
             if stage == Stage.PREPARE_LFS_BOOK and not cfg.book_enabled:
                 continue
+            if stage == Stage.EXECUTE_LFS_PHASES and not cfg.lfs_execute:
+                continue
+            if cfg.lfs_only and stage in {
+                Stage.SEED_LPM,
+                Stage.RESOLVE_BUILD_PLAN,
+                Stage.BUILD_SOURCES,
+                Stage.INSTALL_BASE,
+                Stage.CONFIGURE_SYSTEM,
+                Stage.GENERATE_INITRAMFS,
+                Stage.INSTALL_BOOTLOADER,
+                Stage.FINAL_CHECK,
+            }:
+                continue
             if cfg.chroot_only and stage in {
                 Stage.GENERATE_INITRAMFS,
                 Stage.INSTALL_BOOTLOADER,
             }:
                 continue
-            if cfg.resume and stage.value in done:
+            # The LFS executor has finer-grained per-section checkpoints and
+            # may be invoked again with a different phase selection.
+            if cfg.resume and stage.value in done and stage != Stage.EXECUTE_LFS_PHASES:
                 _log(cfg, f"skip completed stage={stage.value}")
                 continue
             state = _run_stage(cfg, stage, mount_state, state)
