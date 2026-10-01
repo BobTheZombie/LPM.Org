@@ -698,7 +698,19 @@ def run_bootstrap(args: Any) -> int:
                 continue
             # The LFS executor has finer-grained per-section checkpoints and
             # may be invoked again with a different phase selection.
-            if cfg.resume and stage.value in done and stage != Stage.EXECUTE_LFS_PHASES:
+            missing_phase_plan = (
+                stage == Stage.PREPARE_LFS_BOOK
+                and cfg.lfs_execute
+                and not (
+                    cfg.target / "var/lib/lpm/jhalfs" / cfg.book_version / "phase-plan.json"
+                ).is_file()
+            )
+            if (
+                cfg.resume
+                and stage.value in done
+                and stage != Stage.EXECUTE_LFS_PHASES
+                and not missing_phase_plan
+            ):
                 _log(cfg, f"skip completed stage={stage.value}")
                 continue
             state = _run_stage(cfg, stage, mount_state, state)

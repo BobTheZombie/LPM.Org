@@ -50,6 +50,20 @@ def test_chroot_only_validation_does_not_require_root_device(tmp_path: Path) -> 
     assert state == {}
 
 
+def test_lfs_only_requires_phase_execution(tmp_path: Path) -> None:
+    cfg = bootstrap.BootstrapConfig(
+        target=tmp_path, chroot_only=True, lfs_only=True, lfs_execute=False
+    )
+    try:
+        bootstrap._run_stage(
+            cfg, bootstrap.Stage.VALIDATE, bootstrap.ChrootMountState(), {}
+        )
+    except ValueError as exc:
+        assert "--lfs-only requires" in str(exc)
+    else:
+        raise AssertionError("lfs-only was accepted without phase execution")
+
+
 def test_parse_toml_reads_bootstrap_section(tmp_path: Path) -> None:
     config = tmp_path / "bootstrap.toml"
     config.write_text(
