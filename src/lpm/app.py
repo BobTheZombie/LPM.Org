@@ -236,6 +236,15 @@ from .privileges import privilege_info, privileged_section, privileges_enabled, 
 from .resolver import CNF, CDCLSolver
 from .hooks import HookExecutionError, HookFailureMode, HookTransactionManager, _ensure_executable, load_hooks
 from .delta import apply_delta, find_cached_by_sha, file_sha256, zstd_version, version_at_least
+from .lpminstall import (
+    artifact_location,
+    descriptor_path,
+    load_descriptor,
+    md5sum as file_md5sum,
+    resolve_location as resolve_install_location,
+    sign_file,
+    write_descriptor,
+)
 from . import bootstrap
 from . import chroot_helpers
 
@@ -821,8 +830,10 @@ class PkgMeta:
     recommends: List[str] = field(default_factory=list)
     suggests: List[str] = field(default_factory=list)
     size: int = 0
+    md5: Optional[str] = None
     sha256: Optional[str] = None
     blob: Optional[str] = None
+    lpminstall: Optional[str] = None
     repo: str = ""
     prio: int = 10
     # Heuristic tuning
@@ -838,7 +849,8 @@ class PkgMeta:
             arch=d.get("arch","noarch"), summary=d.get("summary",""), url=d.get("url",""),
             license=d.get("license",""), developer=d.get("developer",""), requires=d.get("requires",[]), conflicts=d.get("conflicts",[]),
             build_requires=d.get("build_requires", []), obsoletes=d.get("obsoletes",[]), provides=d.get("provides",[]), provides_by_package=d.get("provides_by_package", {}), symbols=d.get("symbols",[]), recommends=d.get("recommends",[]),
-            suggests=d.get("suggests",[]), size=d.get("size",0), sha256=d.get("sha256"), blob=d.get("blob"),
+            suggests=d.get("suggests",[]), size=d.get("size",0), md5=d.get("md5"), sha256=d.get("sha256"), blob=d.get("blob"),
+            lpminstall=d.get("lpminstall"),
             repo=repo_name, prio=prio, bias=bias, decay=decay, kernel=d.get("kernel", False),
             mkinitcpio_preset=d.get("mkinitcpio_preset"), deltas=d.get("deltas", []))
 
@@ -2683,32 +2695,40 @@ def build_package(stagedir: Path, meta: PkgMeta, out: Path, sign=True):
         )
 
     # Sign package if signing key exists
+    signing_available = False
     if sign:
         if not SIGN_KEY.exists():
             warn(f"Signing requested but key not found: {SIGN_KEY}")
         elif not os.access(SIGN_KEY, os.R_OK):
             warn(f"Signing key not readable ({SIGN_KEY}); skipping signature")
         else:
-            sig = out.with_suffix(out.suffix + ".sig")
+            signing_available = True
             try:
-                subprocess.run(
-                    [
-                        "openssl",
-                        "dgst",
-                        "-sha256",
-                        "-sign",
-                        str(SIGN_KEY),
-                        "-out",
-                        str(sig),
-                        str(out),
-                    ],
-                    check=True,
-                )
+                sign_file(out, SIGN_KEY)
             except subprocess.CalledProcessError as exc:
+                signing_available = False
                 warn(
                     "openssl failed to sign package; package will remain unsigned. "
                     f"(exit status {exc.returncode})"
                 )
+
+    # Distribution sidecars are generated for every binary package. MD5 is
+    # compatibility metadata only; SHA-256 plus the detached signature are the
+    # trust and integrity mechanisms.
+    safe_write(
+        out.with_suffix(out.suffix + ".md5"),
+        f"{file_md5sum(out)}  {out.name}\n",
+        mode=0o644,
+    )
+    install_spec = write_descriptor(out, dataclasses.asdict(meta))
+    if signing_available:
+        try:
+            sign_file(install_spec, SIGN_KEY)
+        except subprocess.CalledProcessError as exc:
+            warn(
+                "openssl failed to sign .lpminstall metadata "
+                f"(exit status {exc.returncode})"
+            )
 
     ok(f"Built {out}")
 
@@ -2988,6 +3008,18 @@ def fetch_blob(p: PkgMeta) -> Tuple[Path, Optional[Path]]:
             for _ in progress_bar(range(1), desc=f"Downloading {p.name}"):
                 data, _ = _resolve_lpm_attr("urlread", urlread)(url)
                 dst.write_bytes(data)
+
+    if p.size and dst.stat().st_size != int(p.size):
+        dst.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"size mismatch for {p.name}: expected {p.size} bytes"
+        )
+    if p.md5 and file_md5sum(dst) != p.md5:
+        dst.unlink(missing_ok=True)
+        raise RuntimeError(f"MD5 mismatch for {p.name}")
+    if p.sha256 and file_sha256(dst) != p.sha256:
+        dst.unlink(missing_ok=True)
+        raise RuntimeError(f"SHA-256 mismatch for {p.name}")
 
     sig_path = _ensure_signature(url, sig_dst)
     return dst, sig_path
@@ -3397,6 +3429,9 @@ def gen_index(repo_dir: Path, base_url: Optional[str], arch_filter: Optional[str
     """
     repo_dir = repo_dir.resolve()
     packages = []
+    md5_lines: List[str] = []
+    sha256_lines: List[str] = []
+    signing_available = SIGN_KEY.is_file() and os.access(SIGN_KEY, os.R_OK)
 
     for p in sorted(repo_dir.glob(f"*{EXT}")):
         try:
@@ -3415,12 +3450,29 @@ def gen_index(repo_dir: Path, base_url: Optional[str], arch_filter: Optional[str
                 if arch_filter and not arch_compatible(meta.arch, arch_filter):
                     continue
 
-                # Fill blob path and size
+                # Fill distribution metadata and generate sidecars.
                 meta.blob = (base_url.rstrip("/") + "/" + p.name) if base_url else ("file://" + str(p))
-                try:
-                    meta.size = p.stat().st_size
-                except Exception:
-                    pass
+                meta.size = p.stat().st_size
+                meta.md5 = file_md5sum(p)
+                meta.sha256 = sha256sum(p)
+
+                md5_sidecar = p.with_suffix(p.suffix + ".md5")
+                safe_write(md5_sidecar, f"{meta.md5}  {p.name}\n", mode=0o644)
+                md5_lines.append(f"{meta.md5}  {p.name}")
+                sha256_lines.append(f"{meta.sha256}  {p.name}")
+
+                package_sig = p.with_suffix(p.suffix + ".sig")
+                if signing_available and not package_sig.exists():
+                    sign_file(p, SIGN_KEY)
+
+                spec = write_descriptor(
+                    p,
+                    dataclasses.asdict(meta),
+                    base_url=base_url,
+                )
+                meta.lpminstall = artifact_location(spec, base_url)
+                if signing_available:
+                    sign_file(spec, SIGN_KEY)
 
                 packages.append(dataclasses.asdict(meta))
 
@@ -3431,6 +3483,20 @@ def gen_index(repo_dir: Path, base_url: Optional[str], arch_filter: Optional[str
     out = repo_dir / "index.json"
     with operation_phase(privileged=True):
         write_json(out, index)
+        safe_write(
+            repo_dir / "MD5SUMS",
+            "\n".join(sorted(md5_lines)) + ("\n" if md5_lines else ""),
+            mode=0o644,
+        )
+        safe_write(
+            repo_dir / "SHA256SUMS",
+            "\n".join(sorted(sha256_lines)) + ("\n" if sha256_lines else ""),
+            mode=0o644,
+        )
+        if signing_available:
+            sign_file(repo_dir / "MD5SUMS", SIGN_KEY)
+            sign_file(repo_dir / "SHA256SUMS", SIGN_KEY)
+            sign_file(out, SIGN_KEY)
     ok(f"Wrote {out} with {len(packages)} packages")
 
 
@@ -5226,12 +5292,65 @@ def cmd_info(a):
         print(f"Suggests:   {', '.join(p.suggests) or '-'}")
         print(f"Blob:       {p.blob or '-'}")
 
+
+def _candidate_from_lpminstall(source: str, *, verify: bool) -> PkgMeta:
+    """Load a signed local .lpminstall descriptor as a solver candidate."""
+
+    spec_path = Path(source).expanduser().resolve()
+    if not spec_path.is_file():
+        raise RuntimeError(f".lpminstall file not found: {source}")
+    if verify:
+        verify_signature(spec_path, Path(str(spec_path) + ".sig"))
+
+    document = load_descriptor(spec_path)
+    package = document["package"]
+    metadata = document.get("metadata") or {}
+    raw = dict(metadata)
+    raw.update(
+        {
+            "name": package["name"],
+            "version": package["version"],
+            "release": package["release"],
+            "arch": package["arch"],
+            "size": int(package["size"]),
+            "md5": package["md5"],
+            "sha256": package["sha256"],
+            "blob": resolve_install_location(spec_path, str(package["url"])),
+            "lpminstall": str(spec_path),
+            "deltas": metadata.get("deltas", []),
+        }
+    )
+    candidate = PkgMeta.from_dict(raw, repo_name="lpminstall", prio=10_000)
+    return candidate
+
 def cmd_install(a):
     mode = "never" if getattr(a, "no_delta", False) else _config.USE_DELTAS
     with _delta_mode(mode):
         root = Path(a.root or DEFAULT_ROOT)
+        noverify = a.no_verify or os.environ.get("LPM_NO_VERIFY") == "1"
         u = build_universe()
-        goals = a.names
+        goals: List[str] = []
+        explicit_names: Set[str] = set()
+        for requested in a.names:
+            if requested.endswith(".lpminstall"):
+                try:
+                    candidate = _candidate_from_lpminstall(
+                        requested,
+                        verify=(not noverify),
+                    )
+                except Exception as exc:
+                    die(f"Cannot load {requested}: {exc}")
+                register_universe_candidate(u, candidate)
+                goals.append(f"{candidate.name} == {candidate.version}")
+                explicit_names.add(candidate.name)
+            else:
+                goals.append(requested)
+                try:
+                    parsed_goal = parse_dep_expr(requested)
+                    if parsed_goal.kind == "atom" and parsed_goal.atom:
+                        explicit_names.add(parsed_goal.atom.name)
+                except Exception:
+                    explicit_names.add(requested.split()[0])
         try:
             plan = solve(goals, u)
         except ResolutionError as e:
@@ -5241,7 +5360,6 @@ def cmd_install(a):
             log(f"  - {p.name}-{p.version}")
         if a.dry_run:
             return
-        noverify = a.no_verify or os.environ.get("LPM_NO_VERIFY") == "1"
         allow_fallback = ALLOW_LPMBUILD_FALLBACK if a.allow_fallback is None else a.allow_fallback
 
         snapshot_id = None
@@ -5274,7 +5392,7 @@ def cmd_install(a):
                 a.dry_run,
                 verify=(not noverify),
                 force=a.force,
-                explicit=set(a.names),
+                explicit=explicit_names,
                 allow_fallback=allow_fallback,
             )
         except SystemExit:
@@ -6750,10 +6868,10 @@ def installpkg(
                                 pass
                             # The extraction directory commonly lives on /tmp,
                             # which may be a tmpfs while the target root lives on
-                            # another filesystem. Path.rename() cannot cross that
-                            # boundary (EXDEV). Copy beside the final destination
+                            # another filesystem.  Path.rename() cannot cross that
+                            # boundary (EXDEV).  Copy beside the final destination
                             # first, then atomically replace it on the target
-                            # filesystem. The script remains transaction metadata
+                            # filesystem.  The script remains transaction metadata
                             # and is removed after execution below.
                             script_tmp = installed_script.with_name(
                                 f".{installed_script.name}.tmp"
@@ -7209,8 +7327,8 @@ def build_parser()->argparse.ArgumentParser:
     sp=sub.add_parser("search", help="Search packages"); sp.add_argument("patterns", nargs="*"); sp.set_defaults(func=cmd_search)
     sp=sub.add_parser("info", help="Show package info"); sp.add_argument("names", nargs="+"); sp.set_defaults(func=cmd_info)
 
-    sp=sub.add_parser("install", help="Install packages")
-    sp.add_argument("names", nargs="+")
+    sp=sub.add_parser("install", help="Install repository packages or signed .lpminstall descriptors")
+    sp.add_argument("names", nargs="+", help="package expressions or local .lpminstall files")
     sp.add_argument("--root")
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--no-verify", action="store_true", help="skip signature verification (DANGEROUS)")
