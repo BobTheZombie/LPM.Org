@@ -3644,9 +3644,14 @@ def _capture_lpmbuild_metadata(
 
     try:
         proc = subprocess.run(["bash", "-c", bcmd], capture_output=True, check=True)
-    except subprocess.CalledProcessError as e:
-        warn(f"lpmbuild parse failed: {e}")
-        return {}, {}, {"META_PROVIDES": {}}
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or b"").decode("utf-8", errors="replace").strip()
+        stdout = (exc.stdout or b"").decode("utf-8", errors="replace").strip()
+        detail = stderr or stdout or "Bash returned no diagnostic output"
+        raise ValueError(
+            f"failed to parse lpmbuild {script}: bash exited with status "
+            f"{exc.returncode}: {detail}"
+        ) from exc
 
     data = proc.stdout
     scalars: Dict[str, str] = {}

@@ -42,6 +42,18 @@ def test_metadata_captures_build_options(tmp_path):
     ]
 
 
+def test_metadata_reports_bash_syntax_error(tmp_path):
+    recipe = tmp_path / "broken.lpmbuild"
+    recipe.write_text('NAME="broken"\nif then\n', encoding="utf-8")
+
+    with pytest.raises(ValueError) as excinfo:
+        lpm._capture_lpmbuild_metadata(recipe)
+
+    message = str(excinfo.value)
+    assert str(recipe) in message
+    assert "syntax error" in message
+
+
 def test_recipe_optimization_overrides_config_and_host_flags(monkeypatch, tmp_path):
     recipe = tmp_path / "override.lpmbuild"
     _write_recipe(recipe, ["@--lto", "@--optimize=3"])
