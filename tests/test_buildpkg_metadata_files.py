@@ -12,6 +12,9 @@ def _meta() -> app.PkgMeta:
 
 
 def _fake_run(*args, **kwargs):
+    command = args[0]
+    if command and command[0] == "tar" and "-cf" in command:
+        Path(command[command.index("-cf") + 1]).write_bytes(b"\x28\xb5\x2f\xfdpackage")
     return None
 
 
@@ -32,6 +35,13 @@ def test_build_package_writes_metadata_files_with_expected_content(monkeypatch, 
 
     assert json.loads(meta_path.read_text(encoding="utf-8"))["name"] == "demo"
     assert json.loads(mani_path.read_text(encoding="utf-8"))[0]["path"] == "/usr/hello.txt"
+    assert (tmp_path / "demo.zst.md5").is_file()
+    spec = json.loads((tmp_path / "demo.lpminstall").read_text(encoding="utf-8"))
+    assert spec["format"] == "lpm-install"
+    assert spec["package"]["name"] == "demo"
+    assert spec["package"]["file"] == "demo.zst"
+    assert len(spec["package"]["md5"]) == 32
+    assert len(spec["package"]["sha256"]) == 64
 
 
 def test_build_package_metadata_permissions_ignore_umask(monkeypatch, tmp_path):
