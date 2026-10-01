@@ -14,8 +14,9 @@ class ZstdError(Exception):
 
 
 class _StreamWriter:
-    def __init__(self, dest: BinaryIO):
+    def __init__(self, dest: BinaryIO, *, closefd: bool = True):
         self._dest = dest
+        self._closefd = closefd
         self._closed = False
         self._header_written = False
 
@@ -36,6 +37,8 @@ class _StreamWriter:
         if not self._closed:
             self.flush()
             self._closed = True
+            if self._closefd and hasattr(self._dest, "close"):
+                self._dest.close()
 
     def __enter__(self) -> "_StreamWriter":
         return self
@@ -83,8 +86,8 @@ class _StreamReader(io.RawIOBase):
 
 
 class ZstdCompressor:
-    def stream_writer(self, dest: BinaryIO) -> _StreamWriter:
-        return _StreamWriter(dest)
+    def stream_writer(self, dest: BinaryIO, *, closefd: bool = True) -> _StreamWriter:
+        return _StreamWriter(dest, closefd=closefd)
 
     def compress(self, data: bytes) -> bytes:  # pragma: no cover - compatibility helper
         return _MAGIC + data

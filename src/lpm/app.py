@@ -1017,7 +1017,10 @@ def create_snapshot(tag: str, files: Iterable[Path]) -> str:
     cctx = zstd.ZstdCompressor()
     with operation_phase(privileged=True):
         with atomic_replace(archive, mode=0o644, open_mode="wb") as fh:
-            with cctx.stream_writer(fh) as compressor:
+            # ``atomic_replace`` owns ``fh`` and must flush/fsync it before
+            # committing the temporary file.  Keep zstd from closing that
+            # outer handle when its stream is finalized.
+            with cctx.stream_writer(fh, closefd=False) as compressor:
                 with tarfile.open(fileobj=compressor, mode="w|") as tf:
                     for p in files:
                         p = Path(p)
@@ -7331,6 +7334,11 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--root")
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--no-verify", action="store_true", help="skip signature verification (DANGEROUS)")
+    sp.add_argument(
+        "--force",
+        action="store_true",
+        help="override protected package list for install/upgrade",
+    )
     sp.add_argument(
         "--no-delta",
         action="store_true",
