@@ -24,6 +24,7 @@ class Stage(str, Enum):
     VALIDATE = "validate"
     PARTITION = "partition"
     PREPARE_DIRS = "prepare-dirs"
+    PREPARE_LFS_BOOK = "prepare-lfs-book"
     SEED_LPM = "seed-lpm"
     RESOLVE_BUILD_PLAN = "resolve-build-plan"
     BUILD_SOURCES = "build-sources"
@@ -38,6 +39,7 @@ STAGES: list[Stage] = [
     Stage.VALIDATE,
     Stage.PARTITION,
     Stage.PREPARE_DIRS,
+    Stage.PREPARE_LFS_BOOK,
     Stage.SEED_LPM,
     Stage.RESOLVE_BUILD_PLAN,
     Stage.BUILD_SOURCES,
@@ -76,6 +78,13 @@ class BootstrapConfig:
     partition_plan: Optional[Path] = None
     partition_confirm: bool = False
     source_output: Optional[Path] = None
+    book_enabled: bool = False
+    book_version: str = "13.1-systemd"
+    book_url: Optional[str] = None
+    book_sha256: Optional[str] = None
+    book_cache: Optional[Path] = None
+    book_offline: bool = False
+    book_refresh: bool = False
     mounted_partitions: list[Path] = field(default_factory=list, repr=False)
 
     @property
@@ -356,6 +365,13 @@ def load_config(cli_args: Any) -> BootstrapConfig:
         partition_plan=_as_path(pick("partition_plan")),
         partition_confirm=bool(pick("partition_confirm", False)),
         source_output=_as_path(pick("source_output")),
+        book_enabled=bool(pick("book_enabled", False)),
+        book_version=str(pick("book_version", "13.1-systemd")),
+        book_url=pick("book_url"),
+        book_sha256=pick("book_sha256"),
+        book_cache=_as_path(pick("book_cache")),
+        book_offline=bool(pick("book_offline", False)),
+        book_refresh=bool(pick("book_refresh", False)),
     )
 
 
@@ -456,6 +472,39 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
             print("[bootstrap][dry-run] mount chroot api filesystems")
         else:
             mount_chroot_api(cfg.target, mount_state)
+
+    elif stage == Stage.PREPARE_LFS_BOOK:
+        cache_dir = cfg.book_cache or (cfg.target / "var/cache/lpm/books")
+        output_dir = cfg.target / "var/lib/lpm/jhalfs" / cfg.book_version
+        if cfg.dry_run:
+            from .lfs_book import default_book_url
+
+            source_url = cfg.book_url or default_book_url(cfg.book_version)
+            print(
+                "[bootstrap][dry-run] prepare LFS book "
+                f"version={cfg.book_version} url={source_url} "
+                f"cache={cache_dir} output={output_dir} "
+                f"offline={cfg.book_offline} refresh={cfg.book_refresh}"
+            )
+        else:
+            from .lfs_book import prepare_book
+
+            result = prepare_book(
+                version=cfg.book_version,
+                cache_dir=cache_dir,
+                output_dir=output_dir,
+                url=cfg.book_url,
+                expected_sha256=cfg.book_sha256,
+                offline=cfg.book_offline,
+                refresh=cfg.book_refresh,
+            )
+            state["lfs_book"] = result
+            _log(
+                cfg,
+                "prepared LFS book "
+                f"version={cfg.book_version} "
+                f"instructions={result['extracted']['instruction_count']}",
+            )
 
     elif stage == Stage.SEED_LPM:
         if cfg.lpmbuild_root:
@@ -564,6 +613,8 @@ def run_bootstrap(args: Any) -> int:
 
     try:
         for stage in STAGES:
+            if stage == Stage.PREPARE_LFS_BOOK and not cfg.book_enabled:
+                continue
             if cfg.resume and stage.value in done:
                 _log(cfg, f"skip completed stage={stage.value}")
                 continue

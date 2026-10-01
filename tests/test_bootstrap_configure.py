@@ -56,6 +56,27 @@ def test_parse_toml_reads_bootstrap_section(tmp_path: Path) -> None:
     assert data == {"target": "/mnt/lumin", "hostname": "lumin"}
 
 
+def test_load_config_reads_pinned_lfs_book_options(tmp_path: Path) -> None:
+    config = tmp_path / "bootstrap.toml"
+    config.write_text(
+        "[bootstrap]\n"
+        f'target = "{tmp_path / "target"}"\n'
+        "book_enabled = true\n"
+        'book_version = "13.1-systemd"\n'
+        'book_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n'
+        "book_offline = true\n",
+        encoding="utf-8",
+    )
+
+    args = type("Args", (), {"config": str(config), "target": None})()
+    cfg = bootstrap.load_config(args)
+
+    assert cfg.book_enabled is True
+    assert cfg.book_version == "13.1-systemd"
+    assert cfg.book_sha256 == "a" * 64
+    assert cfg.book_offline is True
+
+
 def test_grub_install_requires_boot_device_for_bios() -> None:
     with pytest.raises(ValueError):
         bootstrap.grub_install_command("bios", None, None)

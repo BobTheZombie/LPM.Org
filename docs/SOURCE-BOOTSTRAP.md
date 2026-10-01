@@ -53,3 +53,43 @@ device's existing partition table and filesystems.
 
 The same settings can be placed under `[bootstrap]` in a TOML config. Resume
 state is kept at `var/lib/lpm/bootstrap-state.json` inside the target.
+
+## Cached LFS book instructions
+
+The bootstrap can pin a rendered Linux From Scratch systemd book, cache it,
+and extract each `<pre class="userinput">` command block into a numbered Bash
+script. The default book is `13.1-systemd`; changing versions is explicit.
+
+```sh
+sudo lpm bootstrap \
+  --target /mnt/lpm-system \
+  --lpmbuild-root ./system-recipes \
+  --prepare-lfs-book \
+  --book-version 13.1-systemd \
+  --book-sha256 SHA256_OF_THE_NOCHUNKS_HTML \
+  --dry-run --verbose
+```
+
+The versioned cache contains the no-chunks HTML book, upstream `wget-list`,
+`md5sums`, and `cache.json`. By default it is stored below
+`var/cache/lpm/books` in the target. The extracted `instructions.json` and
+executable scripts are written below `var/lib/lpm/jhalfs/VERSION`.
+
+Use `--book-cache PATH` to keep the cache outside the target,
+`--book-refresh` to redownload the pinned inputs, or `--book-offline` to reject
+all downloads and require a complete verified cache. Supplying
+`--book-sha256` is strongly recommended for the first download; subsequent
+runs also verify the digest recorded in the cache metadata. Extraction does
+not execute book commands. It produces auditable inputs for later bootstrap
+stages.
+
+Equivalent TOML settings are:
+
+```toml
+[bootstrap]
+book_enabled = true
+book_version = "13.1-systemd"
+book_sha256 = "...64 hexadecimal characters..."
+book_offline = false
+book_refresh = false
+```
