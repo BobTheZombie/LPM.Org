@@ -3,9 +3,15 @@ from pathlib import Path
 from lpm.source_bootstrap import build_and_install_sources, discover_source_packages, source_build_order
 
 
-def _recipe(path: Path, name: str, requires: str = "") -> None:
+def _recipe(
+    path: Path, name: str, requires: str = "", provides: tuple[str, ...] = ()
+) -> None:
     dependency_line = f'REQUIRES=("{requires}")' if requires else "REQUIRES=()"
-    path.write_text(f"NAME={name}\nVERSION=1\n{dependency_line}\n", encoding="utf-8")
+    provides_line = "PROVIDES=(" + " ".join(f'\"{item}\"' for item in provides) + ")"
+    path.write_text(
+        f"NAME={name}\nVERSION=1\n{dependency_line}\n{provides_line}\n",
+        encoding="utf-8",
+    )
 
 
 def test_source_build_order_is_dependency_first(tmp_path: Path) -> None:
@@ -13,6 +19,17 @@ def test_source_build_order_is_dependency_first(tmp_path: Path) -> None:
     _recipe(tmp_path / "shell.lpmbuild", "shell", "base")
     packages = discover_source_packages(tmp_path)
     assert [item.name for item in source_build_order(packages)] == ["base", "shell"]
+
+
+def test_exact_package_name_wins_over_virtual_provider(tmp_path: Path) -> None:
+    _recipe(tmp_path / "cargo.lpmbuild", "cargo")
+    _recipe(tmp_path / "rust.lpmbuild", "rust", provides=("cargo",))
+    _recipe(tmp_path / "consumer.lpmbuild", "consumer", "cargo")
+
+    packages = discover_source_packages(tmp_path)
+    order = [item.name for item in source_build_order(packages)]
+
+    assert order.index("cargo") < order.index("consumer")
 
 
 def test_source_bootstrap_builds_then_installs_in_order(tmp_path: Path) -> None:

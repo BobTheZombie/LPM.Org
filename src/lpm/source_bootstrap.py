@@ -60,7 +60,14 @@ def source_build_order(packages: dict[str, SourcePackage]) -> list[SourcePackage
             matches: set[str] = set()
             for part in alternatives:
                 if part.kind == "atom" and part.atom:
-                    matches.update(providers.get(part.atom.name, set()))
+                    dependency_name = part.atom.name
+                    # A package whose canonical NAME exactly matches the
+                    # dependency is authoritative. Virtual PROVIDES are only
+                    # considered when no exact local package exists.
+                    if dependency_name in packages:
+                        matches.add(dependency_name)
+                    else:
+                        matches.update(providers.get(dependency_name, set()))
             matches.discard(package.name)
             if len(matches) == 1:
                 dependencies[package.name].update(matches)
