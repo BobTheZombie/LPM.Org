@@ -433,6 +433,34 @@ Use `--no-delta` for a single install or upgrade operation. `USE_DELTAS=always`
 is strict mode and fails rather than downloading a full package when no usable
 delta is available.
 
+### Distribution package metadata
+
+Every binary produced by `lpm build` or `lpm buildpkg` is accompanied by:
+
+- `PACKAGE.zst.sig` — detached OpenSSL SHA-256 signature;
+- `PACKAGE.zst.md5` — compatibility checksum sidecar;
+- `PACKAGE.lpminstall` — declarative binary-install metadata;
+- `PACKAGE.lpminstall.sig` — detached signature for the install metadata.
+
+`.lpminstall` is JSON data, not an executable script. It records the exact
+package filename, URL, size, MD5, SHA-256, signature location, architecture,
+dependency relationships, virtual provides, conflicts, recommendations, and
+available deltas. Install one directly with:
+
+```sh
+sudo lpm install ./PACKAGE.lpminstall
+```
+
+Unless `--no-verify` is explicitly supplied, LPM authenticates the descriptor
+using `/etc/lpm/trust/*.pem`, resolves dependencies through configured
+repositories, downloads the specified binary, checks its size, MD5 and SHA-256,
+and verifies the binary's detached signature before committing its payload.
+MD5 is emitted only for compatibility; it is never the security boundary.
+
+`lpm genindex` also writes signed repository-level `index.json`, `MD5SUMS`, and
+`SHA256SUMS`, refreshes every `.lpminstall` file with its published URL, and
+creates any missing package signatures when the private signing key is present.
+
 ## First run configuration
 
 When `/etc/lpm/lpm.conf` does not exist, `lpm` launches an interactive wizard
