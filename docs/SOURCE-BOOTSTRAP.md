@@ -5,6 +5,19 @@ It reads `REQUIRES`, `BUILD_REQUIRES`, and `PROVIDES`, rejects ambiguous local
 providers and dependency cycles, builds packages in dependency-first order,
 then installs the generated `.zst` packages into the target root.
 
+For a build chroot that is not directly bootable, pass `--chroot-only`. This
+removes the root-device requirement and skips initramfs and bootloader stages:
+
+```sh
+sudo lpm bootstrap \
+  --target /mnt/lpm-chroot \
+  --chroot-only \
+  --lpmbuild-root /home/build/packages \
+  --prepare-lfs-book \
+  --book-version 13.1-systemd \
+  --verbose
+```
+
 Preview a filesystem-only installation:
 
 ```sh

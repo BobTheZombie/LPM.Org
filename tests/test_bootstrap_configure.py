@@ -42,6 +42,14 @@ def test_state_tracking_dry_run(tmp_path: Path) -> None:
     assert not cfg.state_path.exists()
 
 
+def test_chroot_only_validation_does_not_require_root_device(tmp_path: Path) -> None:
+    cfg = bootstrap.BootstrapConfig(target=tmp_path, chroot_only=True)
+    state = bootstrap._run_stage(
+        cfg, bootstrap.Stage.VALIDATE, bootstrap.ChrootMountState(), {}
+    )
+    assert state == {}
+
+
 def test_parse_toml_reads_bootstrap_section(tmp_path: Path) -> None:
     config = tmp_path / "bootstrap.toml"
     config.write_text(
@@ -75,6 +83,13 @@ def test_load_config_reads_pinned_lfs_book_options(tmp_path: Path) -> None:
     assert cfg.book_version == "13.1-systemd"
     assert cfg.book_sha256 == "a" * 64
     assert cfg.book_offline is True
+
+
+def test_load_config_reads_chroot_only(tmp_path: Path) -> None:
+    args = SimpleNamespace(
+        target=str(tmp_path / "root"), config=None, chroot_only=True
+    )
+    assert bootstrap.load_config(args).chroot_only is True
 
 
 def test_grub_install_requires_boot_device_for_bios() -> None:

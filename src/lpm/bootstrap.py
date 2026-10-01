@@ -69,6 +69,7 @@ class BootstrapConfig:
     force: bool = False
     efi_dir: Optional[Path] = None
     boot_device: Optional[str] = None
+    chroot_only: bool = False
     network: Optional[str] = None
     plan_file: Optional[Path] = None
     lpmbuild_root: Optional[Path] = None
@@ -194,6 +195,11 @@ def _parent_disk(device: str | None) -> str | None:
 
 def verify_bootstrap(target: Path, kernel: str, boot_mode: str, package_count: int, devices: dict[str, str]) -> dict[str, object]:
     required = [target / "etc/fstab", target / "etc/hostname", target / "etc/locale.conf"]
+    next_steps = (
+        ["enter the chroot and continue the system build"]
+        if boot_mode == "chroot"
+        else ["chroot and set root password", "reboot into installed system"]
+    )
     return {
         "target": str(target),
         "kernel_version": kernel,
@@ -201,7 +207,7 @@ def verify_bootstrap(target: Path, kernel: str, boot_mode: str, package_count: i
         "package_count": package_count,
         "uuids": {name: _blkid_uuid(dev) for name, dev in devices.items()},
         "missing": [str(path) for path in required if not path.exists()],
-        "next_steps": ["chroot and set root password", "reboot into installed system"],
+        "next_steps": next_steps,
     }
 
 
@@ -356,6 +362,7 @@ def load_config(cli_args: Any) -> BootstrapConfig:
         force=bool(pick("force", False)),
         efi_dir=_as_path(pick("efi_dir")),
         boot_device=pick("boot_device"),
+        chroot_only=bool(pick("chroot_only", False)),
         network=pick("network"),
         plan_file=_as_path(pick("plan_file")),
         lpmbuild_root=_as_path(pick("lpmbuild_root")),
@@ -409,7 +416,7 @@ def completed_stages(state: Dict[str, Any]) -> set[str]:
 
 def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState, state: Dict[str, Any]) -> Dict[str, Any]:
     _log(cfg, f"running stage={stage.value}")
-    boot_mode = "uefi" if cfg.efi_dir else "bios"
+    boot_mode = "chroot" if cfg.chroot_only else ("uefi" if cfg.efi_dir else "bios")
     kernel = cfg.kernel or "linux"
     hostname = cfg.hostname or "localhost"
     locale = cfg.locale or "en_US.UTF-8"
@@ -435,11 +442,11 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
         missing = [tool for tool in required_tools if shutil.which(tool) is None]
         if missing and not cfg.dry_run:
             raise RuntimeError(f"missing required tools: {', '.join(missing)}")
-        if boot_mode not in {"uefi", "bios"}:
+        if boot_mode not in {"uefi", "bios", "chroot"}:
             raise ValueError(f"unsupported boot mode: {boot_mode}")
         if boot_mode == "uefi" and cfg.efi_dir is None:
             raise ValueError("UEFI mode requires --efi-dir")
-        if "root" not in devices and not cfg.dry_run:
+        if boot_mode != "chroot" and "root" not in devices and not cfg.dry_run:
             raise ValueError("boot device mapping must include root=DEVICE")
         if boot_mode == "uefi" and "efi" not in devices:
             _log(cfg, "warning: missing efi=DEVICE mapping; fstab/verification will omit EFI UUID")
@@ -614,6 +621,11 @@ def run_bootstrap(args: Any) -> int:
     try:
         for stage in STAGES:
             if stage == Stage.PREPARE_LFS_BOOK and not cfg.book_enabled:
+                continue
+            if cfg.chroot_only and stage in {
+                Stage.GENERATE_INITRAMFS,
+                Stage.INSTALL_BOOTLOADER,
+            }:
                 continue
             if cfg.resume and stage.value in done:
                 _log(cfg, f"skip completed stage={stage.value}")

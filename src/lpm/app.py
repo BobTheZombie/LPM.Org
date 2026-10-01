@@ -7594,6 +7594,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--force", action="store_true", default=None)
     sp.add_argument("--efi-dir")
     sp.add_argument("--boot-device")
+    sp.add_argument("--chroot-only", action="store_true", default=None, help="build a non-bootable chroot without a root device, initramfs, or bootloader")
     sp.add_argument("--network")
     sp.add_argument("--plan-file", help="JSON package-order manifest")
     sp.add_argument("--lpmbuild-root", help="build and install all local .lpmbuild recipes")
