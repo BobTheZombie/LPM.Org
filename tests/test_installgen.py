@@ -76,3 +76,31 @@ def test_generate_install_script_ldconfig_only_for_real_root(tmp_path, monkeypat
     log.write_text("")
     subprocess.run(["sh", "-c", script], env={**os.environ, "LPM_ROOT": str(stage)}, check=True)
     assert "ldconfig" not in log.read_text().splitlines()
+
+
+def test_generated_install_script_removes_upgrade_stale_paths(tmp_path):
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    root = tmp_path / "root"
+    stale = root / "usr/share/demo/removed.txt"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("old payload")
+    keep = root / "usr/share/demo/keep.txt"
+    keep.write_text("keep")
+    stale_list = tmp_path / "stale-paths"
+    stale_list.write_text("/usr/share/demo/removed.txt\n")
+
+    script = generate_install_script(stage)
+    subprocess.run(
+        ["sh", "-c", script],
+        env={
+            **os.environ,
+            "LPM_ROOT": str(root),
+            "LPM_INSTALL_ACTION": "upgrade",
+            "LPM_STALE_PATHS_FILE": str(stale_list),
+        },
+        check=True,
+    )
+
+    assert not stale.exists()
+    assert keep.read_text() == "keep"

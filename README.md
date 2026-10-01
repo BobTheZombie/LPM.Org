@@ -264,6 +264,13 @@ When building a package, LPM automatically generates a post-install script if
 the `.lpmbuild` script does not provide one. The script inspects the package
 contents and runs common maintenance commands based on what it finds:
 
+During an upgrade, LPM also calculates the difference between the installed
+manifest and the new package manifest. The generated script removes files that
+were owned by the previous version but are no longer shipped. This cleanup is
+part of the atomic payload transaction: a failed install restores the previous
+files and leaves the installed-package database unchanged. Paths claimed by a
+different installed package are retained rather than deleted.
+
 - A desktop entry such as
   ```
   usr/share/applications/foo.desktop

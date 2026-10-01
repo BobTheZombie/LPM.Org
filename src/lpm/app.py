@@ -6672,6 +6672,34 @@ def installpkg(
             previous_release = row[1] if row else None
             previous_manifest = json.loads(row[2]) if row and row[2] else []
 
+            new_manifest_paths = set(_normalize_manifest_paths(mani))
+            old_manifest_paths = set(_normalize_manifest_paths(previous_manifest))
+            stale_paths = old_manifest_paths - new_manifest_paths
+
+            # Never remove a stale path which is also claimed by a different
+            # installed package. Shared ownership is undesirable, but an
+            # upgrade must not damage the other package while repairing it.
+            other_owned_paths: Set[str] = set()
+            if stale_paths:
+                for owner_name, owner_manifest_raw in conn.execute(
+                    "SELECT name, manifest FROM installed WHERE name <> ?",
+                    (meta.name,),
+                ):
+                    try:
+                        owner_manifest = json.loads(owner_manifest_raw or "[]")
+                    except (TypeError, json.JSONDecodeError):
+                        warn(f"cannot inspect manifest ownership for {owner_name}")
+                        continue
+                    other_owned_paths.update(_normalize_manifest_paths(owner_manifest))
+
+                shared_stale = stale_paths & other_owned_paths
+                for shared_path in sorted(shared_stale):
+                    warn(
+                        f"keeping stale path {shared_path}: it is owned by "
+                        "another installed package"
+                    )
+                stale_paths -= shared_stale
+
             if txn is not None:
                 if register_event:
                     operation = "Upgrade" if row else "Install"
@@ -6773,25 +6801,12 @@ def installpkg(
 
                     touched_paths = list(manifest_paths)
                     touched_paths.extend(
-                        str(entry.get("path"))
-                        for entry in previous_manifest
-                        if isinstance(entry, dict) and entry.get("path")
+                        _normalize_manifest_paths(previous_manifest)
                     )
                     touched_paths.extend(("/.lpm-install.sh", "/.lpm/install.sh"))
                     payload_tx = _payload_filesystem_transaction(touched_paths)
                     payload_tx.__enter__()
                     with operation_phase(privileged=True):
-                        # Atomic package replace for upgrades: remove all previously-owned
-                        # files before materializing the new payload so stale paths and
-                        # conflict prompts do not leak across versions.
-                        if previous_version is not None and previous_manifest:
-                            for old_entry in previous_manifest:
-                                old_path = old_entry.get("path") if isinstance(old_entry, dict) else None
-                                if not old_path:
-                                    continue
-                                dest_old = root / str(old_path).lstrip("/")
-                                _replace_path(dest_old)
-
                         # Atomic installs must replace existing files to avoid partial or half-updated payloads.
                         replace_all = True
                         for e in mani:
@@ -6898,7 +6913,17 @@ def installpkg(
 
                         if install_script_rel is not None and installed_script is not None and installed_script.exists():
                             install_action = "upgrade" if previous_version is not None else "install"
-                            install_env = {**os.environ, **hook_env, "LPM_INSTALL_ACTION": install_action}
+                            stale_file = tmp_root / ".lpm-stale-paths"
+                            stale_file.write_text(
+                                "".join(f"{path}\n" for path in sorted(stale_paths)),
+                                encoding="utf-8",
+                            )
+                            install_env = {
+                                **os.environ,
+                                **hook_env,
+                                "LPM_INSTALL_ACTION": install_action,
+                                "LPM_STALE_PATHS_FILE": str(stale_file),
+                            }
                             new_full = f"{meta.version}-{meta.release}"
                             old_full = (
                                 f"{previous_version}-{previous_release}"
@@ -6915,6 +6940,17 @@ def installpkg(
                                 with contextlib.suppress(FileNotFoundError):
                                     installed_script.unlink()
                                 mani = [e for e in mani if e["path"] != install_script_rel]
+
+                        # Custom maintainer scripts do not necessarily include
+                        # the generated stale-path helper. Complete the same
+                        # validated cleanup here as an idempotent fallback.
+                        for stale_path in sorted(stale_paths):
+                            stale_dest = root / stale_path.lstrip("/")
+                            if stale_dest.is_symlink() or stale_dest.is_file():
+                                stale_dest.unlink()
+                            elif stale_dest.is_dir():
+                                with contextlib.suppress(OSError):
+                                    stale_dest.rmdir()
 
                         # Never publish package state to SQLite until every
                         # promised payload has been re-read from its final path.

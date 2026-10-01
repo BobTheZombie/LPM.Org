@@ -130,6 +130,36 @@ def generate_install_script(stagedir: Path) -> str:
         "  fi",
         "}",
         "",
+        "# Remove paths owned by the previous version but absent from the new",
+        "# package manifest. LPM computes and validates this list from its package",
+        "# database and keeps the whole operation inside the payload rollback scope.",
+        "lpm_remove_stale_paths() {",
+        "  stale_file=${LPM_STALE_PATHS_FILE:-}",
+        "  root=${LPM_ROOT:-/}",
+        "  root=${root%/}",
+        "  root=${root:-/}",
+        "",
+        "  [ \"${LPM_INSTALL_ACTION:-}\" = upgrade ] || return 0",
+        "  [ -n \"$stale_file\" ] && [ -f \"$stale_file\" ] || return 0",
+        "",
+        "  while IFS= read -r package_path || [ -n \"$package_path\" ]; do",
+        "    case \"$package_path\" in",
+        "      /*) ;;",
+        "      *) continue ;;",
+        "    esac",
+        "    case \"/$package_path/\" in",
+        "      */../*|*/./*) continue ;;",
+        "    esac",
+        "",
+        "    target=\"$root/${package_path#/}\"",
+        "    if [ -L \"$target\" ] || [ -f \"$target\" ]; then",
+        "      rm -f -- \"$target\"",
+        "    elif [ -d \"$target\" ]; then",
+        "      rmdir -- \"$target\" 2>/dev/null || true",
+        "    fi",
+        "  done < \"$stale_file\"",
+        "}",
+        "",
     ]
 
     stagedir = stagedir.resolve()
@@ -149,7 +179,7 @@ def generate_install_script(stagedir: Path) -> str:
 
     needs_complex = has_gio or bool(absolute_symlinks)
     if not needs_complex:
-        lines = [*helper_lines, *simple_cmds]
+        lines = [*helper_lines, "lpm_remove_stale_paths", *simple_cmds]
         if not simple_cmds:
             lines.append(":")
         return "\n".join(lines)
@@ -171,6 +201,7 @@ def generate_install_script(stagedir: Path) -> str:
         "",
     ]
     lines.extend(helper_lines)
+    lines.extend(["lpm_remove_stale_paths", ""])
 
     if has_gio:
         lines.extend(

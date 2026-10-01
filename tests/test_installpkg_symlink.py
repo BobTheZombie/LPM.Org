@@ -323,3 +323,38 @@ def test_installpkg_upgrade_is_atomic_replace(tmp_path, monkeypatch):
     assert row[0] == "2"
     recorded = json.loads(row[1])
     assert {entry["path"] for entry in recorded} == {"/etc/new.conf", "/etc/common.conf"}
+
+
+def test_upgrade_keeps_stale_path_owned_by_another_package(tmp_path, monkeypatch):
+    lpm = _import_lpm(tmp_path, monkeypatch)
+    root = tmp_path / "root-shared-owner"
+
+    def build_pkg(name: str, version: str, payloads: dict[str, str]) -> Path:
+        staged = tmp_path / f"stage-{name}-{version}"
+        for rel, content in payloads.items():
+            target = staged / rel.lstrip("/")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
+        manifest = lpm.collect_manifest(staged)
+        meta = lpm.PkgMeta(name=name, version=version, release="1", arch="noarch")
+        (staged / ".lpm-meta.json").write_text(json.dumps(dataclasses.asdict(meta)))
+        (staged / ".lpm-manifest.json").write_text(json.dumps(manifest))
+        out = tmp_path / f"{name}-{version}.zst"
+        with out.open("wb") as package:
+            with lpm.zstd.ZstdCompressor().stream_writer(package) as compressor:
+                with tarfile.open(fileobj=compressor, mode="w|") as archive:
+                    for child in staged.iterdir():
+                        archive.add(child, arcname=child.name)
+        shutil.rmtree(staged)
+        return out
+
+    first = build_pkg("first", "1", {"/usr/share/shared.dat": "first"})
+    second = build_pkg("second", "1", {"/usr/share/shared.dat": "second"})
+    first_v2 = build_pkg("first", "2", {"/usr/share/first.dat": "new"})
+
+    lpm.installpkg(first, root=root, verify=False, explicit=True)
+    lpm.installpkg(second, root=root, verify=False, explicit=True)
+    lpm.installpkg(first_v2, root=root, verify=False, explicit=True)
+
+    assert (root / "usr/share/shared.dat").read_text() == "second"
+    assert (root / "usr/share/first.dat").read_text() == "new"

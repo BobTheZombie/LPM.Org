@@ -16,10 +16,8 @@ def test_desktop_file_triggers_update_desktop_database(tmp_path):
 
     script = generate_install_script(stage)
 
-    assert (
-        script
-        == 'command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "${LPM_ROOT:-/}/usr/share/applications" || true'
-    )
+    assert 'update-desktop-database "${LPM_ROOT:-/}/usr/share/applications"' in script
+    assert "lpm_remove_stale_paths" in script
 
 
 def test_icon_theme_triggers_icon_cache_update(tmp_path):
@@ -30,10 +28,8 @@ def test_icon_theme_triggers_icon_cache_update(tmp_path):
 
     script = generate_install_script(stage)
 
-    assert (
-        script
-        == 'command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache "${LPM_ROOT:-/}/usr/share/icons/hicolor" || true'
-    )
+    assert 'gtk-update-icon-cache "${LPM_ROOT:-/}/usr/share/icons/hicolor"' in script
+    assert "lpm_remove_stale_paths" in script
 
 
 def test_shared_library_triggers_ldconfig(tmp_path):
@@ -44,5 +40,6 @@ def test_shared_library_triggers_ldconfig(tmp_path):
 
     script = generate_install_script(stage)
 
-    assert script == '[ "${LPM_ROOT:-/}" = "/" ] && command -v ldconfig >/dev/null 2>&1 && ldconfig || true'
-
+    assert '[ "${LPM_ROOT:-/}" = "/" ]' in script
+    assert "ldconfig" in script
+    assert "lpm_remove_stale_paths" in script
