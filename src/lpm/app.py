@@ -3461,8 +3461,7 @@ def gen_index(repo_dir: Path, base_url: Optional[str], arch_filter: Optional[str
                 md5_lines.append(f"{meta.md5}  {p.name}")
                 sha256_lines.append(f"{meta.sha256}  {p.name}")
 
-                package_sig = p.with_suffix(p.suffix + ".sig")
-                if signing_available and not package_sig.exists():
+                if signing_available:
                     sign_file(p, SIGN_KEY)
 
                 spec = write_descriptor(
