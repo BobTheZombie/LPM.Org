@@ -15,8 +15,9 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from lpm.config import ZSTD_MIN_VERSION, load_conf
+from lpm.config import SIGN_KEY, ZSTD_MIN_VERSION, load_conf
 from lpm.delta import DeltaMeta, delta_relpath, generate_delta
+from lpm.lpminstall import sign_file, write_descriptor
 
 
 def _package_version_label(pkg: Dict[str, Any]) -> str:
@@ -36,6 +37,15 @@ def _artifact_path(repo_root: Path, pkg: Dict[str, Any]) -> Optional[Path]:
     if not blob:
         return None
     return repo_root / _artifact_name(str(blob))
+
+
+def _base_url(blob: str) -> Optional[str]:
+    parsed = urllib.parse.urlparse(blob)
+    if parsed.scheme in {"http", "https"}:
+        return blob.rsplit("/", 1)[0]
+    if parsed.scheme == "file":
+        return "file://" + str(Path(parsed.path).parent)
+    return None
 
 
 def _select_previous(packages: List[Dict[str, Any]], pkg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -130,6 +140,20 @@ def generate_deltas(repo_root: Path, index_path: Path, config_path: Path) -> boo
         changed = True
 
     if changed:
+        for pkg in packages:
+            package_path = _artifact_path(repo_root, pkg)
+            if not package_path or not package_path.is_file():
+                continue
+            spec = write_descriptor(
+                package_path,
+                pkg,
+                base_url=_base_url(str(pkg.get("blob", ""))),
+            )
+            signature = Path(str(spec) + ".sig")
+            if SIGN_KEY.is_file():
+                sign_file(spec, SIGN_KEY)
+            else:
+                signature.unlink(missing_ok=True)
         index_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return changed
 
