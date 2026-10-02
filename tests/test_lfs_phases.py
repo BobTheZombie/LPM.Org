@@ -23,6 +23,7 @@ def test_prepare_lfs_layout_creates_chapter_four_hierarchy(tmp_path: Path) -> No
     assert (target / "lib").readlink() == Path("usr/lib")
     assert (target / "sbin").readlink() == Path("usr/sbin")
     assert (target / "tools").is_dir()
+    assert (target / "var/lib/nss_db").is_dir()
     assert (target / "sources").stat().st_mode & 0o7777 == 0o1777
 
 
@@ -62,6 +63,7 @@ def test_ensure_lfs_account_creates_missing_locked_user(
     assert commands[2] == ["usermod", "--lock", "lfs"]
     if phases.os.uname().machine == "x86_64":
         assert tmp_path / "root" / "lib64" in owned
+    assert tmp_path / "root" / "var/lib/nss_db" in owned
 
 
 def _plan(tmp_path: Path) -> Path:

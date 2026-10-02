@@ -43,6 +43,7 @@ def _prepare_lfs_layout(target: Path) -> None:
         target / "etc", target / "var", target / "usr" / "bin",
         target / "usr" / "lib", target / "usr" / "sbin",
         target / "tools", target / "sources", target / "home",
+        target / "var" / "lib" / "nss_db",
     ):
         path.mkdir(parents=True, exist_ok=True)
     for name in ("bin", "lib", "sbin"):
@@ -93,6 +94,7 @@ def _ensure_lfs_account(target: Path, lfs_user: str) -> pwd.struct_passwd:
         home, target / "etc", target / "var", target / "usr",
         target / "usr" / "bin", target / "usr" / "lib",
         target / "usr" / "sbin", target / "sources", target / "tools",
+        target / "var" / "lib" / "nss_db",
     ]
     # Glibc creates the x86-64 dynamic-loader compatibility symlink directly
     # in $LFS/lib64 during Chapter 5.
