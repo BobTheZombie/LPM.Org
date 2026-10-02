@@ -4,7 +4,12 @@ import hashlib
 import json
 from pathlib import Path
 
-from lpm.lfs_phases import load_phase_plan, prepare_sources, run_phase_plan
+from lpm.lfs_phases import (
+    _source_candidates,
+    load_phase_plan,
+    prepare_sources,
+    run_phase_plan,
+)
 
 
 def _plan(tmp_path: Path) -> Path:
@@ -66,7 +71,21 @@ def test_prepare_sources_verifies_offline_cache(tmp_path: Path) -> None:
     wget.write_text("https://example.invalid/example.tar.xz\n", encoding="utf-8")
     sums.write_text(f"{digest}  example.tar.xz\n", encoding="utf-8")
     result = prepare_sources(
-        wget_list=wget, md5sums=sums, destination=sources, offline=True
+        wget_list=wget, md5sums=sums, destination=sources,
+        version="13.1-systemd", offline=True
     )
     assert result["verified"] == ["example.tar.xz"]
     assert result["downloaded"] == []
+
+
+def test_source_candidates_add_release_mirror_path() -> None:
+    candidates = _source_candidates(
+        "https://upstream.invalid/example.tar.xz",
+        "example.tar.xz",
+        "13.1-systemd",
+        ("https://mirror.invalid/lfs-packages/",),
+    )
+    assert candidates == [
+        "https://upstream.invalid/example.tar.xz",
+        "https://mirror.invalid/lfs-packages/13.1/example.tar.xz",
+    ]

@@ -6,6 +6,7 @@ import os
 import pwd
 import subprocess
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -21,9 +22,32 @@ PHASE_ORDER = (
     "boot",
 )
 
+DEFAULT_SOURCE_MIRRORS = (
+    "https://ftp.osuosl.org/pub/lfs/lfs-packages",
+    "https://lfs.gnlug.org/pub/lfs/lfs-packages",
+    "https://mirror.download.it/lfs/pub/lfs-packages",
+)
+
+
+def _source_candidates(
+    original: str, filename: str, version: str, mirrors: Iterable[str]
+) -> list[str]:
+    release = version.removesuffix("-systemd")
+    candidates = [original]
+    candidates.extend(
+        f"{mirror.rstrip('/')}/{release}/{filename}" for mirror in mirrors
+    )
+    return list(dict.fromkeys(candidates))
+
 
 def prepare_sources(
-    *, wget_list: Path, md5sums: Path, destination: Path, offline: bool = False
+    *,
+    wget_list: Path,
+    md5sums: Path,
+    destination: Path,
+    version: str,
+    offline: bool = False,
+    mirrors: Iterable[str] = DEFAULT_SOURCE_MIRRORS,
 ) -> dict[str, object]:
     """Download the book's source set and verify every listed MD5 digest."""
     expected: dict[str, str] = {}
@@ -44,6 +68,8 @@ def prepare_sources(
             raise ValueError(f"cannot determine filename from LFS source URL: {url}")
         path = destination / filename
         wanted = expected.get(filename)
+        if not wanted:
+            raise RuntimeError(f"LFS wget-list entry has no checksum: {filename}")
 
         def valid() -> bool:
             if not path.is_file() or not wanted:
@@ -58,14 +84,32 @@ def prepare_sources(
             if offline:
                 raise FileNotFoundError(f"missing or invalid cached LFS source: {path}")
             temporary = path.with_name(f".{path.name}.part")
-            temporary.unlink(missing_ok=True)
-            try:
-                with urllib.request.urlopen(url, timeout=120) as response, temporary.open("wb") as out:
-                    while chunk := response.read(1024 * 1024):
-                        out.write(chunk)
-                os.replace(temporary, path)
-            finally:
+            failures: list[str] = []
+            for candidate in _source_candidates(url, filename, version, mirrors):
                 temporary.unlink(missing_ok=True)
+                print(f"[jhalfs] downloading {filename} from {candidate}")
+                try:
+                    with urllib.request.urlopen(candidate, timeout=120) as response, temporary.open("wb") as out:
+                        while chunk := response.read(1024 * 1024):
+                            out.write(chunk)
+                    digest = hashlib.md5()  # nosec B324 - upstream LFS digest
+                    with temporary.open("rb") as stream:
+                        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                            digest.update(chunk)
+                    if digest.hexdigest() != wanted:
+                        failures.append(f"{candidate}: checksum mismatch")
+                        continue
+                    os.replace(temporary, path)
+                    break
+                except (OSError, urllib.error.URLError) as exc:
+                    failures.append(f"{candidate}: {exc}")
+                finally:
+                    temporary.unlink(missing_ok=True)
+            else:
+                raise RuntimeError(
+                    f"unable to download verified LFS source {filename}:\n  "
+                    + "\n  ".join(failures)
+                )
             downloaded.append(filename)
         if not valid():
             raise RuntimeError(f"LFS source checksum mismatch: {filename}")
@@ -254,4 +298,10 @@ def run_phase_plan(
     }
 
 
-__all__ = ["PHASE_ORDER", "load_phase_plan", "prepare_sources", "run_phase_plan"]
+__all__ = [
+    "DEFAULT_SOURCE_MIRRORS",
+    "PHASE_ORDER",
+    "load_phase_plan",
+    "prepare_sources",
+    "run_phase_plan",
+]

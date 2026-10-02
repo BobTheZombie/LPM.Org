@@ -549,6 +549,7 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
             wget_list=version_cache / "wget-list",
             md5sums=version_cache / "md5sums",
             destination=cfg.target / "sources",
+            version=cfg.book_version,
             offline=cfg.book_offline,
         )
         result = run_phase_plan(

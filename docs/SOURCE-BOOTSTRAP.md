@@ -110,7 +110,9 @@ sudo lpm bootstrap \
 ```
 
 Before execution, LPM downloads the upstream `wget-list` into
-`TARGET/sources` and validates every file against the book's `md5sums`.
+`TARGET/sources` and validates every file against the book's `md5sums`. If an
+upstream URL has disappeared, LPM retries official LFS file mirrors using the
+pinned release path; no mirror result is accepted unless its checksum matches.
 Available phases are `cross-toolchain`, `temporary-tools`, `chroot-tools`,
 `final-system`, `system-configuration`, and `boot`. Chapters 5 and 6 execute
 as the unprivileged `lfs` user (override with `--lfs-user`); later phases run
