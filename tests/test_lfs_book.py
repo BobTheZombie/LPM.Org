@@ -45,6 +45,14 @@ def test_extract_build_instructions_creates_numbered_scripts(tmp_path: Path) -> 
 
 
 def test_cache_book_reuses_verified_cached_copy(tmp_path: Path, monkeypatch) -> None:
+    assert lfs_book.default_support_url("13.1-systemd", "wget-list") == (
+        "https://www.linuxfromscratch.org/lfs/view/13.1-systemd/"
+        "wget-list-systemd"
+    )
+    assert lfs_book.default_support_url("13.1-systemd", "md5sums") == (
+        "https://www.linuxfromscratch.org/lfs/view/13.1-systemd/md5sums"
+    )
+
     downloads: list[str] = []
 
     def fake_download(url: str, destination: Path) -> None:

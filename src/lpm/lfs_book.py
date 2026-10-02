@@ -14,6 +14,7 @@ from typing import Optional
 
 DEFAULT_BOOK_VERSION = "13.1-systemd"
 DEFAULT_BOOK_BASE = "https://www.linuxfromscratch.org/lfs/downloads"
+DEFAULT_BOOK_VIEW_BASE = "https://www.linuxfromscratch.org/lfs/view"
 
 
 @dataclass(frozen=True)
@@ -213,7 +214,7 @@ def default_book_url(version: str) -> str:
 def default_support_url(version: str, filename: str) -> str:
     _version_release(version)
     remote_filename = "wget-list-systemd" if filename == "wget-list" else filename
-    return f"{DEFAULT_BOOK_BASE}/{version}/{remote_filename}"
+    return f"{DEFAULT_BOOK_VIEW_BASE}/{version}/{remote_filename}"
 
 
 def cache_book(
