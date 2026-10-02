@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import grp
 import json
 import os
 import pwd
@@ -35,6 +36,67 @@ _SOURCE_ALIASES = {
     "libstdcpp": "gcc",
     "python": "python",
 }
+
+
+def _prepare_lfs_layout(target: Path) -> None:
+    for path in (
+        target / "etc", target / "var", target / "usr" / "bin",
+        target / "usr" / "lib", target / "usr" / "sbin",
+        target / "tools", target / "sources", target / "home",
+    ):
+        path.mkdir(parents=True, exist_ok=True)
+    for name in ("bin", "lib", "sbin"):
+        link = target / name
+        wanted = Path("usr") / name
+        if link.is_symlink():
+            if Path(os.readlink(link)) != wanted:
+                raise RuntimeError(f"unexpected LFS compatibility link: {link} -> {os.readlink(link)}")
+        elif link.exists():
+            raise RuntimeError(f"LFS path must be a symlink before toolchain execution: {link}")
+        else:
+            link.symlink_to(wanted)
+    if os.uname().machine == "x86_64":
+        (target / "lib64").mkdir(parents=True, exist_ok=True)
+    os.chmod(target / "sources", 0o1777)
+
+
+def _ensure_lfs_account(target: Path, lfs_user: str) -> pwd.struct_passwd:
+    if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,30}", lfs_user):
+        raise ValueError(f"invalid LFS execution user: {lfs_user!r}")
+    try:
+        account = pwd.getpwnam(lfs_user)
+    except KeyError:
+        if os.geteuid() != 0:
+            raise RuntimeError(
+                f"LFS execution user {lfs_user!r} does not exist and root is required to create it"
+            )
+        try:
+            grp.getgrnam(lfs_user)
+        except KeyError:
+            subprocess.run(["groupadd", lfs_user], check=True)
+        home = target / "home" / lfs_user
+        home.mkdir(parents=True, exist_ok=True)
+        subprocess.run([
+            "useradd", "--no-create-home", "--home-dir", str(home),
+            "--shell", "/bin/bash", "--gid", lfs_user, lfs_user,
+        ], check=True)
+        subprocess.run(["usermod", "--lock", lfs_user], check=True)
+        account = pwd.getpwnam(lfs_user)
+        print(f"[jhalfs] created locked build account {lfs_user} (home={home})")
+    home = target / "home" / lfs_user
+    home.mkdir(parents=True, exist_ok=True)
+    # Chapters 5 and 6 install the cross toolchain and temporary programs
+    # directly below $LFS while running unprivileged.  Match the ownership
+    # established by LFS Chapter 4 instead of granting ownership only to the
+    # source and tools directories.
+    for path in (
+        home, target / "etc", target / "var", target / "usr",
+        target / "usr" / "bin", target / "usr" / "lib",
+        target / "usr" / "sbin", target / "sources", target / "tools",
+    ):
+        os.chown(path, account.pw_uid, account.pw_gid)
+    os.chmod(target / "sources", 0o1777)
+    return account
 
 
 def _section_source_key(section: str) -> str:
@@ -320,6 +382,7 @@ def run_phase_plan(
     if not isinstance(completed_phases, dict):
         raise ValueError("invalid LFS execution state: completed_phases must be an object")
     sections = [item for item in plan["sections"] if isinstance(item, dict)]
+    lfs_environment_ready = False
     for phase in PHASE_ORDER:
         if phase not in selected:
             continue
@@ -340,6 +403,14 @@ def run_phase_plan(
                 f"LFS phase plan contains no sections for selected phase {phase!r}; "
                 "regenerate it with --prepare-lfs-book"
             )
+        if (
+            phase in ("cross-toolchain", "temporary-tools")
+            and not lfs_environment_ready
+            and not dry_run
+        ):
+            _prepare_lfs_layout(target)
+            _ensure_lfs_account(target, lfs_user)
+            lfs_environment_ready = True
         for raw in phase_sections:
             section_id = str(raw.get("section") or f"section-{raw.get('number')}")
             automatic = bool(raw.get("automatic"))

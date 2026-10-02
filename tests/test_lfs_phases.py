@@ -3,13 +3,58 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from lpm.lfs_phases import (
+    _ensure_lfs_account,
+    _prepare_lfs_layout,
     _source_candidates,
     load_phase_plan,
     prepare_sources,
     run_phase_plan,
 )
+
+
+def test_prepare_lfs_layout_creates_chapter_four_hierarchy(tmp_path: Path) -> None:
+    target = tmp_path / "root"
+    _prepare_lfs_layout(target)
+
+    assert (target / "bin").readlink() == Path("usr/bin")
+    assert (target / "lib").readlink() == Path("usr/lib")
+    assert (target / "sbin").readlink() == Path("usr/sbin")
+    assert (target / "tools").is_dir()
+    assert (target / "sources").stat().st_mode & 0o7777 == 0o1777
+
+
+def test_ensure_lfs_account_creates_missing_locked_user(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import lpm.lfs_phases as phases
+
+    account = SimpleNamespace(pw_uid=1234, pw_gid=1234, pw_dir=str(tmp_path / "home"))
+    lookups = iter((KeyError("missing"), account))
+
+    def fake_getpwnam(_name):
+        value = next(lookups)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    commands: list[list[str]] = []
+    monkeypatch.setattr(phases.pwd, "getpwnam", fake_getpwnam)
+    monkeypatch.setattr(phases.grp, "getgrnam", lambda _name: (_ for _ in ()).throw(KeyError()))
+    monkeypatch.setattr(phases.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(phases.os, "chown", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        phases.subprocess, "run",
+        lambda command, **_kwargs: commands.append(command) or SimpleNamespace(),
+    )
+
+    result = _ensure_lfs_account(tmp_path / "root", "lfs")
+    assert result is account
+    assert commands[0] == ["groupadd", "lfs"]
+    assert commands[1][0] == "useradd"
+    assert commands[2] == ["usermod", "--lock", "lfs"]
 
 
 def _plan(tmp_path: Path) -> Path:
