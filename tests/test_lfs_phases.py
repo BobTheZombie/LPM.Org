@@ -31,6 +31,7 @@ def test_ensure_lfs_account_creates_missing_locked_user(
 ) -> None:
     import lpm.lfs_phases as phases
 
+    _prepare_lfs_layout(tmp_path / "root")
     account = SimpleNamespace(pw_uid=1234, pw_gid=1234, pw_dir=str(tmp_path / "home"))
     lookups = iter((KeyError("missing"), account))
 
@@ -44,7 +45,11 @@ def test_ensure_lfs_account_creates_missing_locked_user(
     monkeypatch.setattr(phases.pwd, "getpwnam", fake_getpwnam)
     monkeypatch.setattr(phases.grp, "getgrnam", lambda _name: (_ for _ in ()).throw(KeyError()))
     monkeypatch.setattr(phases.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(phases.os, "chown", lambda *_args, **_kwargs: None)
+    owned: list[Path] = []
+    monkeypatch.setattr(
+        phases.os, "chown",
+        lambda path, *_args, **_kwargs: owned.append(Path(path)),
+    )
     monkeypatch.setattr(
         phases.subprocess, "run",
         lambda command, **_kwargs: commands.append(command) or SimpleNamespace(),
@@ -55,6 +60,8 @@ def test_ensure_lfs_account_creates_missing_locked_user(
     assert commands[0] == ["groupadd", "lfs"]
     assert commands[1][0] == "useradd"
     assert commands[2] == ["usermod", "--lock", "lfs"]
+    if phases.os.uname().machine == "x86_64":
+        assert tmp_path / "root" / "lib64" in owned
 
 
 def _plan(tmp_path: Path) -> Path:

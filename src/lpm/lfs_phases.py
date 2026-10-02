@@ -89,11 +89,16 @@ def _ensure_lfs_account(target: Path, lfs_user: str) -> pwd.struct_passwd:
     # directly below $LFS while running unprivileged.  Match the ownership
     # established by LFS Chapter 4 instead of granting ownership only to the
     # source and tools directories.
-    for path in (
+    owned_paths = [
         home, target / "etc", target / "var", target / "usr",
         target / "usr" / "bin", target / "usr" / "lib",
         target / "usr" / "sbin", target / "sources", target / "tools",
-    ):
+    ]
+    # Glibc creates the x86-64 dynamic-loader compatibility symlink directly
+    # in $LFS/lib64 during Chapter 5.
+    if (target / "lib64").is_dir():
+        owned_paths.append(target / "lib64")
+    for path in owned_paths:
         os.chown(path, account.pw_uid, account.pw_gid)
     os.chmod(target / "sources", 0o1777)
     return account
