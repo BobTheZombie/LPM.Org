@@ -63,6 +63,8 @@ def test_cache_book_reuses_verified_cached_copy(tmp_path: Path, monkeypatch) -> 
         expected_sha256=digest,
     )
     assert len(downloads) == 3
+    assert downloads[1].endswith("/wget-list-systemd")
+    assert downloads[2].endswith("/md5sums")
 
     downloads.clear()
     second = lfs_book.cache_book(
@@ -73,6 +75,46 @@ def test_cache_book_reuses_verified_cached_copy(tmp_path: Path, monkeypatch) -> 
     )
     assert downloads == []
     assert first["sha256"] == second["sha256"] == digest
+
+
+def test_cache_book_replaces_legacy_sysv_wget_list(tmp_path: Path, monkeypatch) -> None:
+    downloads: list[str] = []
+
+    def fake_download(url: str, destination: Path) -> None:
+        downloads.append(url)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(BOOK_HTML if destination.suffix == ".html" else url.encode())
+
+    monkeypatch.setattr(lfs_book, "_download", fake_download)
+    cache = tmp_path / "cache" / "13.1-systemd"
+    cache.mkdir(parents=True)
+    book = cache / "LFS-BOOK-13.1-NOCHUNKS.html"
+    book.write_bytes(BOOK_HTML)
+    legacy = cache / "wget-list"
+    legacy.write_text("legacy sysv list\n", encoding="utf-8")
+    sums = cache / "md5sums"
+    sums.write_text("old sums\n", encoding="utf-8")
+    (cache / "cache.json").write_text(json.dumps({
+        "version": "13.1-systemd",
+        "url": lfs_book.default_book_url("13.1-systemd"),
+        "sha256": hashlib.sha256(BOOK_HTML).hexdigest(),
+        "support": {
+            "wget-list": {
+                "url": lfs_book.default_support_url("13.1-systemd", "wget-list").replace("wget-list-systemd", "wget-list"),
+                "sha256": hashlib.sha256(legacy.read_bytes()).hexdigest(),
+            },
+            "md5sums": {
+                "url": lfs_book.default_support_url("13.1-systemd", "md5sums"),
+                "sha256": hashlib.sha256(sums.read_bytes()).hexdigest(),
+            },
+        },
+    }), encoding="utf-8")
+
+    lfs_book.cache_book(version="13.1-systemd", cache_dir=tmp_path / "cache")
+    assert downloads == [
+        lfs_book.default_support_url("13.1-systemd", "wget-list")
+    ]
+    assert legacy.read_bytes().endswith(b"wget-list-systemd")
 
 
 def test_cache_book_rejects_checksum_mismatch(tmp_path: Path, monkeypatch) -> None:

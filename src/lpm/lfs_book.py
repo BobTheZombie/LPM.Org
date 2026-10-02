@@ -212,7 +212,8 @@ def default_book_url(version: str) -> str:
 
 def default_support_url(version: str, filename: str) -> str:
     _version_release(version)
-    return f"{DEFAULT_BOOK_BASE}/{version}/{filename}"
+    remote_filename = "wget-list-systemd" if filename == "wget-list" else filename
+    return f"{DEFAULT_BOOK_BASE}/{version}/{remote_filename}"
 
 
 def cache_book(
@@ -277,7 +278,18 @@ def cache_book(
             if isinstance(prior_entry, dict)
             else ""
         )
-        support_valid = path.is_file()
+        prior_url = (
+            str(prior_entry.get("url") or "")
+            if isinstance(prior_entry, dict)
+            else ""
+        )
+        # A prior LPM release cached the SysV wget-list under this local
+        # filename.  URL identity is part of cache validity so it is replaced
+        # automatically with wget-list-systemd on the next prepare/resume.
+        same_source = prior_url == support_url
+        if not same_source:
+            prior_digest = ""
+        support_valid = path.is_file() and same_source
         if support_valid and prior_digest:
             support_valid = _sha256(path) == prior_digest
         if refresh or not support_valid:
