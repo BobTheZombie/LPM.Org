@@ -21,6 +21,16 @@ make install</kbd></pre>
 </body></html>
 """
 
+ANCHOR_ID_BOOK_HTML = b"""<!doctype html>
+<html><body>
+<h2><a id="ch-tools-binutils-pass1"></a>5.2. Binutils-2.47 - Pass 1</h2>
+<h3>5.2.1. Installation of Cross Binutils</h3>
+<pre class="userinput"><kbd class="command">mkdir -v build</kbd></pre>
+<h3>Note</h3>
+<pre class="userinput"><kbd class="command">make</kbd></pre>
+</body></html>
+"""
+
 
 def test_extract_build_instructions_creates_numbered_scripts(tmp_path: Path) -> None:
     book = tmp_path / "book.html"
@@ -42,6 +52,21 @@ def test_extract_build_instructions_creates_numbered_scripts(tmp_path: Path) -> 
     assert plan["section_count"] == 2
     assert plan["sections"][0]["phase"] == "cross-toolchain"
     assert plan["sections"][0]["context"] == "lfs-user"
+
+
+def test_extract_tracks_anchor_ids_and_keeps_numbered_heading(tmp_path: Path) -> None:
+    book = tmp_path / "book.html"
+    book.write_bytes(ANCHOR_ID_BOOK_HTML)
+    result = lfs_book.extract_build_instructions(book, tmp_path / "instructions")
+    plan = json.loads(Path(result["phase_plan"]).read_text(encoding="utf-8"))
+
+    assert plan["section_count"] == 1
+    section = plan["sections"][0]
+    assert section["section"] == "ch-tools-binutils-pass1"
+    assert section["title"] == "5.2.1. Installation of Cross Binutils"
+    assert section["chapter"] == 5
+    assert section["phase"] == "cross-toolchain"
+    assert section["commands"] == ["mkdir -v build", "make"]
 
 
 def test_cache_book_reuses_verified_cached_copy(tmp_path: Path, monkeypatch) -> None:

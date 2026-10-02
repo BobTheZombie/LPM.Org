@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 import pwd
+import re
+import shutil
 import subprocess
 import time
 import urllib.error
@@ -27,6 +29,73 @@ DEFAULT_SOURCE_MIRRORS = (
     "https://lfs.gnlug.org/pub/lfs/lfs-packages",
     "https://mirror.download.it/lfs/pub/lfs-packages",
 )
+
+_SOURCE_ALIASES = {
+    "linux-headers": "linux",
+    "libstdcpp": "gcc",
+    "python": "python",
+}
+
+
+def _section_source_key(section: str) -> str:
+    for prefix in ("ch-tools-", "ch-system-"):
+        if section.startswith(prefix):
+            key = section[len(prefix):]
+            key = re.sub(r"-pass[12]$", "", key)
+            return _SOURCE_ALIASES.get(key.lower(), key.lower())
+    return ""
+
+
+def _source_archive(sources: Path, section: str) -> Path | None:
+    key = _section_source_key(section)
+    if not key:
+        return None
+    archives = []
+    for path in sources.iterdir():
+        lowered = path.name.lower()
+        if not path.is_file() or not re.search(r"\.tar\.(?:gz|bz2|xz|lz|zst)$|\.tgz$", lowered):
+            continue
+        if lowered.startswith(f"{key}-") and "-docs-" not in lowered:
+            archives.append(path)
+    if not archives:
+        return None
+    return sorted(archives, key=lambda item: (len(item.name), item.name))[0]
+
+
+def _prepare_section_source(target: Path, section: str, context: str, lfs_user: str) -> Path | None:
+    sources = target / "sources"
+    archive = _source_archive(sources, section)
+    if archive is None:
+        return None
+    listing = subprocess.run(
+        ["tar", "-tf", str(archive)], check=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    ).stdout.splitlines()
+    roots = {
+        Path(item.removeprefix("./")).parts[0]
+        for item in listing
+        if item.removeprefix("./") and Path(item.removeprefix("./")).parts
+    }
+    if len(roots) != 1 or any(root in {"", ".", ".."} or "/" in root for root in roots):
+        raise RuntimeError(f"unsafe or ambiguous LFS source archive layout: {archive}")
+    source_dir = sources / next(iter(roots))
+    if source_dir.exists() or source_dir.is_symlink():
+        if source_dir.is_dir() and not source_dir.is_symlink():
+            shutil.rmtree(source_dir)
+        else:
+            source_dir.unlink()
+    subprocess.run(["tar", "-xf", str(archive), "-C", str(sources)], check=True)
+    if not source_dir.is_dir():
+        raise RuntimeError(f"LFS source archive did not create {source_dir}")
+    if context == "lfs-user":
+        account = pwd.getpwnam(lfs_user)
+        for root, directories, files in os.walk(source_dir):
+            os.chown(root, account.pw_uid, account.pw_gid)
+            for name in directories:
+                os.chown(Path(root) / name, account.pw_uid, account.pw_gid, follow_symlinks=False)
+            for name in files:
+                os.chown(Path(root) / name, account.pw_uid, account.pw_gid, follow_symlinks=False)
+    return source_dir
 
 
 def _source_candidates(
@@ -160,7 +229,8 @@ def _selected_phases(phases: Iterable[str]) -> tuple[str, ...]:
 
 
 def _command(
-    *, target: Path, script: Path, context: str, lfs_user: str, env: dict[str, str]
+    *, target: Path, script: Path, context: str, lfs_user: str, env: dict[str, str],
+    source_dir: Path | None = None,
 ) -> tuple[list[str], dict[str, str] | None, Path]:
     sources = target / "sources"
     sources.mkdir(parents=True, exist_ok=True)
@@ -178,7 +248,7 @@ def _command(
         command.extend((f"HOME={account.pw_dir}", f"TERM={os.environ.get('TERM', 'xterm')}"))
         command.extend(f"{key}={value}" for key, value in env.items())
         command.extend(["/bin/bash", str(script)])
-        return command, None, sources
+        return command, None, source_dir or sources
     if context == "chroot":
         try:
             relative = script.resolve().relative_to(target.resolve())
@@ -195,9 +265,17 @@ def _command(
         }
         command = ["chroot", str(target), "/usr/bin/env", "-i"]
         command.extend(f"{key}={value}" for key, value in chroot_env.items())
-        command.extend(["/bin/bash", f"/{relative.as_posix()}"])
+        script_in_chroot = f"/{relative.as_posix()}"
+        if source_dir is not None:
+            source_relative = source_dir.resolve().relative_to(target.resolve())
+            command.extend([
+                "/bin/bash", "-c", 'cd "$1" && exec /bin/bash "$2"',
+                "lpm-lfs-section", f"/{source_relative.as_posix()}", script_in_chroot,
+            ])
+        else:
+            command.extend(["/bin/bash", script_in_chroot])
         return command, None, Path("/")
-    return ["/bin/bash", str(script)], {**os.environ, **env}, sources
+    return ["/bin/bash", str(script)], {**os.environ, **env}, source_dir or sources
 
 
 def run_phase_plan(
@@ -256,9 +334,13 @@ def run_phase_plan(
                 f"LFS phase {phase!r} requires completed phase(s): {', '.join(missing)}; "
                 "run them first or use --force"
             )
-        for raw in sections:
-            if raw.get("phase") != phase:
-                continue
+        phase_sections = [raw for raw in sections if raw.get("phase") == phase]
+        if not phase_sections:
+            raise RuntimeError(
+                f"LFS phase plan contains no sections for selected phase {phase!r}; "
+                "regenerate it with --prepare-lfs-book"
+            )
+        for raw in phase_sections:
             section_id = str(raw.get("section") or f"section-{raw.get('number')}")
             automatic = bool(raw.get("automatic"))
             if not automatic and not allow_manual:
@@ -272,14 +354,18 @@ def run_phase_plan(
             if resume and isinstance(prior, dict) and prior.get("sha256") == expected:
                 skipped.append(section_id)
                 continue
+            context = str(raw["context"])
+            source_dir = _prepare_section_source(target, section_id, context, lfs_user)
             command, command_env, cwd = _command(
                 target=target, script=script, context=str(raw["context"]),
-                lfs_user=lfs_user, env=env,
+                lfs_user=lfs_user, env=env, source_dir=source_dir,
             )
             if dry_run:
                 print(f"[jhalfs][dry-run] phase={phase} section={section_id}: {' '.join(command)}")
                 continue
             run(command, check=True, cwd=cwd, env=command_env)
+            if source_dir is not None and source_dir.is_dir():
+                shutil.rmtree(source_dir)
             completed[section_id] = {
                 "sha256": expected, "phase": phase, "completed_at": int(time.time()),
             }

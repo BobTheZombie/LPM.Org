@@ -105,11 +105,15 @@ class _BookParser(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
         attrs_dict = dict(attrs)
+        # The rendered LFS no-chunks book places section identifiers on an
+        # empty anchor inside each heading (``<h2><a id=...></a>...``), not on
+        # the heading element itself.  Track identifiers from any element so
+        # command blocks are grouped under their real book section.
+        if attrs_dict.get("id"):
+            self.current_section = str(attrs_dict["id"])
         if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
             self.heading_depth = 1
             self.heading_parts = []
-            if attrs_dict.get("id"):
-                self.current_section = str(attrs_dict["id"])
             return
         if self.heading_depth:
             self.heading_depth += 1
@@ -128,7 +132,11 @@ class _BookParser(HTMLParser):
             self.heading_depth -= 1
             if self.heading_depth == 0:
                 title = " ".join("".join(self.heading_parts).split())
-                if title:
+                # Package sections contain nested unnumbered headings such as
+                # "Note", "Caution", and "Installation of ...".  Retain the
+                # latest numbered book heading so phase classification still
+                # has its chapter number when a command block is encountered.
+                if title and (re.match(r"\d+(?:\.\d+)+\.?\s", title) or not self.current_title):
                     self.current_title = title
 
         if self.pre_depth:

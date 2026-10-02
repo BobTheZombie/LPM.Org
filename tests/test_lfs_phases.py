@@ -58,6 +58,19 @@ def test_phase_runner_rejects_modified_script(tmp_path: Path) -> None:
         raise AssertionError("modified section script was accepted")
 
 
+def test_phase_runner_rejects_empty_selected_phase(tmp_path: Path) -> None:
+    plan = _plan(tmp_path)
+    try:
+        run_phase_plan(
+            plan_path=plan, target=tmp_path / "root",
+            phases=("cross-toolchain",), force=True,
+        )
+    except RuntimeError as exc:
+        assert "contains no sections" in str(exc)
+    else:
+        raise AssertionError("empty selected LFS phase was marked complete")
+
+
 def test_prepare_sources_verifies_offline_cache(tmp_path: Path) -> None:
     import hashlib
 
