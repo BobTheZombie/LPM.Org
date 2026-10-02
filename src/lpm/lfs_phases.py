@@ -43,7 +43,7 @@ def _prepare_lfs_layout(target: Path) -> None:
         target / "etc", target / "var", target / "usr" / "bin",
         target / "usr" / "lib", target / "usr" / "sbin",
         target / "tools", target / "sources", target / "home",
-        target / "var" / "lib" / "nss_db",
+        target / "var" / "lib",
     ):
         path.mkdir(parents=True, exist_ok=True)
     for name in ("bin", "lib", "sbin"):
@@ -59,6 +59,19 @@ def _prepare_lfs_layout(target: Path) -> None:
     if os.uname().machine == "x86_64":
         (target / "lib64").mkdir(parents=True, exist_ok=True)
     os.chmod(target / "sources", 0o1777)
+    # LPM keeps its own root-owned bootstrap state below $LFS/var/lib/lpm,
+    # while several Chapter 5/6 packages create sibling state directories
+    # during `make install` as the unprivileged LFS user.  A sticky creation
+    # directory permits those package-owned siblings without giving the LFS
+    # user permission to replace LPM's state directory.
+    os.chmod(target / "var" / "lib", 0o1777)
+
+
+def _finalize_lfs_temporary_layout(target: Path) -> None:
+    """Restore production permissions after Chapters 5 and 6 complete."""
+    var_lib = target / "var" / "lib"
+    if var_lib.is_dir():
+        os.chmod(var_lib, 0o755)
 
 
 def _ensure_lfs_account(target: Path, lfs_user: str) -> pwd.struct_passwd:
@@ -94,7 +107,6 @@ def _ensure_lfs_account(target: Path, lfs_user: str) -> pwd.struct_passwd:
         home, target / "etc", target / "var", target / "usr",
         target / "usr" / "bin", target / "usr" / "lib",
         target / "usr" / "sbin", target / "sources", target / "tools",
-        target / "var" / "lib" / "nss_db",
     ]
     # Glibc creates the x86-64 dynamic-loader compatibility symlink directly
     # in $LFS/lib64 during Chapter 5.
@@ -452,6 +464,8 @@ def run_phase_plan(
             _write_json(state_path, state)
             executed.append(section_id)
         if not dry_run:
+            if phase == "temporary-tools":
+                _finalize_lfs_temporary_layout(target)
             completed_phases[phase] = {"completed_at": int(time.time())}
             _write_json(state_path, state)
     return {
