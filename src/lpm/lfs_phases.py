@@ -453,6 +453,11 @@ def run_phase_plan(
             if dry_run:
                 print(f"[jhalfs][dry-run] phase={phase} section={section_id}: {' '.join(command)}")
                 continue
+            print(
+                f"[jhalfs] phase={phase} section={section_id} "
+                f"title={raw.get('title', '')}",
+                flush=True,
+            )
             run(command, check=True, cwd=cwd, env=command_env)
             if source_dir is not None and source_dir.is_dir():
                 shutil.rmtree(source_dir)

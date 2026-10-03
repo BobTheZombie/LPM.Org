@@ -103,6 +103,12 @@ def test_bindmount_section_is_owned_by_orchestrator() -> None:
     assert "managed by lpm" in reason
 
 
+def test_package_management_examples_are_not_executable() -> None:
+    automatic, reason = lfs_book._automation_policy("pkgmgmt-upgrade-issues", 8)
+    assert automatic is False
+    assert "documentation" in reason
+
+
 def test_interactive_shell_refresh_is_removed_without_losing_following_commands(
     tmp_path: Path,
 ) -> None:

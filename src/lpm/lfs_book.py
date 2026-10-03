@@ -82,6 +82,11 @@ def _automation_policy(section: str, chapter: int) -> tuple[bool, str]:
     if chapter not in {5, 6, 7, 8, 9, 10}:
         return False, "outside executable LFS build chapters"
     lowered = section.lower()
+    # Chapter 8's package-management discussion contains illustrative shell
+    # snippets (for example, grepping for processes using deleted libraries).
+    # They are neither build steps nor reliable in a pristine chroot.
+    if chapter == 8 and lowered.startswith("pkgmgmt"):
+        return False, "package-management documentation, not a build section"
     # These sections change the execution boundary itself.  The bootstrap
     # runner owns those operations and must not recursively chroot or mount.
     if chapter == 7 and any(
