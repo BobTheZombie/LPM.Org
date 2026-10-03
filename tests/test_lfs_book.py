@@ -76,6 +76,33 @@ def test_bindmount_section_is_owned_by_orchestrator() -> None:
     assert "managed by lpm" in reason
 
 
+def test_interactive_shell_refresh_is_removed_without_losing_following_commands(
+    tmp_path: Path,
+) -> None:
+    book = tmp_path / "book.html"
+    book.write_text(
+        "<!doctype html><html><body>"
+        '<h2 id="ch-tools-createfiles">7.6 Creating Essential Files</h2>'
+        '<pre class="userinput"><kbd class="command">echo passwd &gt; /etc/passwd</kbd></pre>'
+        '<pre class="userinput"><kbd class="command">exec /usr/bin/bash --login</kbd></pre>'
+        '<pre class="userinput"><kbd class="command">touch /var/log/lastlog</kbd></pre>'
+        "</body></html>",
+        encoding="utf-8",
+    )
+
+    result = lfs_book.extract_build_instructions(book, tmp_path / "instructions")
+    plan = json.loads(Path(result["phase_plan"]).read_text(encoding="utf-8"))
+    section = plan["sections"][0]
+    script = Path(section["script"]).read_text(encoding="utf-8")
+
+    assert section["commands"] == [
+        "echo passwd > /etc/passwd",
+        "touch /var/log/lastlog",
+    ]
+    assert "exec /usr/bin/bash --login" not in script
+    assert "touch /var/log/lastlog" in script
+
+
 def test_cache_book_reuses_verified_cached_copy(tmp_path: Path, monkeypatch) -> None:
     assert lfs_book.default_support_url("13.1-systemd", "wget-list") == (
         "https://www.linuxfromscratch.org/lfs/view/13.1-systemd/"

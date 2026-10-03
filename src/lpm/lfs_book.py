@@ -93,6 +93,25 @@ def _automation_policy(section: str, chapter: int) -> tuple[bool, str]:
     return True, ""
 
 
+_SHELL_REFRESH_RE = re.compile(
+    r"^\s*exec\s+/(?:usr/)?bin/(?:ba)?sh\s+(?:--login|-l)\s*$"
+)
+
+
+def _without_interactive_shell_refresh(command: str) -> str:
+    """Remove book-only login-shell transitions from generated scripts.
+
+    The Chapter 7 command exists to refresh name resolution in a human-driven
+    chroot session.  An automated section already runs in a fresh process, and
+    allowing ``exec bash --login`` would replace the section runner and hide
+    every command that follows it.
+    """
+    return "\n".join(
+        line for line in command.splitlines()
+        if not _SHELL_REFRESH_RE.fullmatch(line)
+    ).strip()
+
+
 class _BookParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -390,6 +409,10 @@ def extract_build_instructions(book_path: Path, output_dir: Path) -> dict[str, o
         phase, default_context = _phase_for(chapter)
         context = _context_for(section, chapter, default_context)
         automatic, reason = _automation_policy(section, chapter)
+        commands = [
+            filtered for command in commands
+            if (filtered := _without_interactive_shell_refresh(command))
+        ]
         slug_source = section or title
         slug = re.sub(r"[^a-z0-9]+", "-", slug_source.lower()).strip("-")
         filename = f"{number:04d}-{(slug[:72] or 'section')}.sh"
