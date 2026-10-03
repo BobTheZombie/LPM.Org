@@ -64,6 +64,41 @@ def test_lfs_only_requires_phase_execution(tmp_path: Path) -> None:
         raise AssertionError("lfs-only was accepted without phase execution")
 
 
+def test_lpm_ready_requires_phase_execution(tmp_path: Path) -> None:
+    cfg = bootstrap.BootstrapConfig(
+        target=tmp_path, chroot_only=True, lpm_ready=True, lfs_execute=False
+    )
+    with pytest.raises(ValueError, match="--lpm-ready requires"):
+        bootstrap._run_stage(
+            cfg, bootstrap.Stage.VALIDATE, bootstrap.ChrootMountState(), {}
+        )
+
+
+def test_install_and_verify_lpm_runtime(monkeypatch, tmp_path: Path) -> None:
+    host_lpm = tmp_path / "host-lpm"
+    host_lpm.write_text("host executable", encoding="utf-8")
+    host_lpm.chmod(0o755)
+    monkeypatch.setattr(bootstrap, "_host_lpm_executable", lambda: host_lpm)
+
+    for name in ("bash", "env", "make", "python3", "tar"):
+        tool = tmp_path / "root/usr/bin" / name
+        tool.parent.mkdir(parents=True, exist_ok=True)
+        tool.write_text(name, encoding="utf-8")
+
+    installed = bootstrap.install_lpm_runtime(tmp_path / "root")
+    assert installed.read_text(encoding="utf-8") == "host executable"
+    monkeypatch.setattr(
+        bootstrap.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="usage: lpm"),
+    )
+
+    result = bootstrap.verify_lpm_ready(tmp_path / "root")
+
+    assert result["verified"] is True
+    assert (tmp_path / "root/var/lib/lpm/lpm-ready.json").is_file()
+
+
 def test_parse_toml_reads_bootstrap_section(tmp_path: Path) -> None:
     config = tmp_path / "bootstrap.toml"
     config.write_text(

@@ -27,6 +27,7 @@ class Stage(str, Enum):
     PREPARE_LFS_BOOK = "prepare-lfs-book"
     EXECUTE_LFS_PHASES = "execute-lfs-phases"
     SEED_LPM = "seed-lpm"
+    VERIFY_LPM_READY = "verify-lpm-ready"
     RESOLVE_BUILD_PLAN = "resolve-build-plan"
     BUILD_SOURCES = "build-sources"
     INSTALL_BASE = "install-base"
@@ -43,6 +44,7 @@ STAGES: list[Stage] = [
     Stage.PREPARE_LFS_BOOK,
     Stage.EXECUTE_LFS_PHASES,
     Stage.SEED_LPM,
+    Stage.VERIFY_LPM_READY,
     Stage.RESOLVE_BUILD_PLAN,
     Stage.BUILD_SOURCES,
     Stage.INSTALL_BASE,
@@ -93,6 +95,7 @@ class BootstrapConfig:
     lfs_user: str = "lfs"
     lfs_allow_manual: bool = False
     lfs_only: bool = False
+    lpm_ready: bool = False
     mounted_partitions: list[Path] = field(default_factory=list, repr=False)
 
     @property
@@ -220,6 +223,66 @@ def verify_bootstrap(target: Path, kernel: str, boot_mode: str, package_count: i
 
 def generate_chroot_command(target: Path, command: list[str]) -> list[str]:
     return ["chroot", str(target), *command]
+
+
+def _host_lpm_executable() -> Path:
+    """Return the stable host executable that can be seeded into a target."""
+    for raw in (shutil.which("lpm"), sys.argv[0]):
+        if not raw:
+            continue
+        candidate = Path(raw).resolve()
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    raise RuntimeError(
+        "cannot locate an executable LPM binary to seed; install/build lpm first"
+    )
+
+
+def install_lpm_runtime(target: Path) -> Path:
+    """Install the running, self-contained LPM executable into *target*."""
+    source = _host_lpm_executable()
+    destination = target / "usr/bin/lpm"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(".lpm.bootstrap-new")
+    shutil.copy2(source, temporary)
+    os.chmod(temporary, 0o755)
+    os.replace(temporary, destination)
+    return destination
+
+
+def verify_lpm_ready(target: Path) -> dict[str, object]:
+    """Prove that LPM and its required bootstrap tools run in the chroot."""
+    required = ("bash", "env", "make", "python3", "tar")
+    missing = [name for name in required if not (target / "usr/bin" / name).exists()]
+    if missing:
+        raise RuntimeError(
+            "LPM-ready chroot is missing required tool(s): " + ", ".join(missing)
+        )
+    lpm = target / "usr/bin/lpm"
+    if not lpm.is_file() or not os.access(lpm, os.X_OK):
+        raise RuntimeError(f"LPM executable is not installed: {lpm}")
+    completed = subprocess.run(
+        generate_chroot_command(target, ["/usr/bin/lpm", "--help"]),
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "LPM failed its in-chroot execution test "
+            f"(status {completed.returncode}):\n{completed.stdout}"
+        )
+    marker = target / "var/lib/lpm/lpm-ready.json"
+    payload: dict[str, object] = {
+        "format": "lpm-bootstrap-ready",
+        "format_version": 1,
+        "verified": True,
+        "required_tools": list(required),
+        "lpm": "/usr/bin/lpm",
+    }
+    _atomic_write_json(marker, payload, False)
+    return {**payload, "marker": str(marker)}
 
 
 def generate_lpm_root_install_command(target: Path, packages: list[str]) -> list[str]:
@@ -391,6 +454,7 @@ def load_config(cli_args: Any) -> BootstrapConfig:
         lfs_user=str(pick("lfs_user", "lfs")),
         lfs_allow_manual=bool(pick("lfs_allow_manual", False)),
         lfs_only=bool(pick("lfs_only", False)),
+        lpm_ready=bool(pick("lpm_ready", False)),
     )
 
 
@@ -464,6 +528,8 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
             _log(cfg, "warning: missing efi=DEVICE mapping; fstab/verification will omit EFI UUID")
         if cfg.lfs_only and not cfg.lfs_execute:
             raise ValueError("--lfs-only requires --execute-lfs-phases")
+        if cfg.lpm_ready and not cfg.lfs_execute:
+            raise ValueError("--lpm-ready requires --execute-lfs-phases")
 
     elif stage == Stage.PARTITION:
         if cfg.partition_plan:
@@ -584,16 +650,25 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
         )
 
     elif stage == Stage.SEED_LPM:
-        if cfg.lpmbuild_root:
-            _log(cfg, "source package set is responsible for installing LPM")
-            return state
-        src_root = Path(__file__).resolve().parents[1]
-        dst_root = cfg.target / "usr/lib/lpm"
         if cfg.dry_run:
-            print(f"[bootstrap][dry-run] seed lpm from {src_root} to {dst_root}")
+            print(
+                f"[bootstrap][dry-run] install host lpm executable into "
+                f"{cfg.target}/usr/bin/lpm"
+            )
         else:
-            dst_root.mkdir(parents=True, exist_ok=True)
-            subprocess.run(["cp", "-a", f"{src_root}/.", str(dst_root)], check=True)
+            installed = install_lpm_runtime(cfg.target)
+            state["seed_lpm"] = {"installed": str(installed)}
+            _log(cfg, f"installed LPM runtime at {installed}")
+
+    elif stage == Stage.VERIFY_LPM_READY:
+        if not cfg.lpm_ready:
+            return state
+        if cfg.dry_run:
+            print(f"[bootstrap][dry-run] verify LPM runtime inside {cfg.target}")
+        else:
+            result = verify_lpm_ready(cfg.target)
+            state["lpm_ready"] = result
+            _log(cfg, f"LPM-ready chroot verified marker={result['marker']}")
 
     elif stage == Stage.RESOLVE_BUILD_PLAN:
         resolution = _resolve_build_plan(cfg, state)
@@ -694,8 +769,19 @@ def run_bootstrap(args: Any) -> int:
                 continue
             if stage == Stage.EXECUTE_LFS_PHASES and not cfg.lfs_execute:
                 continue
-            if cfg.lfs_only and stage in {
+            if cfg.lfs_only and not cfg.lpm_ready and stage in {
                 Stage.SEED_LPM,
+                Stage.VERIFY_LPM_READY,
+                Stage.RESOLVE_BUILD_PLAN,
+                Stage.BUILD_SOURCES,
+                Stage.INSTALL_BASE,
+                Stage.CONFIGURE_SYSTEM,
+                Stage.GENERATE_INITRAMFS,
+                Stage.INSTALL_BOOTLOADER,
+                Stage.FINAL_CHECK,
+            }:
+                continue
+            if cfg.lpm_ready and stage in {
                 Stage.RESOLVE_BUILD_PLAN,
                 Stage.BUILD_SOURCES,
                 Stage.INSTALL_BASE,
@@ -716,11 +802,16 @@ def run_bootstrap(args: Any) -> int:
                 stage == Stage.PREPARE_LFS_BOOK
                 and cfg.lfs_execute
             )
+            refresh_lpm_milestone = (
+                cfg.lpm_ready
+                and stage in {Stage.SEED_LPM, Stage.VERIFY_LPM_READY}
+            )
             if (
                 cfg.resume
                 and stage.value in done
                 and stage != Stage.EXECUTE_LFS_PHASES
                 and not refresh_lfs_inputs
+                and not refresh_lpm_milestone
             ):
                 _log(cfg, f"skip completed stage={stage.value}")
                 continue

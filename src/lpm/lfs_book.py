@@ -85,7 +85,9 @@ def _automation_policy(section: str, chapter: int) -> tuple[bool, str]:
     # Chapter 8's package-management discussion contains illustrative shell
     # snippets (for example, grepping for processes using deleted libraries).
     # They are neither build steps nor reliable in a pristine chroot.
-    if chapter == 8 and lowered.startswith("pkgmgmt"):
+    if chapter == 8 and (
+        lowered.startswith("pkgmgmt") or lowered.startswith("ch-system-pkgmgt")
+    ):
         return False, "package-management documentation, not a build section"
     # These sections change the execution boundary itself.  The bootstrap
     # runner owns those operations and must not recursively chroot or mount.

@@ -7616,6 +7616,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--lfs-user", help="unprivileged user for chapters 5 and 6 (default: lfs)")
     sp.add_argument("--lfs-allow-manual", action="store_true", default=None, help="also execute boundary-sensitive sections normally left manual")
     sp.add_argument("--lfs-only", action="store_true", default=None, help="stop after LFS phased execution; do not resolve or install lpmbuild packages")
+    sp.add_argument("--lpm-ready", action="store_true", default=None, help="install and execute LPM inside the chroot, then stop at the LPM-ready milestone")
     sp.add_argument("--include-packages", help="comma-separated source packages to include")
     sp.add_argument("--exclude-packages", help="comma-separated source packages to exclude")
     sp.add_argument("--partition-plan", help="validated JSON disk layout")

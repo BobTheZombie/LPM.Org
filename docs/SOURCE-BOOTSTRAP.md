@@ -127,6 +127,29 @@ ordinary lpmbuild dependency resolver from trying to resolve the entire
 desktop package repository. Phase prerequisites are enforced; `--force` is
 required to start a later phase without matching earlier checkpoints.
 
+To stop at a tested package-manager handoff instead of continuing into the
+full source-package graph, add `--lpm-ready`. LPM installs the same
+self-contained host executable into `/usr/bin/lpm`, verifies the Chapter 7
+bootstrap tools, executes `lpm --help` inside the chroot, and records
+`/var/lib/lpm/lpm-ready.json` only after all checks pass:
+
+```sh
+sudo lpm bootstrap \
+  --target /mnt/lpm-chroot \
+  --chroot-only \
+  --prepare-lfs-book \
+  --book-version 13.1-systemd \
+  --execute-lfs-phases \
+  --lfs-phase chroot-tools \
+  --lfs-only \
+  --lpm-ready \
+  --resume --verbose
+```
+
+This is the supported boundary for switching from the LFS bootstrap executor
+to LPM-built packages. It deliberately does not resolve the complete desktop
+recipe repository.
+
 The host must have the selected unprivileged account. For a conventional LFS
 builder account:
 
