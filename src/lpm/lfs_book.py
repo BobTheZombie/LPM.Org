@@ -146,11 +146,14 @@ class _BookParser(HTMLParser):
         attrs_dict = dict(attrs)
         # The rendered LFS no-chunks book places section identifiers on an
         # empty anchor inside each heading (``<h2><a id=...></a>...``), not on
-        # the heading element itself.  Track identifiers from any element so
-        # command blocks are grouped under their real book section.
-        if attrs_dict.get("id"):
+        # the heading element itself.  Accept IDs only on headings or elements
+        # nested inside a heading.  DocBook also emits anonymous IDs such as
+        # ``id6855`` on ordinary content; treating those as sections separates
+        # package commands from their setup and source working directory.
+        heading_tags = {"h1", "h2", "h3", "h4", "h5", "h6"}
+        if attrs_dict.get("id") and (tag in heading_tags or self.heading_depth):
             self.current_section = str(attrs_dict["id"])
-        if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+        if tag in heading_tags:
             self.heading_depth = 1
             self.heading_parts = []
             return

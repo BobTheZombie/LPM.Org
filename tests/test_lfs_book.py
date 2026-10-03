@@ -69,6 +69,33 @@ def test_extract_tracks_anchor_ids_and_keeps_numbered_heading(tmp_path: Path) ->
     assert section["commands"] == ["mkdir -v build", "make"]
 
 
+def test_content_ids_do_not_split_a_book_section(tmp_path: Path) -> None:
+    book = tmp_path / "book.html"
+    book.write_text(
+        "<!doctype html><html><body>"
+        '<h2><a id="ch-system-zlib"></a>8.6 Zlib-1.3.2</h2>'
+        '<pre class="userinput"><kbd class="command">./configure --prefix=/usr</kbd></pre>'
+        '<div id="id6855">generated content anchor</div>'
+        '<pre class="userinput"><kbd class="command">make</kbd></pre>'
+        '<pre id="id6856" class="userinput"><kbd class="command">make install</kbd></pre>'
+        "</body></html>",
+        encoding="utf-8",
+    )
+
+    result = lfs_book.extract_build_instructions(book, tmp_path / "instructions")
+    plan = json.loads(Path(result["phase_plan"]).read_text(encoding="utf-8"))
+
+    assert plan["section_count"] == 1
+    section = plan["sections"][0]
+    assert section["section"] == "ch-system-zlib"
+    assert section["phase"] == "final-system"
+    assert section["commands"] == [
+        "./configure --prefix=/usr",
+        "make",
+        "make install",
+    ]
+
+
 def test_bindmount_section_is_owned_by_orchestrator() -> None:
     assert lfs_book._context_for("ch-tools-bindmount", 7, "chroot") == "host-root"
     automatic, reason = lfs_book._automation_policy("ch-tools-bindmount", 7)
