@@ -75,6 +75,7 @@ def test_content_ids_do_not_split_a_book_section(tmp_path: Path) -> None:
         "<!doctype html><html><body>"
         '<h2><a id="ch-system-zlib"></a>8.6 Zlib-1.3.2</h2>'
         '<pre class="userinput"><kbd class="command">./configure --prefix=/usr</kbd></pre>'
+        '<h3 id="id6927">8.6.1 Installation of Zlib</h3>'
         '<div id="id6855">generated content anchor</div>'
         '<pre class="userinput"><kbd class="command">make</kbd></pre>'
         '<pre id="id6856" class="userinput"><kbd class="command">make install</kbd></pre>'

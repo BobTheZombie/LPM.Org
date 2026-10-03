@@ -134,6 +134,7 @@ class _BookParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.heading_depth = 0
+        self.heading_tag = ""
         self.heading_parts: list[str] = []
         self.current_title = "LFS build instruction"
         self.current_section = ""
@@ -151,15 +152,20 @@ class _BookParser(HTMLParser):
         attrs_dict = dict(attrs)
         # The rendered LFS no-chunks book places section identifiers on an
         # empty anchor inside each heading (``<h2><a id=...></a>...``), not on
-        # the heading element itself.  Accept IDs only on headings or elements
-        # nested inside a heading.  DocBook also emits anonymous IDs such as
-        # ``id6855`` on ordinary content; treating those as sections separates
-        # package commands from their setup and source working directory.
+        # the heading element itself.  A complete execution unit is the
+        # top-level h2 page/package section.  Nested h3/h4 IDs (often anonymous
+        # values such as ``id6927``) describe steps within that package and
+        # must not split configure/build/install into separate scripts.
         heading_tags = {"h1", "h2", "h3", "h4", "h5", "h6"}
-        if attrs_dict.get("id") and (tag in heading_tags or self.heading_depth):
+        section_heading_tags = {"h1", "h2"}
+        if attrs_dict.get("id") and (
+            tag in section_heading_tags
+            or (self.heading_depth and self.heading_tag in section_heading_tags)
+        ):
             self.current_section = str(attrs_dict["id"])
         if tag in heading_tags:
             self.heading_depth = 1
+            self.heading_tag = tag
             self.heading_parts = []
             return
         if self.heading_depth:
@@ -185,6 +191,7 @@ class _BookParser(HTMLParser):
                 # has its chapter number when a command block is encountered.
                 if title and (re.match(r"\d+(?:\.\d+)+\.?\s", title) or not self.current_title):
                     self.current_title = title
+                self.heading_tag = ""
 
         if self.pre_depth:
             self.pre_depth -= 1
