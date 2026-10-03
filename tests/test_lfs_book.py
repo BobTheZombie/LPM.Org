@@ -69,6 +69,13 @@ def test_extract_tracks_anchor_ids_and_keeps_numbered_heading(tmp_path: Path) ->
     assert section["commands"] == ["mkdir -v build", "make"]
 
 
+def test_bindmount_section_is_owned_by_orchestrator() -> None:
+    assert lfs_book._context_for("ch-tools-bindmount", 7, "chroot") == "host-root"
+    automatic, reason = lfs_book._automation_policy("ch-tools-bindmount", 7)
+    assert automatic is False
+    assert "managed by lpm" in reason
+
+
 def test_cache_book_reuses_verified_cached_copy(tmp_path: Path, monkeypatch) -> None:
     assert lfs_book.default_support_url("13.1-systemd", "wget-list") == (
         "https://www.linuxfromscratch.org/lfs/view/13.1-systemd/"

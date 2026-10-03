@@ -68,7 +68,12 @@ def _phase_for(chapter: int) -> tuple[str, str]:
 
 def _context_for(section: str, chapter: int, default: str) -> str:
     lowered = section.lower()
-    if chapter == 7 and any(marker in lowered for marker in ("changingowner", "ownership")):
+    if chapter == 7 and any(
+        marker in lowered
+        for marker in (
+            "changingowner", "ownership", "bindmount", "kernfs", "virtual", "chroot",
+        )
+    ):
         return "host-root"
     return default
 
@@ -79,7 +84,9 @@ def _automation_policy(section: str, chapter: int) -> tuple[bool, str]:
     lowered = section.lower()
     # These sections change the execution boundary itself.  The bootstrap
     # runner owns those operations and must not recursively chroot or mount.
-    if chapter == 7 and any(marker in lowered for marker in ("kernfs", "virtual", "chroot")):
+    if chapter == 7 and any(
+        marker in lowered for marker in ("bindmount", "kernfs", "virtual", "chroot")
+    ):
         return False, "execution-boundary operation is managed by lpm"
     if any(marker in lowered for marker in ("setrootpassword", "root-password")):
         return False, "interactive password configuration"

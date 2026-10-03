@@ -552,6 +552,19 @@ def _run_stage(cfg: BootstrapConfig, stage: Stage, mount_state: ChrootMountState
             version=cfg.book_version,
             offline=cfg.book_offline,
         )
+        # PREPARE_DIRS may have been checkpointed by an earlier invocation,
+        # whose finally block then unmounted the API filesystems.  Every new
+        # invocation that enters a chroot phase must therefore establish its
+        # own mounts instead of relying on that earlier stage having run.
+        chroot_phases = {
+            "chroot-tools", "final-system", "system-configuration", "boot",
+        }
+        selected_phases = set(cfg.lfs_phases) if cfg.lfs_phases else chroot_phases
+        if selected_phases & chroot_phases:
+            if cfg.dry_run:
+                print("[bootstrap][dry-run] mount chroot API filesystems for LFS phases")
+            else:
+                mount_chroot_api(cfg.target, mount_state)
         result = run_phase_plan(
             plan_path=plan_path,
             target=cfg.target,
