@@ -111,6 +111,24 @@ def test_package_management_examples_are_not_executable() -> None:
         assert "documentation" in reason
 
 
+def test_glibc_check_uses_bounded_failure_gate() -> None:
+    command = lfs_book._normalize_automatic_command(
+        "make check", "ch-system-glibc"
+    )
+
+    assert "set +e\nmake check" in command
+    assert "glibc.tests.sum" in command
+    assert '"$lpm_glibc_passes" -lt 6000' in command
+    assert '"$lpm_glibc_failures" -gt 25' in command
+    assert "|| true" not in command.splitlines()[1]
+
+
+def test_non_glibc_check_remains_fatal() -> None:
+    assert lfs_book._normalize_automatic_command(
+        "make check", "ch-system-zlib"
+    ) == "make check"
+
+
 def test_interactive_shell_refresh_is_removed_without_losing_following_commands(
     tmp_path: Path,
 ) -> None:

@@ -105,7 +105,40 @@ _SHELL_REFRESH_RE = re.compile(
 )
 
 
-def _normalize_automatic_command(command: str) -> str:
+def _glibc_check_command() -> str:
+    """Run Glibc's critical suite with the bounded tolerance required by LFS."""
+    return r'''set +e
+make check
+lpm_glibc_test_status=$?
+set -e
+
+lpm_glibc_test_sum=tests.sum
+lpm_glibc_test_dir=/var/lib/lpm/jhalfs/test-results
+mkdir -p "$lpm_glibc_test_dir"
+test -f "$lpm_glibc_test_sum"
+cp -f "$lpm_glibc_test_sum" "$lpm_glibc_test_dir/glibc.tests.sum"
+
+lpm_glibc_passes=$(grep -c '^PASS:' "$lpm_glibc_test_sum" || true)
+lpm_glibc_failures=$(grep -c '^FAIL:' "$lpm_glibc_test_sum" || true)
+lpm_glibc_unsupported=$(grep -c '^UNSUPPORTED:' "$lpm_glibc_test_sum" || true)
+printf 'status=%s\npasses=%s\nfailures=%s\nunsupported=%s\n' \
+    "$lpm_glibc_test_status" "$lpm_glibc_passes" \
+    "$lpm_glibc_failures" "$lpm_glibc_unsupported" \
+    > "$lpm_glibc_test_dir/glibc.status"
+
+if [ "$lpm_glibc_passes" -lt 6000 ] || [ "$lpm_glibc_failures" -gt 25 ]; then
+    echo "[ERROR] Glibc test gate failed: $lpm_glibc_passes PASS, $lpm_glibc_failures FAIL" >&2
+    [ "$lpm_glibc_test_status" -ne 0 ] || lpm_glibc_test_status=1
+    exit "$lpm_glibc_test_status"
+fi
+
+if [ "$lpm_glibc_test_status" -ne 0 ]; then
+    echo "[WARN] Glibc test suite returned $lpm_glibc_test_status: $lpm_glibc_passes PASS, $lpm_glibc_failures FAIL, $lpm_glibc_unsupported UNSUPPORTED" >&2
+    echo "[WARN] Full report: $lpm_glibc_test_dir/glibc.tests.sum" >&2
+fi'''
+
+
+def _normalize_automatic_command(command: str, section: str = "") -> str:
     """Make book commands safe for unattended, resumable execution.
 
     The Chapter 7 command exists to refresh name resolution in a human-driven
@@ -117,6 +150,9 @@ def _normalize_automatic_command(command: str) -> str:
     pristine tree.  A section-level resume may replay those commands, so add
     force/no-dereference while preserving all other short options.
     """
+    if section.lower() == "ch-system-glibc" and command.strip() == "make check":
+        return _glibc_check_command()
+
     lines: list[str] = []
     for line in command.splitlines():
         if _SHELL_REFRESH_RE.fullmatch(line):
@@ -441,7 +477,7 @@ def extract_build_instructions(book_path: Path, output_dir: Path) -> dict[str, o
         automatic, reason = _automation_policy(section, chapter)
         commands = [
             filtered for command in commands
-            if (filtered := _normalize_automatic_command(command))
+            if (filtered := _normalize_automatic_command(command, section))
         ]
         slug_source = section or title
         slug = re.sub(r"[^a-z0-9]+", "-", slug_source.lower()).strip("-")
