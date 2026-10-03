@@ -98,18 +98,31 @@ _SHELL_REFRESH_RE = re.compile(
 )
 
 
-def _without_interactive_shell_refresh(command: str) -> str:
-    """Remove book-only login-shell transitions from generated scripts.
+def _normalize_automatic_command(command: str) -> str:
+    """Make book commands safe for unattended, resumable execution.
 
     The Chapter 7 command exists to refresh name resolution in a human-driven
     chroot session.  An automated section already runs in a fresh process, and
     allowing ``exec bash --login`` would replace the section runner and hide
     every command that follows it.
+
+    LFS also uses verbose symbolic-link commands that intentionally assume a
+    pristine tree.  A section-level resume may replay those commands, so add
+    force/no-dereference while preserving all other short options.
     """
-    return "\n".join(
-        line for line in command.splitlines()
-        if not _SHELL_REFRESH_RE.fullmatch(line)
-    ).strip()
+    lines: list[str] = []
+    for line in command.splitlines():
+        if _SHELL_REFRESH_RE.fullmatch(line):
+            continue
+        match = re.match(r"^(\s*)ln\s+-([A-Za-z]*s[A-Za-z]*)\s+", line)
+        if match:
+            options = match.group(2)
+            for flag in "fn":
+                if flag not in options:
+                    options += flag
+            line = f"{match.group(1)}ln -{options} " + line[match.end():]
+        lines.append(line)
+    return "\n".join(lines).strip()
 
 
 class _BookParser(HTMLParser):
@@ -411,7 +424,7 @@ def extract_build_instructions(book_path: Path, output_dir: Path) -> dict[str, o
         automatic, reason = _automation_policy(section, chapter)
         commands = [
             filtered for command in commands
-            if (filtered := _without_interactive_shell_refresh(command))
+            if (filtered := _normalize_automatic_command(command))
         ]
         slug_source = section or title
         slug = re.sub(r"[^a-z0-9]+", "-", slug_source.lower()).strip("-")

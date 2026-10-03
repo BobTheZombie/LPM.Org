@@ -103,6 +103,24 @@ def test_interactive_shell_refresh_is_removed_without_losing_following_commands(
     assert "touch /var/log/lastlog" in script
 
 
+def test_symbolic_link_commands_are_replay_safe(tmp_path: Path) -> None:
+    book = tmp_path / "book.html"
+    book.write_text(
+        "<!doctype html><html><body>"
+        '<h2 id="ch-tools-createfiles">7.6 Creating Essential Files</h2>'
+        '<pre class="userinput"><kbd class="command">'
+        "ln -sv /proc/self/mounts /etc/mtab"
+        "</kbd></pre></body></html>",
+        encoding="utf-8",
+    )
+
+    result = lfs_book.extract_build_instructions(book, tmp_path / "instructions")
+    plan = json.loads(Path(result["phase_plan"]).read_text(encoding="utf-8"))
+    command = plan["sections"][0]["commands"][0]
+
+    assert command == "ln -svfn /proc/self/mounts /etc/mtab"
+
+
 def test_cache_book_reuses_verified_cached_copy(tmp_path: Path, monkeypatch) -> None:
     assert lfs_book.default_support_url("13.1-systemd", "wget-list") == (
         "https://www.linuxfromscratch.org/lfs/view/13.1-systemd/"
