@@ -32,6 +32,7 @@ DEFAULT_SOURCE_MIRRORS = (
 )
 
 _SOURCE_ALIASES = {
+    "flit-core": "flit_core",
     "linux-headers": "linux",
     "libelf": "elfutils",
     "libstdcpp": "gcc",
