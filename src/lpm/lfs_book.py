@@ -137,6 +137,25 @@ def _normalize_automatic_command(command: str, section: str = "") -> str:
         )
         if stripped.startswith(glibc_non_bootstrap_prefixes) or "<xxx>" in stripped:
             return ""
+        # A failed section deliberately leaves its source tree in place.  Make
+        # the expensive Glibc build prefix replay-safe so ``--resume`` can
+        # continue with installation instead of recompiling for hours.
+        if stripped.startswith("patch -Np1 "):
+            return (
+                "if [ ! -e build/libc.so ]; then\n"
+                + command.rstrip()
+                + "\nfi"
+            )
+        if stripped == "mkdir -v build\ncd       build":
+            return "mkdir -pv build\ncd build"
+        if stripped.startswith("../configure "):
+            return (
+                "if [ ! -f Makefile ]; then\n"
+                + command.rstrip()
+                + "\nfi"
+            )
+        if stripped == "make":
+            return 'if [ ! -e libc.so ]; then\n    make\nfi'
 
     lines: list[str] = []
     for line in command.splitlines():
