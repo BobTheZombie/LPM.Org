@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,11 +10,40 @@ from lpm.lfs_phases import (
     _ensure_lfs_account,
     _finalize_lfs_temporary_layout,
     _prepare_lfs_layout,
+    _prepare_section_source,
     _source_candidates,
     load_phase_plan,
     prepare_sources,
     run_phase_plan,
 )
+
+
+def test_prepare_section_source_reuses_failed_tree_on_resume(tmp_path: Path) -> None:
+    target = tmp_path / "root"
+    sources = target / "sources"
+    source_dir = sources / "glibc-2.44"
+    source_dir.mkdir(parents=True)
+    sentinel = source_dir / "build" / "libc.so"
+    sentinel.parent.mkdir()
+    sentinel.write_text("already built", encoding="utf-8")
+
+    archive = sources / "glibc-2.44.tar.xz"
+    seed = tmp_path / "seed" / "glibc-2.44"
+    seed.mkdir(parents=True)
+    (seed / "README").write_text("fresh", encoding="utf-8")
+    with tarfile.open(archive, "w:xz") as stream:
+        stream.add(seed, arcname="glibc-2.44")
+
+    result = _prepare_section_source(
+        target,
+        "ch-system-glibc",
+        "chroot",
+        "lfs",
+        reuse_existing=True,
+    )
+
+    assert result == source_dir
+    assert sentinel.read_text(encoding="utf-8") == "already built"
 
 
 def test_prepare_lfs_layout_creates_chapter_four_hierarchy(tmp_path: Path) -> None:
