@@ -143,7 +143,14 @@ def _source_archive(sources: Path, section: str) -> Path | None:
     return sorted(archives, key=lambda item: (len(item.name), item.name))[0]
 
 
-def _prepare_section_source(target: Path, section: str, context: str, lfs_user: str) -> Path | None:
+def _prepare_section_source(
+    target: Path,
+    section: str,
+    context: str,
+    lfs_user: str,
+    *,
+    reuse_existing: bool = False,
+) -> Path | None:
     sources = target / "sources"
     archive = _source_archive(sources, section)
     if archive is None:
@@ -160,6 +167,9 @@ def _prepare_section_source(target: Path, section: str, context: str, lfs_user: 
     if len(roots) != 1 or any(root in {"", ".", ".."} or "/" in root for root in roots):
         raise RuntimeError(f"unsafe or ambiguous LFS source archive layout: {archive}")
     source_dir = sources / next(iter(roots))
+    if reuse_existing and source_dir.is_dir() and not source_dir.is_symlink():
+        print(f"[jhalfs] resuming existing source tree {source_dir}", flush=True)
+        return source_dir
     if source_dir.exists() or source_dir.is_symlink():
         if source_dir.is_dir() and not source_dir.is_symlink():
             shutil.rmtree(source_dir)
@@ -445,7 +455,13 @@ def run_phase_plan(
                 skipped.append(section_id)
                 continue
             context = str(raw["context"])
-            source_dir = _prepare_section_source(target, section_id, context, lfs_user)
+            source_dir = _prepare_section_source(
+                target,
+                section_id,
+                context,
+                lfs_user,
+                reuse_existing=resume,
+            )
             command, command_env, cwd = _command(
                 target=target, script=script, context=str(raw["context"]),
                 lfs_user=lfs_user, env=env, source_dir=source_dir,
