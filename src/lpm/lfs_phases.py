@@ -178,10 +178,44 @@ def _prepare_section_source(
     }
     if len(roots) != 1 or any(root in {"", ".", ".."} or "/" in root for root in roots):
         raise RuntimeError(f"unsafe or ambiguous LFS source archive layout: {archive}")
-    source_dir = sources / next(iter(roots))
+    archive_root = next(iter(roots))
+    source_dir = sources / archive_root
+
+    # Resume is allowed to preserve an expensive failed build, but an empty or
+    # partially-created directory is not a resumable source tree.  Validate
+    # stable root-level files advertised by the archive before trusting it.
+    # This catches cases such as a stale gcc-16.2.0/build directory whose
+    # ../configure disappeared or was never extracted.
+    stable_names = {
+        "configure", "Makefile", "Makefile.in", "CMakeLists.txt",
+        "meson.build", "README", "README.md", "COPYING", "LICENSE",
+    }
+    archive_markers = {
+        parts[1]
+        for item in listing
+        if len(parts := Path(item.removeprefix("./")).parts) == 2
+        and parts[0] == archive_root
+        and parts[1] in stable_names
+    }
+    reusable = (
+        source_dir.is_dir()
+        and not source_dir.is_symlink()
+        and bool(archive_markers)
+        and all((source_dir / marker).exists() for marker in archive_markers)
+    )
     if reuse_existing and source_dir.is_dir() and not source_dir.is_symlink():
-        print(f"[jhalfs] resuming existing source tree {source_dir}", flush=True)
-        return source_dir
+        if reusable:
+            print(f"[jhalfs] resuming existing source tree {source_dir}", flush=True)
+            return source_dir
+        missing = sorted(
+            marker for marker in archive_markers
+            if not (source_dir / marker).exists()
+        )
+        detail = ", ".join(missing) if missing else "no stable archive markers"
+        print(
+            f"[jhalfs] replacing incomplete source tree {source_dir} ({detail})",
+            flush=True,
+        )
     if source_dir.exists() or source_dir.is_symlink():
         if source_dir.is_dir() and not source_dir.is_symlink():
             shutil.rmtree(source_dir)
