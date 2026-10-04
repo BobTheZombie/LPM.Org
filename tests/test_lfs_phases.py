@@ -11,11 +11,23 @@ from lpm.lfs_phases import (
     _finalize_lfs_temporary_layout,
     _prepare_lfs_layout,
     _prepare_section_source,
+    _source_archive,
     _source_candidates,
     load_phase_plan,
     prepare_sources,
     run_phase_plan,
 )
+
+
+def test_tcl_source_archive_uses_upstream_src_spelling(tmp_path: Path) -> None:
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    source = sources / "tcl8.6.18-src.tar.gz"
+    docs = sources / "tcl8.6.18-html.tar.gz"
+    source.touch()
+    docs.touch()
+
+    assert _source_archive(sources, "ch-system-tcl") == source
 
 
 def test_prepare_section_source_reuses_failed_tree_on_resume(tmp_path: Path) -> None:
