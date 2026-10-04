@@ -218,6 +218,7 @@ def test_package_test_suites_and_reports_are_globally_omitted() -> None:
         "python3 run_tests.py",
         "grep '^FAIL:' $(find -name '*.log')",
         'grep "Timed out" $(find -name \\*.out)',
+        "cat $(find -name '*.log') | grep -c ^PASS",
     ):
         for section in ("ch-tools-gcc-pass1", "ch-system-binutils"):
             assert lfs_book._normalize_automatic_command(
