@@ -150,6 +150,27 @@ def _normalize_automatic_command(command: str, section: str = "") -> str:
     if _is_package_test_command(stripped):
         return ""
 
+    if section.lower() == "ch-system-gmp":
+        # The LFS book uses ``--build=...`` in GMP's x86_64 command block as
+        # a typographical placeholder for the canonical build triplet.  HTML
+        # extraction cannot infer the prose substitution, so resolve it using
+        # GMP's bundled config.guess rather than passing the literal ellipsis
+        # to configure (which config.sub quite correctly rejects).
+        command = re.sub(
+            r"(?<!\S)--build=(?:\.\.\.|…)(?=\s|$)",
+            '--build="$(./config.guess)"',
+            command,
+        )
+        stripped = command.strip()
+
+    # Never execute an unresolved book placeholder.  Failing while preparing
+    # the plan is preferable to reaching configure after a lengthy bootstrap.
+    if re.search(r"(?:^|[=\s])(?:\.\.\.|…)(?=\s|$)", stripped):
+        raise ValueError(
+            f"unresolved LFS command placeholder in section {section or '<unknown>'}: "
+            f"{stripped!r}"
+        )
+
     if section.lower() == "ch-system-glibc":
         # The rendered book marks examples, upgrade-only recovery procedures,
         # interactive helpers, and alternative commands with the same
