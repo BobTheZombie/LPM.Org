@@ -48,6 +48,15 @@ def test_libelf_section_uses_elfutils_source_archive(tmp_path: Path) -> None:
     assert _source_archive(sources, "ch-system-libelf") == source
 
 
+def test_flit_core_section_uses_pypi_underscore_spelling(tmp_path: Path) -> None:
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    source = sources / "flit_core-3.12.0.tar.gz"
+    source.touch()
+
+    assert _source_archive(sources, "ch-system-flit-core") == source
+
+
 def test_prepare_section_source_reuses_failed_tree_on_resume(tmp_path: Path) -> None:
     target = tmp_path / "root"
     sources = target / "sources"
