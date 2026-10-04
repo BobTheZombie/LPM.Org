@@ -132,10 +132,15 @@ def _is_package_test_command(command: str) -> bool:
         return True
 
     # Output inspection has no purpose when its producing suite is disabled.
-    return bool(re.match(
-        r"^grep\s+.*(?:\^FAIL:|\^XPASS:|Timed out).*(?:\.log|\.out|find)",
-        command.strip(),
-    ))
+    # Some books put grep after a pipeline, for example GMP's
+    # ``cat $(find -name '*.log') | grep -c ^PASS``.  Match the complete
+    # command rather than requiring grep to be the first program.
+    has_test_grep = re.search(
+        r"\bgrep\b[^\n]*(?:\^?PASS:?|\^?FAIL:?|\^?XPASS:?|Timed out)",
+        command,
+    )
+    has_test_output = re.search(r"(?:\.log\b|\.out\b|\bfind\b)", command)
+    return bool(has_test_grep and has_test_output)
 
 
 def _normalize_automatic_command(command: str, section: str = "") -> str:
