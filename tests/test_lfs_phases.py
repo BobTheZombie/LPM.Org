@@ -39,6 +39,15 @@ def test_expect_source_archive_uses_upstream_compact_spelling(tmp_path: Path) ->
     assert _source_archive(sources, "ch-system-expect") == source
 
 
+def test_libelf_section_uses_elfutils_source_archive(tmp_path: Path) -> None:
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    source = sources / "elfutils-0.194.tar.bz2"
+    source.touch()
+
+    assert _source_archive(sources, "ch-system-libelf") == source
+
+
 def test_prepare_section_source_reuses_failed_tree_on_resume(tmp_path: Path) -> None:
     target = tmp_path / "root"
     sources = target / "sources"
