@@ -47,6 +47,7 @@ def test_prepare_section_source_reuses_failed_tree_on_resume(tmp_path: Path) -> 
     sentinel = source_dir / "build" / "libc.so"
     sentinel.parent.mkdir()
     sentinel.write_text("already built", encoding="utf-8")
+    (source_dir / "README").write_text("existing source", encoding="utf-8")
 
     archive = sources / "glibc-2.44.tar.xz"
     seed = tmp_path / "seed" / "glibc-2.44"
@@ -65,6 +66,35 @@ def test_prepare_section_source_reuses_failed_tree_on_resume(tmp_path: Path) -> 
 
     assert result == source_dir
     assert sentinel.read_text(encoding="utf-8") == "already built"
+
+
+def test_prepare_section_source_reextracts_incomplete_tree_on_resume(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "root"
+    sources = target / "sources"
+    source_dir = sources / "gcc-16.2.0"
+    (source_dir / "build").mkdir(parents=True)
+
+    archive = sources / "gcc-16.2.0.tar.xz"
+    seed = tmp_path / "seed" / "gcc-16.2.0"
+    seed.mkdir(parents=True)
+    configure = seed / "configure"
+    configure.write_text("#!/bin/sh\n", encoding="utf-8")
+    with tarfile.open(archive, "w:xz") as stream:
+        stream.add(seed, arcname="gcc-16.2.0")
+
+    result = _prepare_section_source(
+        target,
+        "ch-system-gcc",
+        "chroot",
+        "lfs",
+        reuse_existing=True,
+    )
+
+    assert result == source_dir
+    assert (source_dir / "configure").is_file()
+    assert not (source_dir / "build").exists()
 
 
 def test_prepare_lfs_layout_creates_chapter_four_hierarchy(tmp_path: Path) -> None:
