@@ -97,6 +97,13 @@ def _automation_policy(section: str, chapter: int) -> tuple[bool, str]:
         return False, "execution-boundary operation is managed by lpm"
     if any(marker in lowered for marker in ("setrootpassword", "root-password")):
         return False, "interactive password configuration"
+    # LFS deliberately uses placeholders for the target machine's address,
+    # FQDN, aliases, and hostname.  Those values belong to the installer or
+    # system administrator and cannot safely be inferred by the build runner.
+    if chapter == 9 and any(
+        marker in lowered for marker in ("config-network", "network")
+    ):
+        return False, "machine-specific network configuration"
     return True, ""
 
 
@@ -532,10 +539,11 @@ def extract_build_instructions(book_path: Path, output_dir: Path) -> dict[str, o
         phase, default_context = _phase_for(chapter)
         context = _context_for(section, chapter, default_context)
         automatic, reason = _automation_policy(section, chapter)
-        commands = [
-            filtered for command in commands
-            if (filtered := _normalize_automatic_command(command, section))
-        ]
+        if automatic:
+            commands = [
+                filtered for command in commands
+                if (filtered := _normalize_automatic_command(command, section))
+            ]
         slug_source = section or title
         slug = re.sub(r"[^a-z0-9]+", "-", slug_source.lower()).strip("-")
         filename = f"{number:04d}-{(slug[:72] or 'section')}.sh"
