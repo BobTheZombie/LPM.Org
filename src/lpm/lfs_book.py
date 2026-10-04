@@ -151,17 +151,11 @@ def _normalize_automatic_command(command: str, section: str = "") -> str:
         return ""
 
     if section.lower() == "ch-system-gmp":
-        # The LFS book uses ``--build=...`` in GMP's x86_64 command block as
-        # a typographical placeholder for the canonical build triplet.  HTML
-        # extraction cannot infer the prose substitution, so resolve it using
-        # GMP's bundled config.guess rather than passing the literal ellipsis
-        # to configure (which config.sub quite correctly rejects).
-        command = re.sub(
-            r"(?<!\S)--build=(?:\.\.\.|…)(?=\s|$)",
-            '--build="$(./config.guess)"',
-            command,
-        )
-        stripped = command.strip()
+        # This is an abbreviated example showing how a user could request a
+        # non-default ABI.  The ellipsis stands for the configure arguments
+        # already shown above; it is not part of the clean-system build.
+        if re.fullmatch(r"ABI=\S+\s+\./configure\s+(?:\.\.\.|…)", stripped):
+            return ""
 
     # Never execute an unresolved book placeholder.  Failing while preparing
     # the plan is preferable to reaching configure after a lengthy bootstrap.
