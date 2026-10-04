@@ -136,7 +136,17 @@ def _source_archive(sources: Path, section: str) -> Path | None:
         lowered = path.name.lower()
         if not path.is_file() or not re.search(r"\.tar\.(?:gz|bz2|xz|lz|zst)$|\.tgz$", lowered):
             continue
-        if lowered.startswith(f"{key}-") and "-docs-" not in lowered:
+        # Tcl's release artifacts intentionally omit the separator used by
+        # almost every other LFS source archive (tcl8.6.18-src.tar.gz).  Match
+        # that spelling explicitly and reject its similarly named HTML
+        # documentation archive.
+        matches_key = lowered.startswith(f"{key}-")
+        if key == "tcl":
+            matches_key = bool(re.match(r"^tcl[0-9].*-src\.tar\.", lowered))
+        is_documentation = any(
+            marker in lowered for marker in ("-docs-", "-doc-", "-html.", "-html-")
+        )
+        if matches_key and not is_documentation:
             archives.append(path)
     if not archives:
         return None
