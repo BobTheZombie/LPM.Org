@@ -168,7 +168,38 @@ def test_glibc_build_prefix_is_resume_safe() -> None:
 def test_non_glibc_check_remains_fatal() -> None:
     assert lfs_book._normalize_automatic_command(
         "make check", "ch-system-zlib"
-    ) == "make check"
+    ) == ""
+
+
+def test_package_test_suites_and_reports_are_globally_omitted() -> None:
+    for command in (
+        "make check",
+        "make -k check",
+        "make test",
+        "make tests",
+        'su tester -c "PATH=$PATH make -k check"',
+        "ninja -C build test",
+        "meson test -C build",
+        "ctest --test-dir build",
+        "python3 -m pytest -q",
+        "python3 -m test -j6",
+        "cargo test --locked",
+        "go test ./...",
+        "prove -j6 tests",
+        "python3 run_tests.py",
+        "grep '^FAIL:' $(find -name '*.log')",
+        'grep "Timed out" $(find -name \\*.out)',
+    ):
+        for section in ("ch-tools-gcc-pass1", "ch-system-binutils"):
+            assert lfs_book._normalize_automatic_command(
+                command, section
+            ) == ""
+
+
+def test_non_test_make_target_remains_executable() -> None:
+    assert lfs_book._normalize_automatic_command(
+        "make tooldir=/usr", "ch-system-binutils"
+    ) == "make tooldir=/usr"
 
 
 def test_interactive_shell_refresh_is_removed_without_losing_following_commands(
@@ -214,6 +245,12 @@ def test_symbolic_link_commands_are_replay_safe(tmp_path: Path) -> None:
     command = plan["sections"][0]["commands"][0]
 
     assert command == "ln -svfn /proc/self/mounts /etc/mtab"
+
+
+def test_verbose_mkdir_commands_are_replay_safe() -> None:
+    assert lfs_book._normalize_automatic_command(
+        "mkdir -v build\ncd build", "ch-system-binutils"
+    ) == "mkdir -vp build\ncd build"
 
 
 def test_cache_book_reuses_verified_cached_copy(tmp_path: Path, monkeypatch) -> None:
