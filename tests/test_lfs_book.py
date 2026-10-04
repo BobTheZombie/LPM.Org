@@ -117,6 +117,36 @@ def test_glibc_check_is_omitted_from_automatic_bootstrap() -> None:
     ) == ""
 
 
+def test_glibc_optional_and_upgrade_commands_are_omitted() -> None:
+    omitted = (
+        'grep "Timed out" $(find -name \\*.out)',
+        "rm -f /usr/sbin/nscd",
+        "systemctl disable --now nscd",
+        "make DESTDIR=$PWD/dest install\ninstall -vm755 dest/usr/lib/*.so.* /usr/lib",
+        "DIR=$(dirname $(gcc -print-libgcc-file-name))\nrm -rfv $DIR/include-fixed/*",
+        "make localedata/install-locales",
+        "tzselect",
+        "ln -sfv /usr/share/zoneinfo/<xxx> /etc/localtime",
+    )
+
+    for command in omitted:
+        assert lfs_book._normalize_automatic_command(
+            command, "ch-system-glibc"
+        ) == ""
+
+
+def test_glibc_clean_install_commands_remain() -> None:
+    for command in (
+        "make",
+        "touch /etc/ld.so.conf",
+        "make install",
+        "localedef -i C -f UTF-8 C.UTF-8",
+    ):
+        assert lfs_book._normalize_automatic_command(
+            command, "ch-system-glibc"
+        ) == command
+
+
 def test_non_glibc_check_remains_fatal() -> None:
     assert lfs_book._normalize_automatic_command(
         "make check", "ch-system-zlib"
