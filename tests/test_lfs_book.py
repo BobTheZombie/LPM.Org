@@ -202,6 +202,30 @@ def test_non_test_make_target_remains_executable() -> None:
     ) == "make tooldir=/usr"
 
 
+def test_gmp_build_triplet_placeholder_is_resolved() -> None:
+    command = """./configure --prefix=/usr \\
+    --enable-cxx \\
+    --build=..."""
+
+    normalized = lfs_book._normalize_automatic_command(
+        command, "ch-system-gmp"
+    )
+
+    assert '--build="$(./config.guess)"' in normalized
+    assert "--build=..." not in normalized
+
+
+def test_unresolved_book_placeholder_is_rejected() -> None:
+    try:
+        lfs_book._normalize_automatic_command(
+            "./configure --host=...", "ch-system-example"
+        )
+    except ValueError as error:
+        assert "unresolved LFS command placeholder" in str(error)
+    else:
+        raise AssertionError("unresolved placeholder was accepted")
+
+
 def test_interactive_shell_refresh_is_removed_without_losing_following_commands(
     tmp_path: Path,
 ) -> None:
