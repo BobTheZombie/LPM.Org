@@ -117,11 +117,26 @@ def _normalize_automatic_command(command: str, section: str = "") -> str:
     pristine tree.  A section-level resume may replay those commands, so add
     force/no-dereference while preserving all other short options.
     """
-    # The full Glibc suite is expensive and host/kernel dependent.  LPM's
-    # unattended bootstrap deliberately omits it; package-level CI can run it
-    # separately without blocking construction of the target system.
-    if section.lower() == "ch-system-glibc" and command.strip() == "make check":
-        return ""
+    stripped = command.strip()
+    if section.lower() == "ch-system-glibc":
+        # The rendered book marks examples, upgrade-only recovery procedures,
+        # interactive helpers, and alternative commands with the same
+        # ``userinput`` markup as mandatory clean-build commands.  Executing
+        # all of them is wrong in a fresh bootstrap: it used to spend hours in
+        # the suite and then fail at ``systemctl`` before systemd existed.
+        # Keep the actual clean-install path while omitting those branches.
+        glibc_non_bootstrap_prefixes = (
+            "make check",
+            'grep "Timed out"',
+            "rm -f /usr/sbin/nscd",
+            "systemctl disable --now nscd",
+            "make DESTDIR=$PWD/dest install",
+            "DIR=$(dirname $(gcc -print-libgcc-file-name))",
+            "make localedata/install-locales",
+            "tzselect",
+        )
+        if stripped.startswith(glibc_non_bootstrap_prefixes) or "<xxx>" in stripped:
+            return ""
 
     lines: list[str] = []
     for line in command.splitlines():
