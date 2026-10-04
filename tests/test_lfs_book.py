@@ -137,7 +137,6 @@ def test_glibc_optional_and_upgrade_commands_are_omitted() -> None:
 
 def test_glibc_clean_install_commands_remain() -> None:
     for command in (
-        "make",
         "touch /etc/ld.so.conf",
         "make install",
         "localedef -i C -f UTF-8 C.UTF-8",
@@ -145,6 +144,25 @@ def test_glibc_clean_install_commands_remain() -> None:
         assert lfs_book._normalize_automatic_command(
             command, "ch-system-glibc"
         ) == command
+
+
+def test_glibc_build_prefix_is_resume_safe() -> None:
+    patch = lfs_book._normalize_automatic_command(
+        "patch -Np1 -i ../glibc-fhs-1.patch", "ch-system-glibc"
+    )
+    configure = lfs_book._normalize_automatic_command(
+        "../configure --prefix=/usr", "ch-system-glibc"
+    )
+    build = lfs_book._normalize_automatic_command(
+        "make", "ch-system-glibc"
+    )
+
+    assert "if [ ! -e build/libc.so ]" in patch
+    assert "if [ ! -f Makefile ]" in configure
+    assert "if [ ! -e libc.so ]" in build
+    assert lfs_book._normalize_automatic_command(
+        "mkdir -v build\ncd       build", "ch-system-glibc"
+    ) == "mkdir -pv build\ncd build"
 
 
 def test_non_glibc_check_remains_fatal() -> None:
