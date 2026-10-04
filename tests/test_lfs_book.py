@@ -111,6 +111,35 @@ def test_package_management_examples_are_not_executable() -> None:
         assert "documentation" in reason
 
 
+def test_network_configuration_is_installer_owned() -> None:
+    automatic, reason = lfs_book._automation_policy("ch-config-network", 9)
+    assert automatic is False
+    assert "machine-specific" in reason
+
+
+def test_manual_template_placeholders_do_not_block_plan_extraction(
+    tmp_path: Path,
+) -> None:
+    book = tmp_path / "book.html"
+    book.write_text(
+        "<!doctype html><html><body>"
+        '<h2 id="ch-config-network">9.5 Network Configuration</h2>'
+        '<pre class="userinput"><kbd class="command">'
+        'cat &gt; /etc/hosts &lt;&lt; "EOF"\n'
+        '&lt;192.168.0.2&gt; &lt;FQDN&gt; [alias] ...\nEOF'
+        "</kbd></pre></body></html>",
+        encoding="utf-8",
+    )
+
+    result = lfs_book.extract_build_instructions(book, tmp_path / "instructions")
+    plan = json.loads(Path(result["phase_plan"]).read_text(encoding="utf-8"))
+    section = plan["sections"][0]
+
+    assert section["automatic"] is False
+    assert "machine-specific" in section["reason"]
+    assert "<FQDN>" in section["commands"][0]
+
+
 def test_glibc_check_is_omitted_from_automatic_bootstrap() -> None:
     assert lfs_book._normalize_automatic_command(
         "make check", "ch-system-glibc"
