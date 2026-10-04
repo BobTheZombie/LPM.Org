@@ -33,6 +33,7 @@ DEFAULT_SOURCE_MIRRORS = (
 
 _SOURCE_ALIASES = {
     "linux-headers": "linux",
+    "libelf": "elfutils",
     "libstdcpp": "gcc",
     "python": "python",
 }
