@@ -105,6 +105,32 @@ _SHELL_REFRESH_RE = re.compile(
 )
 
 
+def _is_package_test_command(command: str) -> bool:
+    """Return whether a rendered book command is a package test operation."""
+    patterns = (
+        # Includes variable assignments and wrappers such as
+        # ``su tester -c "PATH=$PATH make -k check"``.
+        r"\bmake\b[^\n]*(?:\bcheck(?:-[A-Za-z0-9_-]+)?\b|\btest(?:s|_harness)?\b)",
+        r"\bninja\b[^\n]*\b(?:check|test|tests)\b",
+        r"\bmeson\s+test\b",
+        r"(?:^|[;&|]\s*)ctest(?:\s|$)",
+        r"\bpython(?:[0-9.]+)?\s+-m\s+(?:pytest|test)\b",
+        r"(?:^|[/\s])pytest(?:\s|$)",
+        r"\bcargo\s+test\b",
+        r"\bgo\s+test\b",
+        r"(?:^|[;&|]\s*)prove(?:\s|$)",
+        r"(?:^|[/\s])run_tests\.py(?:\s|$)",
+    )
+    if any(re.search(pattern, command, re.MULTILINE) for pattern in patterns):
+        return True
+
+    # Output inspection has no purpose when its producing suite is disabled.
+    return bool(re.match(
+        r"^grep\s+.*(?:\^FAIL:|\^XPASS:|Timed out).*(?:\.log|\.out|find)",
+        command.strip(),
+    ))
+
+
 def _normalize_automatic_command(command: str, section: str = "") -> str:
     """Make book commands safe for unattended, resumable execution.
 
@@ -118,6 +144,12 @@ def _normalize_automatic_command(command: str, section: str = "") -> str:
     force/no-dereference while preserving all other short options.
     """
     stripped = command.strip()
+    # Package suites are deliberately disabled for every automatic bootstrap
+    # phase.  Validation belongs in package CI and must not block construction
+    # of the target system on host-sensitive or hours-long checks.
+    if _is_package_test_command(stripped):
+        return ""
+
     if section.lower() == "ch-system-glibc":
         # The rendered book marks examples, upgrade-only recovery procedures,
         # interactive helpers, and alternative commands with the same
@@ -168,6 +200,12 @@ def _normalize_automatic_command(command: str, section: str = "") -> str:
                 if flag not in options:
                     options += flag
             line = f"{match.group(1)}ln -{options} " + line[match.end():]
+        match = re.match(r"^(\s*)mkdir\s+-([A-Za-z]*v[A-Za-z]*)\s+", line)
+        if match:
+            options = match.group(2)
+            if "p" not in options:
+                options += "p"
+            line = f"{match.group(1)}mkdir -{options} " + line[match.end():]
         lines.append(line)
     return "\n".join(lines).strip()
 
