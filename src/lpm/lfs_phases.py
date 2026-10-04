@@ -143,6 +143,8 @@ def _source_archive(sources: Path, section: str) -> Path | None:
         matches_key = lowered.startswith(f"{key}-")
         if key == "tcl":
             matches_key = bool(re.match(r"^tcl[0-9].*-src\.tar\.", lowered))
+        elif key == "expect":
+            matches_key = bool(re.match(r"^expect[0-9].*\.tar\.", lowered))
         is_documentation = any(
             marker in lowered for marker in ("-docs-", "-doc-", "-html.", "-html-")
         )
