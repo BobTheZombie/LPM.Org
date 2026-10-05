@@ -225,6 +225,22 @@ def _normalize_automatic_command(command: str, section: str = "") -> str:
             )
         stripped = command.strip()
 
+    if section.lower() == "ch-system-stripping":
+        # LFS notes that the final broad glob also finds linker scripts and
+        # other non-binaries.  Its interactive instructions tolerate strip's
+        # resulting errors, but generated sections run with ``set -e``.  Gate
+        # the operation with readelf so real ELF strip failures remain fatal.
+        command = re.sub(
+            r"(?m)^(\s*)\*\s*\)\s*strip --strip-unneeded \$i\s*$",
+            (
+                r'\1* ) if readelf -h "$i" >/dev/null 2>&1; then\n'
+                r'\1        strip --strip-unneeded "$i"\n'
+                r"\1    fi"
+            ),
+            command,
+        )
+        stripped = command.strip()
+
     if section.lower() == "ch-system-glibc":
         # The rendered book marks examples, upgrade-only recovery procedures,
         # interactive helpers, and alternative commands with the same
