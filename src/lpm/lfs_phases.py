@@ -25,6 +25,8 @@ PHASE_ORDER = (
     "boot",
 )
 
+LPM_SYSUSERS_CONFIG = Path("/usr/lib/sysusers.d/lpm.conf")
+
 DEFAULT_SOURCE_MIRRORS = (
     "https://ftp.osuosl.org/pub/lfs/lfs-packages",
     "https://lfs.gnlug.org/pub/lfs/lfs-packages",
@@ -86,20 +88,46 @@ def _ensure_lfs_account(target: Path, lfs_user: str) -> pwd.struct_passwd:
             raise RuntimeError(
                 f"LFS execution user {lfs_user!r} does not exist and root is required to create it"
             )
-        try:
-            grp.getgrnam(lfs_user)
-        except KeyError:
-            subprocess.run(["groupadd", lfs_user], check=True)
-        home = target / "home" / lfs_user
-        home.mkdir(parents=True, exist_ok=True)
-        subprocess.run([
-            "useradd", "--no-create-home", "--home-dir", str(home),
-            "--shell", "/bin/bash", "--gid", lfs_user, lfs_user,
-        ], check=True)
-        subprocess.run(["usermod", "--lock", lfs_user], check=True)
-        account = pwd.getpwnam(lfs_user)
-        print(f"[jhalfs] created locked build account {lfs_user} (home={home})")
-    home = target / "home" / lfs_user
+        account = None
+        sysusers = shutil.which("systemd-sysusers")
+        if (
+            lfs_user == "lpm-build"
+            and sysusers
+            and LPM_SYSUSERS_CONFIG.is_file()
+        ):
+            subprocess.run([sysusers, str(LPM_SYSUSERS_CONFIG)], check=True)
+            try:
+                account = pwd.getpwnam(lfs_user)
+            except KeyError:
+                account = None
+
+        if account is None:
+            try:
+                grp.getgrnam(lfs_user)
+            except KeyError:
+                subprocess.run(["groupadd", lfs_user], check=True)
+            home = (
+                Path("/var/lib/lpm-build")
+                if lfs_user == "lpm-build"
+                else target / "home" / lfs_user
+            )
+            home.mkdir(parents=True, exist_ok=True)
+            shell = "/usr/bin/nologin" if lfs_user == "lpm-build" else "/bin/bash"
+            subprocess.run([
+                "useradd", "--no-create-home", "--home-dir", str(home),
+                "--shell", shell, "--gid", lfs_user, lfs_user,
+            ], check=True)
+            subprocess.run(["usermod", "--lock", lfs_user], check=True)
+            account = pwd.getpwnam(lfs_user)
+        print(
+            f"[jhalfs] created locked build account {lfs_user} "
+            f"(home={account.pw_dir})"
+        )
+    home = Path(account.pw_dir)
+    if not home.is_absolute():
+        raise RuntimeError(
+            f"LFS execution user {lfs_user!r} has a non-absolute home: {home}"
+        )
     home.mkdir(parents=True, exist_ok=True)
     # Chapters 5 and 6 install the cross toolchain and temporary programs
     # directly below $LFS while running unprivileged.  Match the ownership
@@ -422,7 +450,7 @@ def run_phase_plan(
     plan_path: Path,
     target: Path,
     phases: Iterable[str] = (),
-    lfs_user: str = "lfs",
+    lfs_user: str = "lpm-build",
     resume: bool = False,
     dry_run: bool = False,
     allow_manual: bool = False,
