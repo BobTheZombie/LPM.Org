@@ -123,6 +123,12 @@ def test_fstab_configuration_is_installer_owned() -> None:
     assert "machine-specific" in reason
 
 
+def test_grub_configuration_is_installer_owned() -> None:
+    automatic, reason = lfs_book._automation_policy("ch-bootable-grub", 10)
+    assert automatic is False
+    assert "machine-specific" in reason
+
+
 def test_manual_template_placeholders_do_not_block_plan_extraction(
     tmp_path: Path,
 ) -> None:
@@ -165,6 +171,27 @@ def test_fstab_placeholders_do_not_block_plan_extraction(tmp_path: Path) -> None
     assert section["automatic"] is False
     assert "machine-specific" in section["reason"]
     assert "/dev/<xxx>" in section["commands"][0]
+
+
+def test_grub_placeholders_do_not_block_plan_extraction(tmp_path: Path) -> None:
+    book = tmp_path / "book.html"
+    book.write_text(
+        "<!doctype html><html><body>"
+        '<h2 id="ch-bootable-grub">10.4 Using GRUB</h2>'
+        '<pre class="userinput"><kbd class="command">'
+        'efibootmgr -c -d /dev/sd&lt;x&gt; -p &lt;y&gt; '
+        '-L "LFS" -l \'\\EFI\\BOOT\\BOOT&lt;X64&gt;.EFI\''
+        "</kbd></pre></body></html>",
+        encoding="utf-8",
+    )
+
+    result = lfs_book.extract_build_instructions(book, tmp_path / "instructions")
+    plan = json.loads(Path(result["phase_plan"]).read_text(encoding="utf-8"))
+    section = plan["sections"][0]
+
+    assert section["automatic"] is False
+    assert "machine-specific" in section["reason"]
+    assert "/dev/sd<x>" in section["commands"][0]
 
 
 def test_glibc_check_is_omitted_from_automatic_bootstrap() -> None:
