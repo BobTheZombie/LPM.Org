@@ -202,7 +202,7 @@ $(STATIC_PYTHON_MODULES_STAMP): $(STATIC_PYTHON_BUILD_STAMP)
 
 all: $(ALL_BIN_TARGETS)
 
-# Exercise the frozen entry points before they are staged into a package. A
+# Exercise the frozen entry points before they are staged into a package.  A
 # successful Nuitka compilation is not sufficient: a missing included package
 # otherwise remains hidden until the installed onefile executable starts.
 check-binaries: $(ALL_BIN_TARGETS)
@@ -243,7 +243,7 @@ $(UI_BIN_TARGET): Makefile lpm_ui.py $(SRC_FILES) | nuitka-install
 	@mkdir -p $(BUILD_DIR)
 	$(NUITKA) $(NUITKA_FLAGS) $(NUITKA_UI_FLAGS) --output-dir=$(BUILD_DIR) --output-filename=$(UI_APP_NAME).bin $(UI_ENTRY)
 
-$(STAGING_DIR): check-binaries README.md LICENSE etc/lpm/lpm.conf $(BUILD_INFO_JSON)
+$(STAGING_DIR): check-binaries README.md LICENSE etc/lpm/lpm.conf usr/lib/sysusers.d/lpm.conf usr/lib/tmpfiles.d/lpm.conf $(BUILD_INFO_JSON)
 	@mkdir -p $(DIST_DIR)
 	@rm -rf $@
 	mkdir -p $@/bin
@@ -255,6 +255,9 @@ $(STAGING_DIR): check-binaries README.md LICENSE etc/lpm/lpm.conf $(BUILD_INFO_J
 	cp -R $(HOOK_SRC) $@/usr/share/liblpm/
 	mkdir -p $@/usr/libexec/lpm
 	cp -R $(LIBLPM_HOOK_SRC) $@/usr/libexec/lpm/
+	mkdir -p $@/usr/lib/sysusers.d $@/usr/lib/tmpfiles.d
+	cp usr/lib/sysusers.d/lpm.conf $@/usr/lib/sysusers.d/lpm.conf
+	cp usr/lib/tmpfiles.d/lpm.conf $@/usr/lib/tmpfiles.d/lpm.conf
 	mkdir -p $@/etc/lpm
 	cp etc/lpm/lpm.conf $@/etc/lpm/lpm.conf
 	cp README.md LICENSE $@
@@ -289,6 +292,20 @@ $(STAGING_DIR): check-binaries README.md LICENSE etc/lpm/lpm.conf $(BUILD_INFO_J
 	rm -rf "$${EXEC_HOOK_DEST}/hooks"
 	mkdir -p "$${EXEC_HOOK_DEST}"
 	cp -R "$${ROOT}/usr/libexec/lpm/hooks" "$${EXEC_HOOK_DEST}/"
+
+	install -d "$${DESTDIR}/usr/lib/sysusers.d" "$${DESTDIR}/usr/lib/tmpfiles.d"
+	install -m 0644 "$${ROOT}/usr/lib/sysusers.d/lpm.conf" \
+	    "$${DESTDIR}/usr/lib/sysusers.d/lpm.conf"
+	install -m 0644 "$${ROOT}/usr/lib/tmpfiles.d/lpm.conf" \
+	    "$${DESTDIR}/usr/lib/tmpfiles.d/lpm.conf"
+	if [ -z "$${DESTDIR}" ]; then
+	    if command -v systemd-sysusers >/dev/null 2>&1; then
+	        systemd-sysusers /usr/lib/sysusers.d/lpm.conf
+	    fi
+	    if command -v systemd-tmpfiles >/dev/null 2>&1; then
+	        systemd-tmpfiles --create /usr/lib/tmpfiles.d/lpm.conf
+	    fi
+	fi
 	
 	STATE_DIR="$${DESTDIR}/var/lib/lpm"
 	mkdir -p "$${STATE_DIR}/cache" "$${STATE_DIR}/snapshots"
