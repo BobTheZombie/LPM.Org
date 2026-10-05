@@ -197,6 +197,24 @@ def _normalize_automatic_command(command: str, section: str = "") -> str:
         )
         stripped = command.strip()
 
+    if section.lower() == "ch-system-grub" and stripped.startswith("./configure "):
+        # LPM/Linux supports x86_64 UEFI.  Pin both GRUB's CPU target and
+        # platform so its build does not generate the legacy i386-pc payload
+        # or depend on configure-time host detection.
+        if "--target=" not in command:
+            command = command.replace(
+                "./configure ",
+                "./configure --target=x86_64 ",
+                1,
+            )
+        if "--with-platform=" not in command:
+            command = command.replace(
+                "./configure ",
+                "./configure --with-platform=efi ",
+                1,
+            )
+        stripped = command.strip()
+
     if section.lower() == "ch-system-glibc":
         # The rendered book marks examples, upgrade-only recovery procedures,
         # interactive helpers, and alternative commands with the same
