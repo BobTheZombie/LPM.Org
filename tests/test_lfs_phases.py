@@ -175,6 +175,46 @@ def test_ensure_lfs_account_creates_missing_locked_user(
     assert tmp_path / "root" / "var/lib" not in owned
 
 
+def test_ensure_default_build_account_prefers_systemd_sysusers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import lpm.lfs_phases as phases
+
+    target = tmp_path / "root"
+    _prepare_lfs_layout(target)
+    config = tmp_path / "lpm.conf"
+    config.write_text("u lpm-build - - /var/lib/lpm-build /usr/bin/nologin\n")
+    account = SimpleNamespace(
+        pw_uid=1234,
+        pw_gid=1234,
+        pw_dir=str(tmp_path / "lpm-build"),
+    )
+    lookups = iter((KeyError("missing"), account))
+
+    def fake_getpwnam(_name):
+        value = next(lookups)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    commands: list[list[str]] = []
+    monkeypatch.setattr(phases, "LPM_SYSUSERS_CONFIG", config)
+    monkeypatch.setattr(phases.pwd, "getpwnam", fake_getpwnam)
+    monkeypatch.setattr(phases.shutil, "which", lambda name: "/usr/bin/systemd-sysusers")
+    monkeypatch.setattr(phases.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(phases.os, "chown", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        phases.subprocess,
+        "run",
+        lambda command, **_kwargs: commands.append(command) or SimpleNamespace(),
+    )
+
+    result = _ensure_lfs_account(target, "lpm-build")
+
+    assert result is account
+    assert commands == [["/usr/bin/systemd-sysusers", str(config)]]
+
+
 def _plan(tmp_path: Path) -> Path:
     script = tmp_path / "section.sh"
     script.write_text("#!/bin/bash\necho ok\n", encoding="utf-8")
