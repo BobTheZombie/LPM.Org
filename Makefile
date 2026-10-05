@@ -197,10 +197,18 @@ $(STATIC_PYTHON_MODULES_STAMP): $(STATIC_PYTHON_BUILD_STAMP)
 	@$(STATIC_PYTHON_BIN) -m compileall -q -f $(STATIC_PYTHON_PREFIX)/lib/python$(STATIC_PYTHON_MAJOR_MINOR)
 	@touch "$@"
 
-.PHONY: all check-binaries stage tarball clean distclean nuitka-install install
+.PHONY: all lpm check-binaries stage tarball clean distclean nuitka-install install
 .ONESHELL:
 
 all: $(ALL_BIN_TARGETS)
+
+# Build and validate only the command-line package manager. This target is
+# suitable for bootstrap/chroot environments where PySide6 and the optional
+# lpm-ui frontend are not installed.
+lpm: $(BIN_TARGET)
+	$(BIN_TARGET) --help >/dev/null
+	$(BIN_TARGET) buildpkg --help >/dev/null
+	@printf 'Built CLI-only LPM binary: %s\n' '$(BIN_TARGET)'
 
 # Exercise the frozen entry points before they are staged into a package.  A
 # successful Nuitka compilation is not sufficient: a missing included package
