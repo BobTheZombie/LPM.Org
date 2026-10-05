@@ -176,6 +176,16 @@ def _normalize_automatic_command(command: str, section: str = "") -> str:
         command = command.replace("PAGE=<paper_size>", "PAGE=letter")
         stripped = command.strip()
 
+    if section.lower() == "ch-config-locale":
+        # The book leaves the system locale as a template for the builder.
+        # LPM/Linux ships a deterministic UTF-8 default suitable for an
+        # unattended US installation; it can be changed normally afterward.
+        command = command.replace(
+            "LANG=<ll>_<CC>.<charmap><@modifiers>",
+            "LANG=en_US.UTF-8",
+        )
+        stripped = command.strip()
+
     if section.lower() == "ch-system-glibc":
         # The rendered book marks examples, upgrade-only recovery procedures,
         # interactive helpers, and alternative commands with the same
