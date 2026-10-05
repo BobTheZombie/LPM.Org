@@ -316,6 +316,22 @@ def test_locale_configuration_defaults_to_us_utf8() -> None:
     ) == 'localectl set-locale LANG="en_US.UTF-8"'
 
 
+def test_grub_build_is_x86_64_efi_only() -> None:
+    command = (
+        "./configure --prefix=/usr \\\n"
+        "  --sysconfdir=/etc \\\n"
+        "  --disable-efiemu"
+    )
+    normalized = lfs_book._normalize_automatic_command(
+        command, "ch-system-grub"
+    )
+    assert normalized.startswith(
+        "./configure --with-platform=efi --target=x86_64 "
+    )
+    assert normalized.count("--target=x86_64") == 1
+    assert normalized.count("--with-platform=efi") == 1
+
+
 def test_unresolved_book_placeholder_is_rejected() -> None:
     for command in ("./configure --host=...", "PAGE=<choice> ./configure"):
         try:
