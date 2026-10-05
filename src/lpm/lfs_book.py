@@ -169,9 +169,20 @@ def _normalize_automatic_command(command: str, section: str = "") -> str:
         if re.fullmatch(r"ABI=\S+\s+\./configure\s+(?:\.\.\.|…)", stripped):
             return ""
 
+    if section.lower() == "ch-system-groff":
+        # The book requires the builder to replace <paper_size> manually.
+        # LPM/Linux currently uses the United States default; users can still
+        # override it after installation through /etc/papersize.
+        command = command.replace("PAGE=<paper_size>", "PAGE=letter")
+        stripped = command.strip()
+
     # Never execute an unresolved book placeholder.  Failing while preparing
     # the plan is preferable to reaching configure after a lengthy bootstrap.
-    if re.search(r"(?:^|[=\s])(?:\.\.\.|…)(?=\s|$)", stripped):
+    unresolved_ellipsis = re.search(
+        r"(?:^|[=\s])(?:\.\.\.|…)(?=\s|$)", stripped
+    )
+    unresolved_named = re.search(r"<[A-Za-z][A-Za-z0-9_-]*>", stripped)
+    if unresolved_ellipsis or unresolved_named:
         raise ValueError(
             f"unresolved LFS command placeholder in section {section or '<unknown>'}: "
             f"{stripped!r}"
