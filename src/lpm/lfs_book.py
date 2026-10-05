@@ -176,18 +176,6 @@ def _normalize_automatic_command(command: str, section: str = "") -> str:
         command = command.replace("PAGE=<paper_size>", "PAGE=letter")
         stripped = command.strip()
 
-    # Never execute an unresolved book placeholder.  Failing while preparing
-    # the plan is preferable to reaching configure after a lengthy bootstrap.
-    unresolved_ellipsis = re.search(
-        r"(?:^|[=\s])(?:\.\.\.|…)(?=\s|$)", stripped
-    )
-    unresolved_named = re.search(r"<[A-Za-z][A-Za-z0-9_-]*>", stripped)
-    if unresolved_ellipsis or unresolved_named:
-        raise ValueError(
-            f"unresolved LFS command placeholder in section {section or '<unknown>'}: "
-            f"{stripped!r}"
-        )
-
     if section.lower() == "ch-system-glibc":
         # The rendered book marks examples, upgrade-only recovery procedures,
         # interactive helpers, and alternative commands with the same
@@ -218,6 +206,7 @@ def _normalize_automatic_command(command: str, section: str = "") -> str:
             )
         if stripped == "mkdir -v build\ncd       build":
             return "mkdir -pv build\ncd build"
+
         if stripped.startswith("../configure "):
             return (
                 "if [ ! -f Makefile ]; then\n"
@@ -226,6 +215,20 @@ def _normalize_automatic_command(command: str, section: str = "") -> str:
             )
         if stripped == "make":
             return 'if [ ! -e libc.so ]; then\n    make\nfi'
+
+    # Apply section-specific rules before rejecting placeholders: some book
+    # sections contain optional examples which must be omitted rather than
+    # treated as commands.  Anything unresolved after those rules is a real
+    # extraction error and must never reach the bootstrap runner.
+    unresolved_ellipsis = re.search(
+        r"(?:^|[=\s])(?:\.\.\.|…)(?=\s|$)", stripped
+    )
+    unresolved_named = re.search(r"<[A-Za-z][A-Za-z0-9_-]*>", stripped)
+    if unresolved_ellipsis or unresolved_named:
+        raise ValueError(
+            f"unresolved LFS command placeholder in section {section or '<unknown>'}: "
+            f"{stripped!r}"
+        )
 
     lines: list[str] = []
     for line in command.splitlines():
