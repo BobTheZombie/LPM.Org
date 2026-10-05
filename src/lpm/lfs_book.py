@@ -138,6 +138,7 @@ def _is_package_test_command(command: str) -> bool:
         r"\bgo\s+test\b",
         r"(?:^|[;&|]\s*)prove(?:\s|$)",
         r"(?:^|[/\s])run_tests\.py(?:\s|$)",
+        r"(?:^|[/\s])tests/run\.sh(?:\s|$)",
     )
     if any(re.search(pattern, command, re.MULTILINE) for pattern in patterns):
         return True
@@ -171,6 +172,15 @@ def _normalize_automatic_command(command: str, section: str = "") -> str:
     # phase.  Validation belongs in package CI and must not block construction
     # of the target system on host-sensitive or hours-long checks.
     if _is_package_test_command(stripped):
+        return ""
+
+    if section.lower() == "ch-system-util-linux" and stripped in {
+        "touch /etc/fstab",
+        "chown -R tester .",
+    }:
+        # These commands only prepare Util-linux's optional test suite.  The
+        # suite is globally disabled, so do not create a fake system fstab or
+        # recursively change ownership of the retained source tree.
         return ""
 
     if section.lower() == "ch-system-gmp":
