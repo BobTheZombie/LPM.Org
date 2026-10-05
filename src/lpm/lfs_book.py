@@ -181,8 +181,8 @@ def _normalize_automatic_command(command: str, section: str = "") -> str:
         # LPM/Linux ships a deterministic UTF-8 default suitable for an
         # unattended US installation; it can be changed normally afterward.
         command = command.replace(
-            "LANG=<ll>_<CC>.<charmap><@modifiers>",
-            "LANG=en_US.UTF-8",
+            "<ll>_<CC>.<charmap><@modifiers>",
+            "en_US.UTF-8",
         )
         stripped = command.strip()
 
