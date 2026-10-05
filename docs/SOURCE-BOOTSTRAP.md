@@ -115,7 +115,7 @@ upstream URL has disappeared, LPM retries official LFS file mirrors using the
 pinned release path; no mirror result is accepted unless its checksum matches.
 Available phases are `cross-toolchain`, `temporary-tools`, `chroot-tools`,
 `final-system`, `system-configuration`, and `boot`. Chapters 5 and 6 execute
-as the unprivileged `lfs` user (override with `--lfs-user`); later phases run
+as the locked, unprivileged `lpm-build` user (override with `--lfs-user`); later phases run
 inside the target chroot. Each successful section is checkpointed with its
 SHA-256 in `execution-state.json`. With `--resume`, a modified script is
 rejected rather than silently skipped.
@@ -150,14 +150,12 @@ This is the supported boundary for switching from the LFS bootstrap executor
 to LPM-built packages. It deliberately does not resolve the complete desktop
 recipe repository.
 
-The host must have the selected unprivileged account. For a conventional LFS
-builder account:
-
-```sh
-sudo groupadd -f lfs
-id lfs >/dev/null 2>&1 || \
-  sudo useradd -s /bin/bash -g lfs -m -k /dev/null lfs
-```
+LPM installs `/usr/lib/sysusers.d/lpm.conf` and creates the locked
+`lpm-build` account with `systemd-sysusers`. Its non-login home and build
+workspace are created below `/var/lib/lpm-build` by
+`/usr/lib/tmpfiles.d/lpm.conf`. Root retains ownership of package database and
+transaction commits; `lpm-build` owns only build inputs, work trees, and
+finished artifacts.
 
 Equivalent TOML settings are:
 
@@ -170,6 +168,6 @@ book_offline = false
 book_refresh = false
 lfs_execute = true
 lfs_phases = ["cross-toolchain", "temporary-tools"]
-lfs_user = "lfs"
+lfs_user = "lpm-build"
 lfs_only = true
 ```
