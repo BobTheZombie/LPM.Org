@@ -104,6 +104,12 @@ def _automation_policy(section: str, chapter: int) -> tuple[bool, str]:
         marker in lowered for marker in ("config-network", "network")
     ):
         return False, "machine-specific network configuration"
+    # Device names, filesystem types, swap layout, and mount options are
+    # properties of the installation target.  LPM's installer/bootstrap must
+    # generate fstab from its actual mount map; the book only provides a
+    # placeholder example and must never write it automatically.
+    if chapter == 10 and "fstab" in lowered:
+        return False, "machine-specific filesystem configuration"
     return True, ""
 
 
