@@ -344,6 +344,24 @@ def test_grub_build_is_x86_64_efi_only() -> None:
     assert normalized.count("--with-platform=efi") == 1
 
 
+def test_final_stripping_ignores_non_elf_files_without_hiding_strip_errors() -> None:
+    command = """for i in $(find /usr/lib -type f -name \\*.so*); do
+    case "$online_usrlib" in
+        *$(basename $i)* )
+            ;;
+        * ) strip --strip-unneeded $i
+            ;;
+    esac
+done"""
+    normalized = lfs_book._normalize_automatic_command(
+        command, "ch-system-stripping"
+    )
+    assert 'if readelf -h "$i" >/dev/null 2>&1; then' in normalized
+    assert 'strip --strip-unneeded "$i"' in normalized
+    assert "|| true" not in normalized
+    assert "* ) strip --strip-unneeded $i" not in normalized
+
+
 def test_unresolved_book_placeholder_is_rejected() -> None:
     for command in ("./configure --host=...", "PAGE=<choice> ./configure"):
         try:
