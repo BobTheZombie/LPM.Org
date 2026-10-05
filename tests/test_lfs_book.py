@@ -238,15 +238,20 @@ def test_gmp_alternate_abi_example_is_omitted() -> None:
     ) == ""
 
 
+def test_groff_paper_size_defaults_to_us_letter() -> None:
+    assert lfs_book._normalize_automatic_command(
+        "PAGE=<paper_size> ./configure --prefix=/usr", "ch-system-groff"
+    ) == "PAGE=letter ./configure --prefix=/usr"
+
+
 def test_unresolved_book_placeholder_is_rejected() -> None:
-    try:
-        lfs_book._normalize_automatic_command(
-            "./configure --host=...", "ch-system-example"
-        )
-    except ValueError as error:
-        assert "unresolved LFS command placeholder" in str(error)
-    else:
-        raise AssertionError("unresolved placeholder was accepted")
+    for command in ("./configure --host=...", "PAGE=<choice> ./configure"):
+        try:
+            lfs_book._normalize_automatic_command(command, "ch-system-example")
+        except ValueError as error:
+            assert "unresolved LFS command placeholder" in str(error)
+        else:
+            raise AssertionError("unresolved placeholder was accepted")
 
 
 def test_interactive_shell_refresh_is_removed_without_losing_following_commands(
