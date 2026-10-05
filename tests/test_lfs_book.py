@@ -253,9 +253,13 @@ def test_locale_configuration_defaults_to_us_utf8() -> None:
     assert lfs_book._normalize_automatic_command(
         command, "ch-config-locale"
     ) == command.replace(
-        "LANG=<ll>_<CC>.<charmap><@modifiers>",
-        "LANG=en_US.UTF-8",
+        "<ll>_<CC>.<charmap><@modifiers>",
+        "en_US.UTF-8",
     )
+    assert lfs_book._normalize_automatic_command(
+        'localectl set-locale LANG="<ll>_<CC>.<charmap><@modifiers>"',
+        "ch-config-locale",
+    ) == 'localectl set-locale LANG="en_US.UTF-8"'
 
 
 def test_unresolved_book_placeholder_is_rejected() -> None:
