@@ -244,6 +244,20 @@ def test_groff_paper_size_defaults_to_us_letter() -> None:
     ) == "PAGE=letter ./configure --prefix=/usr"
 
 
+def test_locale_configuration_defaults_to_us_utf8() -> None:
+    command = (
+        'cat > /etc/locale.conf << "EOF"\n'
+        "LANG=<ll>_<CC>.<charmap><@modifiers>\n"
+        "EOF"
+    )
+    assert lfs_book._normalize_automatic_command(
+        command, "ch-config-locale"
+    ) == command.replace(
+        "LANG=<ll>_<CC>.<charmap><@modifiers>",
+        "LANG=en_US.UTF-8",
+    )
+
+
 def test_unresolved_book_placeholder_is_rejected() -> None:
     for command in ("./configure --host=...", "PAGE=<choice> ./configure"):
         try:
