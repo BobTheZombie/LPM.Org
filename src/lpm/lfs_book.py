@@ -110,6 +110,11 @@ def _automation_policy(section: str, chapter: int) -> tuple[bool, str]:
     # placeholder example and must never write it automatically.
     if chapter == 10 and "fstab" in lowered:
         return False, "machine-specific filesystem configuration"
+    # Bootloader installation depends on the target disk, EFI system
+    # partition, firmware mode, and architecture-specific loader path.  It is
+    # performed by the LPM installer after the target layout is known.
+    if chapter == 10 and "grub" in lowered:
+        return False, "machine-specific bootloader configuration"
     return True, ""
 
 
