@@ -92,7 +92,7 @@ class BootstrapConfig:
     book_refresh: bool = False
     lfs_execute: bool = False
     lfs_phases: tuple[str, ...] = ()
-    lfs_user: str = "lfs"
+    lfs_user: str = "lpm-build"
     lfs_allow_manual: bool = False
     lfs_only: bool = False
     lpm_ready: bool = False
@@ -451,7 +451,7 @@ def load_config(cli_args: Any) -> BootstrapConfig:
         book_refresh=bool(pick("book_refresh", False)),
         lfs_execute=bool(pick("lfs_execute", False)),
         lfs_phases=_parse_pkg_list(pick("lfs_phases")),
-        lfs_user=str(pick("lfs_user", "lfs")),
+        lfs_user=str(pick("lfs_user", "lpm-build")),
         lfs_allow_manual=bool(pick("lfs_allow_manual", False)),
         lfs_only=bool(pick("lfs_only", False)),
         lpm_ready=bool(pick("lpm_ready", False)),
