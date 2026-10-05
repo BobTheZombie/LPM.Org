@@ -286,6 +286,18 @@ def test_non_test_make_target_remains_executable() -> None:
     ) == "make tooldir=/usr"
 
 
+def test_util_linux_standalone_tests_and_setup_are_omitted() -> None:
+    for command in (
+        "bash tests/run.sh --srcdir=$PWD --builddir=$PWD",
+        "touch /etc/fstab",
+        "chown -R tester .",
+        'su tester -c "make -k check"',
+    ):
+        assert lfs_book._normalize_automatic_command(
+            command, "ch-system-util-linux"
+        ) == ""
+
+
 def test_gmp_alternate_abi_example_is_omitted() -> None:
     assert lfs_book._normalize_automatic_command(
         "ABI=32 ./configure ...", "ch-system-gmp"
