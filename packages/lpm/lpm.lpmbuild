@@ -150,11 +150,21 @@ staging() {
         DESTDIR="$pkgdir" \
         install-lpm
 
+    # These paths are owned by lpm-filesystem. The standalone install-lpm
+    # target creates them for source installs, but the binary package must not
+    # claim or overwrite another package's configuration and account policy.
+    rm -f \
+        "$pkgdir/etc/lpm/lpm.conf" \
+        "$pkgdir/usr/lib/sysusers.d/lpm.conf" \
+        "$pkgdir/usr/lib/tmpfiles.d/lpm.conf" \
+        "$pkgdir/var/lib/lpm/repos.json" \
+        "$pkgdir/var/lib/lpm/pins.json"
+
     test -x "$pkgdir/usr/bin/lpm"
     test ! -e "$pkgdir/usr/bin/lpm-ui"
-    test -f "$pkgdir/etc/lpm/lpm.conf"
-    test -f "$pkgdir/usr/lib/sysusers.d/lpm.conf"
-    test -f "$pkgdir/usr/lib/tmpfiles.d/lpm.conf"
+    test ! -e "$pkgdir/etc/lpm/lpm.conf"
+    test ! -e "$pkgdir/usr/lib/sysusers.d/lpm.conf"
+    test ! -e "$pkgdir/usr/lib/tmpfiles.d/lpm.conf"
     test -f "$pkgdir/usr/share/lpm/build-info.json"
     test -f "$pkgdir/usr/share/licenses/lpm/LICENSE"
 
