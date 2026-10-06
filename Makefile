@@ -197,7 +197,7 @@ $(STATIC_PYTHON_MODULES_STAMP): $(STATIC_PYTHON_BUILD_STAMP)
 	@$(STATIC_PYTHON_BIN) -m compileall -q -f $(STATIC_PYTHON_PREFIX)/lib/python$(STATIC_PYTHON_MAJOR_MINOR)
 	@touch "$@"
 
-.PHONY: all lpm lpm-ui check-binaries stage tarball clean distclean nuitka-install install install-lpm
+.PHONY: all lpm lpm-ui check-binaries stage tarball clean distclean nuitka-source nuitka-install install install-lpm
 .ONESHELL:
 
 all: $(ALL_BIN_TARGETS)
@@ -221,7 +221,7 @@ check-binaries: $(ALL_BIN_TARGETS)
 	$(BIN_TARGET) --help >/dev/null
 	$(BIN_TARGET) buildpkg --help >/dev/null
 
-$(NUITKA_SOURCE_DIR):
+nuitka-source:
 	@mkdir -p $(dir $(NUITKA_SOURCE_DIR))
 	@if [ -d $(NUITKA_SOURCE_DIR)/.git ]; then \
 	        git -C $(NUITKA_SOURCE_DIR) remote set-url origin $(NUITKA_REPO); \
@@ -235,7 +235,7 @@ $(NUITKA_SOURCE_DIR):
 nuitka-install: $(NUITKA_STAMP_FILE)
 	@:
 
-$(NUITKA_STAMP_FILE): $(STATIC_PYTHON_READY) | $(NUITKA_SOURCE_DIR)
+$(NUITKA_STAMP_FILE): $(STATIC_PYTHON_READY) | nuitka-source
 	@mkdir -p $(dir $@)
 	@REV=$$(git -C $(NUITKA_SOURCE_DIR) rev-parse HEAD); \
 	INSTALLED=$$(cat $@ 2>/dev/null || true); \
