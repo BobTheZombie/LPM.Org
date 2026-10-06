@@ -1,102 +1,162 @@
 #!/bin/bash
-# lpmbuild script for the LPM package manager
+# LPM build script for the LPM command-line package manager
 
 NAME="lpm"
 VERSION="1.0.1"
-RELEASE="1"
-ARCH="x86_64"
-SUMMARY="Linux Package Manager with SAT solver, hooks, and .lpmbuild support"
-URL="https://github.com/BobTheZombie/LPM"
+RELEASE="2"
+ARCH="${ARCH:-x86_64}"
+
+SUMMARY="Linux Package Manager with SAT solving, hooks, deltas, and lpmbuild support"
+URL="https://github.com/BobTheZombie/LPM.Org"
 LICENSE=("MIT")
 
+# Build the current repository branch. Tagged releases can replace "main" with
+# "${VERSION}" once matching GitHub tags are published.
 SOURCE=(
-  "https://github.com/BobTheZombie/LPM.Org/archive/refs/tags/${VERSION}.tar.gz"
+    "https://github.com/BobTheZombie/LPM.Org/archive/refs/heads/main.tar.gz"
 )
+
+SHA256SUMS=("SKIP")
+PATCHES=()
 
 REQUIRES=(
-  "lpm-filesystem"
-  "python"
-  "openssl"
-  "tar"
-  "gzip"
-  "xz"
-  "zstd"
-  "git"
-  "sqlite"
+    "glibc"
+    "lpm-filesystem"
+    "openssl"
+    "sqlite"
+    "tar"
+    "xz"
+    "zstd"
 )
 
-SUGGESTS=("python-pyside6")
-PROVIDES=("lpm" "lpm-core")
+BUILD_REQUIRES=(
+    "binutils"
+    "curl"
+    "gcc"
+    "git"
+    "make"
+    "patchelf"
+    "python"
+)
+
+PROVIDES=(
+    "lpm"
+    "lpm-core"
+)
+
 CONFLICTS=()
 OBSOLETES=()
+RECOMMENDS=()
+SUGGESTS=("python-pyside6")
+
+BUILD_OPTIONS=(
+    "@--stripping"
+    "@--lto"
+    "@--optimize=2"
+)
+
+_lpm_srcdir() {
+    local candidate
+
+    for candidate in \
+        "$SRCROOT/LPM.Org-main" \
+        "$SRCROOT/LPM.Org-${VERSION}" \
+        "$SRCROOT/${NAME}-${VERSION}"
+    do
+        if [ -f "$candidate/Makefile" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    candidate="$(
+        find "$SRCROOT" \
+            -mindepth 1 \
+            -maxdepth 1 \
+            -type d \
+            -name 'LPM.Org-*' \
+            -exec test -f '{}/Makefile' ';' \
+            -print \
+            -quit
+    )"
+
+    test -n "$candidate"
+    printf '%s\n' "$candidate"
+}
 
 prepare() {
     set -euxo pipefail
-    cd "$SRCROOT/$NAME-$VERSION"
+
+    SRCDIR="$(_lpm_srcdir)"
+
+    test -f "$SRCDIR/Makefile"
+    test -f "$SRCDIR/src/lpm/__main__.py"
+    test -f "$SRCDIR/etc/lpm/lpm.conf"
+
+    command -v git
+    command -v patchelf
+    python3 -m pip --version
+
+    rm -rf \
+        "$SRCDIR/build/nuitka" \
+        "$SRCDIR/build/nuitka-src"
 }
 
 build() {
     set -euxo pipefail
-    cd "$SRCROOT/$NAME-$VERSION"
 
-    # ✅ Only install missing Python build dependencies
-    PYTHON_DEPS=(pip wheel autocommand nuitka packaging tqdm zstandard)
-    for pkg in "${PYTHON_DEPS[@]}"; do
-        if ! python3 -m pip show "$pkg" >/dev/null 2>&1; then
-            echo "[LPM] Installing missing build dependency: $pkg"
-            python3 -m pip install --upgrade "$pkg"
-        else
-            echo "[LPM] Python package '$pkg' already installed, skipping."
-        fi
-    done
+    SRCDIR="$(_lpm_srcdir)"
+    cd "$SRCDIR"
 
-    # Determine reproducible build date
-    local build_date
     if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
-        build_date="$(date -u -d "@${SOURCE_DATE_EPOCH}" +"%Y-%m-%dT%H:%M:%SZ")"
+        BUILD_DATE="$(
+            date -u \
+                -d "@${SOURCE_DATE_EPOCH}" \
+                '+%Y-%m-%dT%H:%M:%SZ'
+        )"
     else
-        build_date="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+        BUILD_DATE="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     fi
 
-    make VERSION="${VERSION}" BUILD_DATE="${build_date}" all
-    make VERSION="${VERSION}" BUILD_DATE="${build_date}" check-binaries
-    make VERSION="${VERSION}" BUILD_DATE="${build_date}" build/build-info.json
+    # The lpm target deliberately excludes lpm-ui and therefore does not
+    # require PySide6 in bootstrap or server environments.
+    make \
+        VERSION="${VERSION}" \
+        BUILD_DATE="${BUILD_DATE}" \
+        NUITKA_REPO="https://github.com/Nuitka/Nuitka.git" \
+        NUITKA_REF="develop" \
+        lpm \
+        build/build-info.json
+}
+
+check() {
+    set -euxo pipefail
+
+    SRCDIR="$(_lpm_srcdir)"
+
+    "$SRCDIR/build/nuitka/lpm.bin" --help >/dev/null
+    "$SRCDIR/build/nuitka/lpm.bin" buildpkg --help >/dev/null
 }
 
 staging() {
     set -euxo pipefail
-    cd "$SRCROOT/$NAME-$VERSION"
 
-    install -Dm755 build/nuitka/lpm.bin "$pkgdir/usr/bin/lpm"
-    install -Dm755 build/nuitka/lpm-ui.bin "$pkgdir/usr/bin/lpm-ui"
+    SRCDIR="$(_lpm_srcdir)"
+    cd "$SRCDIR"
 
-    install -Dm644 etc/lpm/lpm.conf "$pkgdir/etc/lpm/lpm.conf"
+    make \
+        VERSION="${VERSION}" \
+        PREFIX=/usr \
+        DESTDIR="$pkgdir" \
+        install-lpm
 
-    if [ -d usr/share ]; then
-        mkdir -p "$pkgdir/usr/share"
-        cp -a usr/share/lpm "$pkgdir/usr/share/"
-        cp -a usr/share/liblpm "$pkgdir/usr/share/"
-    fi
+    test -x "$pkgdir/usr/bin/lpm"
+    test ! -e "$pkgdir/usr/bin/lpm-ui"
+    test -f "$pkgdir/etc/lpm/lpm.conf"
+    test -f "$pkgdir/usr/lib/sysusers.d/lpm.conf"
+    test -f "$pkgdir/usr/lib/tmpfiles.d/lpm.conf"
+    test -f "$pkgdir/usr/share/lpm/build-info.json"
+    test -f "$pkgdir/usr/share/licenses/lpm/LICENSE"
 
-    if [ -d usr/libexec ]; then
-        mkdir -p "$pkgdir/usr/libexec"
-        cp -a usr/libexec/lpm "$pkgdir/usr/libexec/"
-    fi
-
-    install -Dm644 README.md "$pkgdir/usr/share/doc/lpm/README.md"
-    install -Dm644 docs/TECHNICAL-HOWTO.md "$pkgdir/usr/share/doc/lpm/TECHNICAL-HOWTO.md"
-    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/lpm/LICENSE"
-
-    install -d "$pkgdir/var/lib/lpm/cache" "$pkgdir/var/lib/lpm/snapshots"
-
-    printf '[]\n' > "$pkgdir/var/lib/lpm/repos.json"
-    cat > "$pkgdir/var/lib/lpm/pins.json" <<'JSON'
-{
-  "hold": [],
-  "prefer": {}
-}
-JSON
-
-    install -Dm644 build/build-info.json "$pkgdir/usr/share/lpm/build-info.json"
-
+    "$pkgdir/usr/bin/lpm" --help >/dev/null
 }
