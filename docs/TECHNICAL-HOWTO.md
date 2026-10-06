@@ -419,3 +419,26 @@ review or alternative deployment tools.【F:src/maintainer_mode.py†L214-L274�
 
 With these commands and workflows, you can confidently operate LPM across
 production systems, chroots, and custom repositories.
+
+
+### Applying source patches
+
+Declare source patches with the `PATCHES` array:
+
+```bash
+SOURCE=(
+    "https://example.org/project-1.0.tar.xz"
+    "project-fix.patch"
+)
+PATCHES=(
+    "project-fix.patch"
+)
+```
+
+Every non-empty `PATCHES` entry is treated as a source entry, so a patch may be
+local to the recipe, fetched from the configured package source repository, or
+written with the standard `alias::URL` source syntax. LPM applies patches with
+`patch --batch --forward -p1` after source extraction and before the recipe's
+`prepare()` function. Missing patches, unsafe paths, unavailable `patch(1)`,
+and rejected hunks fail the build. An already-applied patch is detected with a
+reverse dry run and safely skipped when a build is resumed.
