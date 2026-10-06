@@ -1,0 +1,5 @@
+# Type Name       ID  GECOS                       Home                    Shell
+g lpm             -   -                           -                       -
+g lpm-build       -   -                           -                       -
+u lpm             -   "LPM service account"       /var/lib/lpm            /usr/bin/nologin
+u lpm-build       -   "LPM package build account" /var/lib/lpm-build      /usr/bin/nologin
