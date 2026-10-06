@@ -1,7 +1,7 @@
 HOST_PYTHON ?= python3
 PYTHON ?= $(HOST_PYTHON)
 NUITKA ?= $(PYTHON) -m nuitka
-NUITKA_REPO ?= https://github.com/BobTheZombie/Nuitka.git
+NUITKA_REPO ?= https://github.com/Nuitka/Nuitka.git
 NUITKA_REF ?= develop
 APP = lpm
 ENTRY = $(PWD)/src/lpm/__main__.py
@@ -197,7 +197,7 @@ $(STATIC_PYTHON_MODULES_STAMP): $(STATIC_PYTHON_BUILD_STAMP)
 	@$(STATIC_PYTHON_BIN) -m compileall -q -f $(STATIC_PYTHON_PREFIX)/lib/python$(STATIC_PYTHON_MAJOR_MINOR)
 	@touch "$@"
 
-.PHONY: all lpm check-binaries stage tarball clean distclean nuitka-install install
+.PHONY: all lpm lpm-ui check-binaries stage tarball clean distclean nuitka-install install install-lpm
 .ONESHELL:
 
 all: $(ALL_BIN_TARGETS)
@@ -209,6 +209,10 @@ lpm: $(BIN_TARGET)
 	$(BIN_TARGET) --help >/dev/null
 	$(BIN_TARGET) buildpkg --help >/dev/null
 	@printf 'Built CLI-only LPM binary: %s\n' '$(BIN_TARGET)'
+
+# Build only the optional graphical frontend.
+lpm-ui: $(UI_BIN_TARGET)
+	@printf 'Built LPM UI binary: %s\n' '$(UI_BIN_TARGET)'
 
 # Exercise the frozen entry points before they are staged into a package.  A
 # successful Nuitka compilation is not sufficient: a missing included package
@@ -351,6 +355,36 @@ tarball: $(TARBALL)
 
 install: $(STAGING_DIR)
 	PREFIX="$(PREFIX)" DESTDIR="$(DESTDIR)" $</install.sh
+
+# Install the command-line package manager without building or requiring
+# PySide6/lpm-ui. This is the bootstrap/chroot installation path.
+install-lpm: lpm $(BUILD_INFO_JSON)
+	set -eu
+	install -Dm755 "$(BIN_TARGET)" "$(DESTDIR)$(PREFIX)/bin/lpm"
+	install -Dm644 "$(BUILD_INFO_JSON)" "$(DESTDIR)/usr/share/lpm/build-info.json"
+	install -Dm644 README.md "$(DESTDIR)/usr/share/doc/lpm/README.md"
+	install -Dm644 LICENSE "$(DESTDIR)/usr/share/licenses/lpm/LICENSE"
+	if [ -f docs/TECHNICAL-HOWTO.md ]; then
+		install -Dm644 docs/TECHNICAL-HOWTO.md "$(DESTDIR)/usr/share/doc/lpm/TECHNICAL-HOWTO.md"
+	fi
+	install -d "$(DESTDIR)/usr/share/liblpm" "$(DESTDIR)/usr/libexec/lpm"
+	rm -rf "$(DESTDIR)/usr/share/liblpm/hooks" "$(DESTDIR)/usr/libexec/lpm/hooks"
+	cp -R "$(HOOK_SRC)/." "$(DESTDIR)/usr/share/liblpm/hooks"
+	cp -R "$(LIBLPM_HOOK_SRC)/." "$(DESTDIR)/usr/libexec/lpm/hooks"
+	install -Dm644 usr/lib/sysusers.d/lpm.conf "$(DESTDIR)/usr/lib/sysusers.d/lpm.conf"
+	install -Dm644 usr/lib/tmpfiles.d/lpm.conf "$(DESTDIR)/usr/lib/tmpfiles.d/lpm.conf"
+	install -d "$(DESTDIR)/etc/lpm" "$(DESTDIR)/var/lib/lpm/cache" "$(DESTDIR)/var/lib/lpm/snapshots"
+	if [ ! -e "$(DESTDIR)/etc/lpm/lpm.conf" ]; then
+		install -m644 etc/lpm/lpm.conf "$(DESTDIR)/etc/lpm/lpm.conf"
+	else
+		printf 'Keeping existing configuration: %s\n' "$(DESTDIR)/etc/lpm/lpm.conf"
+	fi
+	if [ ! -e "$(DESTDIR)/var/lib/lpm/repos.json" ]; then printf '[]\n' > "$(DESTDIR)/var/lib/lpm/repos.json"; fi
+	if [ ! -e "$(DESTDIR)/var/lib/lpm/pins.json" ]; then printf '{\n  "hold": [],\n  "prefer": {}\n}\n' > "$(DESTDIR)/var/lib/lpm/pins.json"; fi
+	if [ -z "$(DESTDIR)" ]; then
+		command -v systemd-sysusers >/dev/null 2>&1 && systemd-sysusers /usr/lib/sysusers.d/lpm.conf || true
+		command -v systemd-tmpfiles >/dev/null 2>&1 && systemd-tmpfiles --create /usr/lib/tmpfiles.d/lpm.conf || true
+	fi
 
 clean:
 	rm -rf $(BUILD_DIR)
