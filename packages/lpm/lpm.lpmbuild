@@ -23,6 +23,7 @@ REQUIRES=(
     "glibc"
     "lpm-filesystem"
     "openssl"
+    "patch"
     "sqlite"
     "tar"
     "xz"
