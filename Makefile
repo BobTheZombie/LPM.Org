@@ -235,7 +235,7 @@ nuitka-source:
 nuitka-install: $(NUITKA_STAMP_FILE)
 	@:
 
-$(NUITKA_STAMP_FILE): $(STATIC_PYTHON_READY) | nuitka-source
+$(NUITKA_STAMP_FILE): $(STATIC_PYTHON_READY) nuitka-source
 	@mkdir -p $(dir $@)
 	@REV=$$(git -C $(NUITKA_SOURCE_DIR) rev-parse HEAD); \
 	INSTALLED=$$(cat $@ 2>/dev/null || true); \
