@@ -1,56 +1,138 @@
 #!/bin/bash
-# lpmbuild script for the LPM filesystem baseline
+# LPM build script for the LPM filesystem baseline
 
 NAME="lpm-filesystem"
 VERSION="1.0.0"
-RELEASE="1"
-ARCH="noarch"
-SUMMARY="Filesystem, sysusers, and tmpfiles definitions for LPM"
-URL="https://github.com/BobTheZombie/LPM"
+RELEASE="2"
+ARCH="any"
+
+SUMMARY="Filesystem, accounts, configuration, and runtime layout for LPM"
+URL="https://github.com/BobTheZombie/LPM.Org"
 LICENSE=("MIT")
 
-SOURCE=()
+SOURCE=(
+    "lpm.sysusers"
+    "lpm.tmpfiles"
+    "lpm.conf"
+    "README.md"
+)
 
-REQUIRES=()
-SUGGESTS=()
-PROVIDES=("lpm-filesystem")
+SHA256SUMS=(
+    "SKIP"
+    "SKIP"
+    "SKIP"
+    "SKIP"
+)
+
+PATCHES=()
+
+REQUIRES=(
+    "systemd"
+)
+
+BUILD_REQUIRES=()
+
+PROVIDES=(
+    "lpm-filesystem"
+    "lpm-base-layout"
+)
+
 CONFLICTS=()
 OBSOLETES=()
+RECOMMENDS=()
+SUGGESTS=()
 
 prepare() {
     set -euxo pipefail
+
+    test -f "$SRCROOT/lpm.sysusers"
+    test -f "$SRCROOT/lpm.tmpfiles"
+    test -f "$SRCROOT/lpm.conf"
+    test -f "$SRCROOT/README.md"
 }
 
 build() {
-    set -euxo pipefail
+    true
+}
+
+check() {
+    true
 }
 
 staging() {
     set -euxo pipefail
 
-    install -Dm644 usr/lib/sysusers.d/lpm.conf "$pkgdir/usr/lib/sysusers.d/lpm.conf"
+    # Static configuration.
+    install -dm755 \
+        "$pkgdir/etc/lpm" \
+        "$pkgdir/etc/lpm/repos.d" \
+        "$pkgdir/etc/lpm/hooks.d" \
+        "$pkgdir/etc/lpm/makeflags.d"
 
-    install -Dm644 /dev/stdin "$pkgdir/usr/lib/tmpfiles.d/lpm.conf" <<'TMPFILES'
-# Path                  Mode  User Group Age Argument
-# LPM state/config
-d /etc/lpm              0755  root root -   -
-d /var/lib/lpm          0770  root lpm  -   -
-d /var/lib/lpm/cache    0770  root lpm  -   -
-d /var/lib/lpm/snapshots 0770 root lpm -   -
-f /var/lib/lpm/lock     0660  root lpm  -   -
+    install -Dm644 \
+        "$SRCROOT/lpm.conf" \
+        "$pkgdir/etc/lpm/lpm.conf"
 
-# LPM hooks/lib paths
-d /usr/share/liblpm         0755 root root - -
-d /usr/share/liblpm/hooks   0755 root root - -
-d /usr/libexec/lpm          0755 root root - -
-d /usr/libexec/lpm/hooks    0755 root root - -
+    # Persistent state. Runtime ownership is applied by systemd-tmpfiles.
+    install -dm755 \
+        "$pkgdir/var/lib/lpm" \
+        "$pkgdir/var/lib/lpm/cache" \
+        "$pkgdir/var/lib/lpm/cache/sources" \
+        "$pkgdir/var/lib/lpm/cache/packages" \
+        "$pkgdir/var/lib/lpm/cache/lpmbuilds" \
+        "$pkgdir/var/lib/lpm/cache/build" \
+        "$pkgdir/var/lib/lpm/cache/logs" \
+        "$pkgdir/var/lib/lpm/snapshots" \
+        "$pkgdir/var/lib/lpm/transactions" \
+        "$pkgdir/var/lib/lpm/locks"
 
-# Linker cache paths
-d /etc/ld.so.conf.d     0755 root root -   -
-f /etc/ld.so.cache      0644 root root -   -
+    # Shared hooks and support files.
+    install -dm755 \
+        "$pkgdir/usr/share/lpm" \
+        "$pkgdir/usr/share/lpm/hooks" \
+        "$pkgdir/usr/share/lpm/templates" \
+        "$pkgdir/usr/share/lpm/scripts" \
+        "$pkgdir/usr/share/lpm/licenses" \
+        "$pkgdir/usr/share/liblpm/hooks" \
+        "$pkgdir/usr/libexec/lpm/hooks"
 
-# Temp directories
-d /tmp                  1777 root root -   -
-d /var/tmp              1777 root root -   -
-TMPFILES
+    # System accounts and runtime directory policy.
+    install -Dm644 \
+        "$SRCROOT/lpm.sysusers" \
+        "$pkgdir/usr/lib/sysusers.d/lpm.conf"
+
+    install -Dm644 \
+        "$SRCROOT/lpm.tmpfiles" \
+        "$pkgdir/usr/lib/tmpfiles.d/lpm.conf"
+
+    install -Dm644 \
+        "$SRCROOT/README.md" \
+        "$pkgdir/usr/share/doc/lpm-filesystem/README.md"
+
+    # Preserve package-owned persistent directories.
+    for DIRECTORY in \
+        var/lib/lpm/cache/sources \
+        var/lib/lpm/cache/packages \
+        var/lib/lpm/cache/lpmbuilds \
+        var/lib/lpm/cache/build \
+        var/lib/lpm/cache/logs \
+        var/lib/lpm/snapshots \
+        var/lib/lpm/transactions \
+        var/lib/lpm/locks
+    do
+        touch "$pkgdir/$DIRECTORY/.keep"
+        chmod 644 "$pkgdir/$DIRECTORY/.keep"
+    done
+
+    # Volatile paths belong to tmpfiles and must not be archived.
+    test ! -e "$pkgdir/run/lpm"
+    test ! -e "$pkgdir/tmp/lpm-build"
+    test ! -e "$pkgdir/var/lib/lpm/state.db"
+
+    test -f "$pkgdir/usr/lib/sysusers.d/lpm.conf"
+    test -f "$pkgdir/usr/lib/tmpfiles.d/lpm.conf"
+    test -f "$pkgdir/etc/lpm/lpm.conf"
+    test -d "$pkgdir/var/lib/lpm/cache"
+    test -d "$pkgdir/usr/share/lpm/hooks"
+    test -d "$pkgdir/usr/libexec/lpm/hooks"
 }
