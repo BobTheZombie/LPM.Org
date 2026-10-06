@@ -3628,6 +3628,7 @@ def _capture_lpmbuild_metadata(
         _emit_scalar_line("MKINITCPIO_PRESET", "mkinitcpio_preset"),
         _emit_scalar_line("INSTALL", "INSTALL", "install"),
         _emit_array_line("SOURCE", "source"),
+        _emit_array_line("PATCHES", "patches"),
         _emit_array_line("REQUIRES", "requires", "depends"),
         _emit_array_line("BUILD_REQUIRES", "build_requires", "makedepends"),
         _emit_array_line("BUILD_OPTIONS", "build_options"),
@@ -3659,6 +3660,7 @@ def _capture_lpmbuild_metadata(
         key: []
         for key in [
             "SOURCE",
+            "PATCHES",
             "REQUIRES",
             "BUILD_REQUIRES",
             "BUILD_OPTIONS",
@@ -4190,6 +4192,107 @@ def _parse_cpu_overrides(values: Iterable[str]) -> Optional[CpuOverrides]:
         return None
     normalized = overrides.normalized()
     return None if normalized.is_empty() else normalized
+
+
+
+def _declared_patch_filename(entry: str) -> str:
+    """Return the staged filename for a PATCHES entry."""
+    value = str(entry or "").strip()
+    if not value:
+        return ""
+    alias: Optional[str] = None
+    source_ref = value
+    if "::" in value:
+        alias, source_ref = value.split("::", 1)
+        alias = alias.strip() or None
+        source_ref = source_ref.strip()
+    if alias:
+        return alias
+    parsed = urllib.parse.urlparse(source_ref)
+    candidate = parsed.path if parsed.scheme else source_ref
+    return os.path.basename(candidate.rstrip("/"))
+
+
+def _apply_lpmbuild_patches(
+    patches: Iterable[str],
+    srcroot: Path,
+    target_dir: Path,
+) -> int:
+    """Apply declared lpmbuild patches with patch(1) before prepare()."""
+    declared = [str(item).strip() for item in patches if str(item).strip()]
+    if not declared:
+        return 0
+
+    patch_tool = shutil.which("patch")
+    if not patch_tool:
+        die("PATCHES were declared but the 'patch' program is not installed")
+
+    source_root = srcroot.resolve()
+    patch_target = target_dir.resolve()
+    try:
+        patch_target.relative_to(source_root)
+    except ValueError:
+        die(f"unsafe patch target outside SRCROOT: {patch_target}")
+    if not patch_target.is_dir():
+        die(f"patch target directory does not exist: {patch_target}")
+
+    applied = 0
+    for entry in declared:
+        filename = _declared_patch_filename(entry)
+        if not filename:
+            die(f"invalid empty PATCHES entry: {entry!r}")
+
+        patch_path = (srcroot / filename).resolve()
+        try:
+            patch_path.relative_to(source_root)
+        except ValueError:
+            die(f"unsafe PATCHES path outside SRCROOT: {entry}")
+        if not patch_path.is_file():
+            die(f"declared patch not found: {filename}")
+
+        common = [
+            patch_tool,
+            "--batch",
+            "-p1",
+            "-i",
+            str(patch_path),
+        ]
+        forward = subprocess.run(
+            [*common, "--forward", "--dry-run"],
+            cwd=patch_target,
+            capture_output=True,
+            text=True,
+        )
+        if forward.returncode == 0:
+            log(f"[patch] applying {filename}")
+            subprocess.run(
+                [*common, "--forward"],
+                cwd=patch_target,
+                check=True,
+            )
+            applied += 1
+            continue
+
+        reverse = subprocess.run(
+            [*common, "--reverse", "--dry-run"],
+            cwd=patch_target,
+            capture_output=True,
+            text=True,
+        )
+        if reverse.returncode == 0:
+            log(f"[patch] already applied: {filename}")
+            continue
+
+        detail = (
+            forward.stderr.strip()
+            or forward.stdout.strip()
+            or reverse.stderr.strip()
+            or reverse.stdout.strip()
+            or "patch rejected without a diagnostic"
+        )
+        die(f"failed to apply patch {filename}: {detail}")
+
+    return applied
 
 
 def run_lpmbuild(
@@ -4845,6 +4948,18 @@ def run_lpmbuild(
         if entry:
             sources.append(entry)
 
+    declared_patches = [
+        str(raw_entry).strip()
+        for raw_entry in arr.get("PATCHES", [])
+        if str(raw_entry).strip()
+    ]
+    # PATCHES entries are source entries too. A local patch is copied from the
+    # recipe directory; a missing relative patch is fetched from the package
+    # source repository using the same rules as SOURCE.
+    for patch_entry in declared_patches:
+        if patch_entry not in sources:
+            sources.append(patch_entry)
+
     fetch_url_opt_in = scal.get("FETCH_URL", "").strip().lower() in {"1", "true", "yes", "on"}
     if fetch_url_opt_in:
         # URL is project metadata unless the recipe explicitly opts in to
@@ -4999,6 +5114,21 @@ def run_lpmbuild(
                 )
             except (FileNotFoundError, subprocess.CalledProcessError):
                 pass
+
+    patch_target = srcroot
+    extracted_target = srcroot / f"{name}-{version}"
+    if archive_path is not None and extracted_target.is_dir():
+        patch_target = extracted_target
+    elif archive_path is None:
+        source_directories = [
+            candidate
+            for candidate in srcroot.iterdir()
+            if candidate.is_dir() and candidate.name != "__pycache__"
+        ]
+        if len(source_directories) == 1:
+            patch_target = source_directories[0]
+
+    _apply_lpmbuild_patches(declared_patches, srcroot, patch_target)
 
     run_hook(
         "post_source_fetch",
