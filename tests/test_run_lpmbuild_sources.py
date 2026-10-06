@@ -577,3 +577,76 @@ def test_run_lpmbuild_post_source_fetch_hook_can_override(lpm_module, tmp_path, 
     out_path.unlink()
     for suffix in ("pkg-foo", "build-foo", "src-foo"):
         shutil.rmtree(Path(f"/tmp/{suffix}"), ignore_errors=True)
+
+
+
+@pytest.mark.skipif(shutil.which("patch") is None, reason="patch(1) is required")
+def test_run_lpmbuild_applies_declared_patches_before_prepare(
+    lpm_module, tmp_path, monkeypatch
+):
+    lpm = lpm_module
+
+    _stub_build_pipeline(lpm, monkeypatch)
+    monkeypatch.setattr(lpm, "ok", lambda msg: None)
+    monkeypatch.setattr(lpm, "warn", lambda msg: None)
+
+    payload_dir = tmp_path / "payload_dir"
+    payload_dir.mkdir()
+    (payload_dir / "message.txt").write_text("before\n", encoding="utf-8")
+
+    tarball = tmp_path / "foo-1.tar"
+    with tarfile.open(tarball, "w") as tf:
+        tf.add(payload_dir, arcname="foo-1")
+
+    patch_file = tmp_path / "message.patch"
+    patch_file.write_text(
+        textwrap.dedent(
+            """\
+            --- a/message.txt
+            +++ b/message.txt
+            @@ -1 +1 @@
+            -before
+            +after
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    script = tmp_path / "foo.lpmbuild"
+    script.write_text(
+        textwrap.dedent(
+            """
+            NAME=foo
+            VERSION=1
+            RELEASE=1
+            ARCH=noarch
+            SOURCE=('foo-1.tar')
+            PATCHES=('message.patch')
+            prepare() { :; }
+            build() { :; }
+            staging() { :; }
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    out_path, _, _, _ = lpm.run_lpmbuild(
+        script,
+        outdir=tmp_path,
+        prompt_install=False,
+        build_deps=False,
+    )
+
+    srcroot = Path("/tmp/src-foo")
+    extracted = srcroot / "foo-1"
+    assert (extracted / "message.txt").read_text(encoding="utf-8") == "after\n"
+
+    # Re-running the patch helper recognizes the reverse dry run and does not
+    # corrupt or reject an already-patched source tree.
+    assert lpm._apply_lpmbuild_patches(
+        ["message.patch"], srcroot, extracted
+    ) == 0
+
+    out_path.unlink()
+    for suffix in ("pkg-foo", "build-foo", "src-foo"):
+        shutil.rmtree(Path(f"/tmp/{suffix}"), ignore_errors=True)
