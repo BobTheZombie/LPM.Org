@@ -19,8 +19,9 @@ def validate_dependencies(dependencies):
             raise ValueError("STAGE_2_REQUIRES accepts package names only: " + dependency)
 
 
-def enqueue(state, script, outdir, meta, dependencies, overrides=None):
+def enqueue(state, script, outdir, meta, dependencies, overrides=None, final_dependencies=()):
     validate_dependencies(dependencies)
+    validate_dependencies(final_dependencies)
     directory = Path(state) / "stage2"
     directory.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256(Path(script).read_bytes()).hexdigest()
@@ -28,6 +29,7 @@ def enqueue(state, script, outdir, meta, dependencies, overrides=None):
     record = dict(name=meta.name, version=meta.version, release=meta.release,
                   arch=meta.arch, script=str(Path(script).resolve()), digest=digest,
                   outdir=str(Path(outdir).resolve()), dependencies=dependencies,
+                  final_dependencies=list(final_dependencies),
                   overrides=dataclasses.asdict(overrides) if overrides else None)
     with (directory / "queue.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -46,7 +48,61 @@ def _matches(meta, job, stage=None):
             and (stage is None or meta.get("build_stage", 2) == stage))
 
 
-def drain(state, installed, build, fetch, report=lambda message: None):
+def plan(directory, installed, fetch, read_recipe):
+    """Expand strict final-stage dependencies and reject cycles before compiling.
+
+    An edge A -> B means A's final build waits for B's final installation.
+    Ordinary deferred dependencies remain bootstrap-capable.
+    """
+    directory = Path(directory)
+    jobs = {}
+    for path in sorted(directory.glob("*.json")):
+        job = json.loads(path.read_text())
+        if job["name"] in jobs and jobs[job["name"]] != job:
+            raise RuntimeError("Multiple queued revisions for " + job["name"])
+        jobs[job["name"]] = job
+    order, visiting, done = [], [], set()
+
+    def visit(name):
+        if name in visiting:
+            cycle = visiting[visiting.index(name):] + [name]
+            raise RuntimeError("Stage 2 dependency cycle: " + " -> ".join(n + "@2" for n in cycle))
+        if name in done:
+            return
+        visiting.append(name)
+        job = jobs[name]
+        script = Path(job["script"])
+        if not script.is_file() or hashlib.sha256(script.read_bytes()).hexdigest() != job["digest"]:
+            raise RuntimeError(f"Stage 2 recipe changed or is missing: {script}; rebuild its bootstrap package")
+        for dep in job.get("final_dependencies", []):
+            validate_dependencies([dep])
+            if dep not in jobs:
+                dep_script = directory / (dep + ".lpmbuild")
+                fetch(dep, dep_script)
+                scal, arrays, _ = read_recipe(dep_script, build_stage=1)
+                if scal.get("NAME") != dep:
+                    raise RuntimeError("Stage 2 dependency must identify a package, not a provider: " + dep)
+                strict = arrays.get("STAGE_2_BUILD_REQUIRES", [])
+                ordinary = list(dict.fromkeys(arrays.get("STAGE_2_REQUIRES", []) + strict))
+                if not ordinary:
+                    raise RuntimeError("Required package has no stage 2 recipe: " + dep)
+                validate_dependencies(ordinary)
+                jobs[dep] = dict(name=dep, version=scal["VERSION"], release=scal.get("RELEASE", "1"),
+                    arch=scal.get("ARCH", job["arch"]), script=str(dep_script.resolve()),
+                    digest=hashlib.sha256(dep_script.read_bytes()).hexdigest(),
+                    dependencies=ordinary, final_dependencies=strict,
+                    outdir=job["outdir"], overrides=job["overrides"])
+            visit(dep)
+        visiting.pop()
+        done.add(name)
+        order.append(name)
+
+    for name in list(jobs):
+        visit(name)
+    return jobs, order
+
+
+def drain(state, installed, build, fetch, report=lambda message: None, *, read_recipe=None, plan_only=False):
     """Return final build results; retain declined/failed jobs for retry.
 
     A nonblocking scheduler lock prevents two builders rebuilding the same job.
@@ -62,12 +118,36 @@ def drain(state, installed, build, fetch, report=lambda message: None):
             fcntl.flock(scheduler_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return results
+        planned = {}
+        if read_recipe:
+            planned, order = plan(directory, installed(), fetch, read_recipe)
+            graph = {"order": [n + "@2" for n in order], "edges": [
+                {"package": name + "@2", "requires": dep + "@2"}
+                for name, job in planned.items() for dep in job.get("final_dependencies", [])]}
+            if plan_only:
+                return graph
+            report("[stage2] final build order: " + " -> ".join(graph["order"]))
+            # Persist discovered jobs before any compilation, for crash recovery.
+            with (directory / "queue.lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                for name in order:
+                    job = planned[name]
+                    key = hashlib.sha256(f"{name}:{job['version']}:{job['release']}:{job['arch']}".encode()).hexdigest()
+                    path = directory / (key + ".json")
+                    if not path.exists():
+                        temp = path.with_suffix(".tmp")
+                        temp.write_text(json.dumps(job))
+                        temp.replace(path)
         attempted = set()
         while True:
             jobs = [path for path in sorted(directory.glob("*.json"))
                     if path not in attempted]
             if not jobs:
                 break
+            if read_recipe:
+                planned, order = plan(directory, installed(), fetch, read_recipe)
+                rank = {name: i for i, name in enumerate(order)}
+                jobs.sort(key=lambda p: rank[json.loads(p.read_text())["name"]])
             for path in jobs:
                 attempted.add(path)
                 job = json.loads(path.read_text(encoding="utf-8"))
@@ -76,6 +156,9 @@ def drain(state, installed, build, fetch, report=lambda message: None):
                 if _matches(base, job, 2):
                     path.unlink()
                     continue
+                if job["name"] in planned and not base:
+                    build(Path(job["script"]), Path(job["outdir"]), 1, job["overrides"])
+                    base = installed().get(job["name"])
                 # Refused bootstrap installs and superseded versions stay pending.
                 if not _matches(base, job, 1):
                     continue
@@ -99,6 +182,9 @@ def drain(state, installed, build, fetch, report=lambda message: None):
                     provides = meta.get("provides", []) if isinstance(meta, dict) else meta.provides
                     capabilities.update(re.split(r"[<>= ]", cap, 1)[0] for cap in provides)
                 if not all(dep in capabilities for dep in job["dependencies"]):
+                    continue
+                if any(not _matches(current.get(dep), planned[dep], 2)
+                       for dep in job.get("final_dependencies", [])):
                     continue
                 report(f"[stage2] rebuilding {job["name"]} after deferred dependencies were installed")
                 result = build(script, Path(job["outdir"]), 2, job["overrides"])

@@ -714,3 +714,26 @@ result_with_assump = solver.solve([v1])  # assume A is true temporarily
 
 Subsequent calls to `solve()` reuse variable activity and learned clauses
 accumulated from previous runs, enabling efficient incremental solving.
+
+### Stage 2 dependency graphs
+
+`STAGE_2_REQUIRES=("systemd")` accepts an installed bootstrap dependency.
+`STAGE_2_BUILD_REQUIRES=("systemd")` additionally requires the matching final
+stage 2 package to be installed before this recipe's final build. Keep these
+out of ordinary bootstrap dependency arrays.
+
+For example, dbus can require systemd's final stage, while systemd requires
+util-linux's final stage. LPM recursively resolves those recipes, rejects
+final-stage cycles before compilation, persists discovered jobs, and builds
+prerequisites first. A declined final installation leaves its dependents pending.
+A dependency that has no declared stage 2 pass cannot satisfy a strict edge.
+Strict edges identify package names, not virtual provides. Existing installed
+metadata must match the resolved recipe's version, release and architecture.
+Recipe digests guard queued jobs against changed source instructions.
+
+Run `lpm rebuild-stage2 --plan` to print the ordered `package@2` nodes and edges
+as JSON without building or installing. Planning may fetch dependency recipes.
+Run `lpm rebuild-stage2 --install-default y` to execute/resume the queue.
+
+Do not declare a strict final-stage cycle: if util-linux needs only bootstrap
+systemd, use `STAGE_2_REQUIRES=("systemd")` there, not a strict final-stage edge.

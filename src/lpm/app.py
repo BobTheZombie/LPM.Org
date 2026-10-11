@@ -3635,6 +3635,7 @@ def _capture_lpmbuild_metadata(
         _emit_array_line("BUILD_REQUIRES", "build_requires", "makedepends"),
         _emit_array_line("BUILD_OPTIONS", "build_options"),
         _emit_array_line("STAGE_2_REQUIRES", "stage_2_requires"),
+        _emit_array_line("STAGE_2_BUILD_REQUIRES", "stage_2_build_requires"),
         _emit_array_line("REQUIRES_PYTHON_DEPENDENCIES", "requires_python_dependencies"),
         _emit_array_line("PROVIDES", "provides"),
         _emit_array_line("CONFLICTS", "conflicts"),
@@ -3671,6 +3672,7 @@ def _capture_lpmbuild_metadata(
             "BUILD_REQUIRES",
             "BUILD_OPTIONS",
             "STAGE_2_REQUIRES",
+            "STAGE_2_BUILD_REQUIRES",
             "REQUIRES_PYTHON_DEPENDENCIES",
             "PROVIDES",
             "CONFLICTS",
@@ -4350,7 +4352,8 @@ def run_lpmbuild(
     mkinitcpio_preset = scal.get("MKINITCPIO_PRESET") or None
     if not name or not version:
         die("lpmbuild missing NAME or VERSION")
-    stage2_requires = arr.get("STAGE_2_REQUIRES", [])
+    stage2_final_requires = arr.get("STAGE_2_BUILD_REQUIRES", [])
+    stage2_requires = list(dict.fromkeys(arr.get("STAGE_2_REQUIRES", []) + stage2_final_requires))
     if stage2_requires:
         from .stage2 import validate_dependencies
         validate_dependencies(stage2_requires)
@@ -5371,7 +5374,7 @@ def run_lpmbuild(
     if stage2_requires and _build_stage == 1 and prompt_install and build_deps:
         from .stage2 import enqueue
         enqueue(_current_state_dir(), script_path, outdir, meta, stage2_requires,
-                overrides)
+                overrides, final_dependencies=stage2_final_requires)
     if prompt_install and build_deps and not _defer_stage2 and _build_stage == 1:
         final_result = _run_stage2_queue(prompt_default=prompt_default,
                                         fetcher=fetch_fn,
@@ -5381,7 +5384,7 @@ def run_lpmbuild(
     return out, duration, phase_count, split_records
 
 
-def _run_stage2_queue(*, prompt_default=None, fetcher=None, on_built_package=None):
+def _run_stage2_queue(*, prompt_default=None, fetcher=None, on_built_package=None, plan_only=False):
     from .stage2 import drain
 
     def installed():
@@ -5401,11 +5404,13 @@ def _run_stage2_queue(*, prompt_default=None, fetcher=None, on_built_package=Non
 
     return drain(_current_state_dir(), installed, build,
                  fetcher or _resolve_lpm_attr("fetch_lpmbuild", fetch_lpmbuild),
-                 report=log)
+                 report=log, read_recipe=_capture_lpmbuild_metadata, plan_only=plan_only)
 
 
 def cmd_rebuild_stage2(a):
-    _run_stage2_queue(prompt_default=a.install_default)
+    result = _run_stage2_queue(prompt_default=a.install_default, plan_only=a.plan)
+    if a.plan:
+        print(json.dumps(result, indent=2))
 
 # =========================== CLI commands =====================================
 _PRIVILEGED_COMMANDS = {"install", "installpkg", "remove", "removepkg", "upgrade", "upgradepkg", "rollback", "bootstrap-chroot", "installroot", "buildchroot"}
@@ -7690,6 +7695,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.set_defaults(func=cmd_splitpkg)
 
     sp=sub.add_parser("rebuild-stage2", help="resume pending deferred stage 2 builds")
+    sp.add_argument("--plan", action="store_true", help="resolve and print the stage 2 dependency graph without building")
     sp.add_argument("--install-default", choices=("y", "n"), default=None)
     sp.set_defaults(func=cmd_rebuild_stage2)
 
