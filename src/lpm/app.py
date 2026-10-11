@@ -822,6 +822,7 @@ class PkgMeta:
     developer: str = ""
     requires: List[str] = field(default_factory=list)
     build_requires: List[str] = field(default_factory=list)
+    build_stage: int = 2
     conflicts: List[str] = field(default_factory=list)
     obsoletes: List[str] = field(default_factory=list)
     provides: List[str] = field(default_factory=list)
@@ -848,7 +849,7 @@ class PkgMeta:
             name=d["name"], version=d["version"], release=d.get("release","1"),
             arch=d.get("arch","noarch"), summary=d.get("summary",""), url=d.get("url",""),
             license=d.get("license",""), developer=d.get("developer",""), requires=d.get("requires",[]), conflicts=d.get("conflicts",[]),
-            build_requires=d.get("build_requires", []), obsoletes=d.get("obsoletes",[]), provides=d.get("provides",[]), provides_by_package=d.get("provides_by_package", {}), symbols=d.get("symbols",[]), recommends=d.get("recommends",[]),
+            build_stage=d.get("build_stage", 2), build_requires=d.get("build_requires", []), obsoletes=d.get("obsoletes",[]), provides=d.get("provides",[]), provides_by_package=d.get("provides_by_package", {}), symbols=d.get("symbols",[]), recommends=d.get("recommends",[]),
             suggests=d.get("suggests",[]), size=d.get("size",0), md5=d.get("md5"), sha256=d.get("sha256"), blob=d.get("blob"),
             lpminstall=d.get("lpminstall"),
             repo=repo_name, prio=prio, bias=bias, decay=decay, kernel=d.get("kernel", False),
@@ -3632,6 +3633,7 @@ def _capture_lpmbuild_metadata(
         _emit_array_line("REQUIRES", "requires", "depends"),
         _emit_array_line("BUILD_REQUIRES", "build_requires", "makedepends"),
         _emit_array_line("BUILD_OPTIONS", "build_options"),
+        _emit_array_line("STAGE_2_REQUIRES", "stage_2_requires"),
         _emit_array_line("REQUIRES_PYTHON_DEPENDENCIES", "requires_python_dependencies"),
         _emit_array_line("PROVIDES", "provides"),
         _emit_array_line("CONFLICTS", "conflicts"),
@@ -3664,6 +3666,7 @@ def _capture_lpmbuild_metadata(
             "REQUIRES",
             "BUILD_REQUIRES",
             "BUILD_OPTIONS",
+            "STAGE_2_REQUIRES",
             "REQUIRES_PYTHON_DEPENDENCIES",
             "PROVIDES",
             "CONFLICTS",
@@ -4309,6 +4312,8 @@ def run_lpmbuild(
     executor: Optional[ThreadPoolExecutor] = None,
     cpu_overrides: Optional[CpuOverrides] = None,
     on_built_package: Optional[Callable[[Path, PkgMeta], None]] = None,
+    _build_stage: int = 1,
+    _defer_stage2: bool = False,
 ) -> Tuple[Path, float, int, List[Tuple[Path, PkgMeta]]]:
     script_path = script.resolve()
     script_dir = script_path.parent
@@ -4341,6 +4346,16 @@ def run_lpmbuild(
     mkinitcpio_preset = scal.get("MKINITCPIO_PRESET") or None
     if not name or not version:
         die("lpmbuild missing NAME or VERSION")
+    stage2_requires = arr.get("STAGE_2_REQUIRES", [])
+    if stage2_requires:
+        from .stage2 import validate_dependencies
+        validate_dependencies(stage2_requires)
+        # Require explicit final build instructions; other phases may fall back.
+        if subprocess.run(
+            ["bash", "-c", 'source "$1"; declare -F build_stage2 >/dev/null',
+             "bash", str(script_path)],
+        ).returncode:
+            die("STAGE_2_REQUIRES requires a build_stage2() function")
     build_options = _parse_lpmbuild_options(arr.get("BUILD_OPTIONS", []))
 
     building_stack = tuple(_building_stack or ())
@@ -4466,6 +4481,7 @@ def run_lpmbuild(
                 executor=executor,
                 cpu_overrides=overrides,
                 on_built_package=on_built_package,
+                _defer_stage2=True,
             )
             if prompt_install:
                 _refresh_capabilities_from_installed()
@@ -5146,6 +5162,9 @@ def run_lpmbuild(
         phase_aliases: Tuple[str, ...] = ()
         if func == "staging":
             phase_aliases = ("install",)
+        if _build_stage == 2:
+            phase_aliases = (func, *phase_aliases)
+            func = f"{func}_stage2"
         _resolve_lpm_attr("sandboxed_run", sandboxed_run)(
             func,
             cwd,
@@ -5157,6 +5176,7 @@ def run_lpmbuild(
             aliases=phase_aliases,
         )
 
+    env["LPM_BUILD_STAGE"] = str(_build_stage)
     phases = ("prepare", "build", "staging")
     with progress_bar(
         phases,
@@ -5267,7 +5287,8 @@ def run_lpmbuild(
         name=name, version=version, release=release, arch=arch,
         summary=summary, url=url, license=license_, developer=developer,
         requires=arr.get("REQUIRES", []),
-        build_requires=arr.get("BUILD_REQUIRES", []),
+        build_stage=_build_stage if stage2_requires else 2,
+        build_requires=list(arr.get("BUILD_REQUIRES", [])) + (stage2_requires if _build_stage == 2 else []),
         provides=provides_list,
         provides_by_package=provides_by_package,
         conflicts=arr.get("CONFLICTS", []),
@@ -5343,7 +5364,44 @@ def run_lpmbuild(
             _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(
                 split_path, kind="split package", default=prompt_default
             )
+    if stage2_requires and _build_stage == 1 and prompt_install and build_deps:
+        from .stage2 import enqueue
+        enqueue(_current_state_dir(), script_path, outdir, meta, stage2_requires,
+                overrides)
+    if prompt_install and build_deps and not _defer_stage2 and _build_stage == 1:
+        final_result = _run_stage2_queue(prompt_default=prompt_default,
+                                        fetcher=fetch_fn,
+                                        on_built_package=on_built_package)
+        if name in final_result:
+            return final_result[name]
     return out, duration, phase_count, split_records
+
+
+def _run_stage2_queue(*, prompt_default=None, fetcher=None, on_built_package=None):
+    from .stage2 import drain
+
+    def installed():
+        conn = db()
+        try:
+            return db_installed(conn)
+        finally:
+            conn.close()
+
+    def build(script, outdir, stage, overrides):
+        return run_lpmbuild(
+            script, outdir, prompt_default=prompt_default, fetcher=fetcher,
+            cpu_overrides=CpuOverrides(**overrides) if overrides else None,
+            on_built_package=on_built_package, _build_stage=stage,
+            _defer_stage2=True,
+        )
+
+    return drain(_current_state_dir(), installed, build,
+                 fetcher or _resolve_lpm_attr("fetch_lpmbuild", fetch_lpmbuild),
+                 report=log)
+
+
+def cmd_rebuild_stage2(a):
+    _run_stage2_queue(prompt_default=a.install_default)
 
 # =========================== CLI commands =====================================
 _PRIVILEGED_COMMANDS = {"install", "installpkg", "remove", "removepkg", "upgrade", "upgradepkg", "rollback", "bootstrap-chroot", "installroot", "buildchroot"}
@@ -5354,6 +5412,7 @@ _STATE_COMMANDS = {
     "build",
     "buildchroot",
     "buildpkg",
+    "rebuild-stage2",
     "clean",
     "files",
     "history",
@@ -7625,6 +7684,10 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--output", type=Path, help=f"explicit output {EXT} path")
     sp.add_argument("--no-sign", action="store_true", help="do not sign even if key exists")
     sp.set_defaults(func=cmd_splitpkg)
+
+    sp=sub.add_parser("rebuild-stage2", help="resume pending deferred stage 2 builds")
+    sp.add_argument("--install-default", choices=("y", "n"), default=None)
+    sp.set_defaults(func=cmd_rebuild_stage2)
 
     sp=sub.add_parser("buildpkg", help=f"Build a {EXT} package from a .lpmbuild script")
     sp.add_argument("script", nargs="?", type=Path)
