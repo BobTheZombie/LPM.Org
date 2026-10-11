@@ -135,6 +135,13 @@ class Stage2Tests(unittest.TestCase):
         _, arrays, _ = app._capture_lpmbuild_metadata(self.script)
         self.assertEqual(arrays['STAGE_2_REQUIRES'], ['introspection'])
 
+    def test_stage_specific_runtime_metadata(self):
+        self.script.write_text(self.script.read_text() + '\nif [ "${LPM_BUILD_STAGE:-1}" = 2 ]; then REQUIRES=(pam util-linux-libs); fi\n')
+        _, initial, _ = app._capture_lpmbuild_metadata(self.script, build_stage=1)
+        _, final, _ = app._capture_lpmbuild_metadata(self.script, build_stage=2)
+        self.assertEqual(initial['REQUIRES'], [])
+        self.assertEqual(final['REQUIRES'], ['pam', 'util-linux-libs'])
+
     def test_actual_recipe_cycle_and_phase_fallback(self):
         # Execute shell phases for real; stub only packaging, installation and DB.
         self.current.clear()
