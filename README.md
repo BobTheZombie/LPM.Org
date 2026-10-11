@@ -357,6 +357,16 @@ ordinary dependency on that package. Optional `prepare_stage2()` and
 `staging_stage2()` override the normal phases; otherwise `prepare()` and
 `staging()` (or `install()`) are reused. All final-pass phases receive
 `LPM_BUILD_STAGE=2`; bootstrap phases receive `LPM_BUILD_STAGE=1`.
+The same variable is set while reading recipe metadata, so final-only runtime
+dependencies and capabilities can be declared without entering the bootstrap
+resolver:
+
+```bash
+if [ "${LPM_BUILD_STAGE:-1}" = 2 ]; then
+    REQUIRES+=("pam" "util-linux-libs")
+fi
+```
+
 
 Pending jobs are persisted under `/var/lib/lpm/stage2` (or `$LPM_STATE_DIR/stage2`).
 The package manifest records `build_stage=1` for bootstrap packages and

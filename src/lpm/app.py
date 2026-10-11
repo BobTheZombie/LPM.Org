@@ -3542,6 +3542,7 @@ def _merge_provides_with_map(
 
 def _capture_lpmbuild_metadata(
     script: Path,
+    *, build_stage: int = 1,
 ) -> Tuple[Dict[str, str], Dict[str, List[str]], Dict[str, Dict[str, List[str]]]]:
     """
     Source the .lpmbuild (bash) and dump scalars, arrays, and associative maps.
@@ -3646,7 +3647,10 @@ def _capture_lpmbuild_metadata(
     bcmd = "\n".join(lines)
 
     try:
-        proc = subprocess.run(["bash", "-c", bcmd], capture_output=True, check=True)
+        proc = subprocess.run(
+            ["bash", "-c", bcmd], capture_output=True, check=True,
+            env={**os.environ, "LPM_BUILD_STAGE": str(build_stage)},
+        )
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or b"").decode("utf-8", errors="replace").strip()
         stdout = (exc.stdout or b"").decode("utf-8", errors="replace").strip()
@@ -4324,7 +4328,7 @@ def run_lpmbuild(
         os.environ["LPM_SPLIT_PACKAGE"] = shutil.which("true") or "/bin/true"
 
     try:
-        scal, arr, maps = _capture_lpmbuild_metadata(script_path)
+        scal, arr, maps = _capture_lpmbuild_metadata(script_path, build_stage=_build_stage)
     finally:
         if not had_split_cmd:
             with contextlib.suppress(KeyError):
