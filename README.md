@@ -328,7 +328,59 @@ different installed package are retained rather than deleted.
 
   behaviour, while explicit URLs and `foo::https://example.com/src` rename
   syntax are honoured as-is.【F:src/lpm/app.py†L4044-L4092】
-  For Python dependencies that should be sourced from PyPI, add a
+  For bootstrap dependency cycles, declare deferred dependencies with
+`STAGE_2_REQUIRES` and provide a `build_stage2()` function:
+
+```bash
+STAGE_2_REQUIRES=("gobject-introspection")
+
+build() {
+    cd "$SRCROOT/${NAME}-${VERSION}"
+    meson setup build --prefix=/usr -Dintrospection=disabled
+    meson compile -C build
+}
+
+build_stage2() {
+    cd "$SRCROOT/${NAME}-${VERSION}"
+    meson setup build --prefix=/usr -Dintrospection=enabled
+    meson compile -C build
+}
+```
+
+Do **not** also put deferred dependencies in `REQUIRES` or `BUILD_REQUIRES`:
+those arrays are resolved before the bootstrap build. `STAGE_2_REQUIRES`
+currently accepts plain package names (installed `PROVIDES` are also honored).
+The scheduler installs the bootstrap package first, builds/installs the deferred
+dependencies, then rebuilds the original recipe from freshly prepared sources.
+An installed bootstrap package can therefore satisfy a deferred dependency's
+ordinary dependency on that package. Optional `prepare_stage2()` and
+`staging_stage2()` override the normal phases; otherwise `prepare()` and
+`staging()` (or `install()`) are reused. All final-pass phases receive
+`LPM_BUILD_STAGE=2`; bootstrap phases receive `LPM_BUILD_STAGE=1`.
+
+Pending jobs are persisted under `/var/lib/lpm/stage2` (or `$LPM_STATE_DIR/stage2`).
+The package manifest records `build_stage=1` for bootstrap packages and
+`build_stage=2` for final packages. The final install replaces the bootstrap
+payload even when its version/release is unchanged. Completed jobs are removed,
+so installing a dependency again does not continually rebuild its consumers.
+Existing packages without this marker are treated as final packages.
+
+Installation transactions never launch compilation. The build scheduler checks
+pending jobs after a dependency-enabled `buildpkg` completes. If a dependency
+was installed separately, resume ready jobs with:
+
+```sh
+lpm rebuild-stage2 --install-default y
+```
+
+Declined installations and failed final builds remain queued. Keep the original
+recipe and any local sources available until completion; if its contents change,
+rebuild the bootstrap package to replace the queued recipe revision. `--no-deps`
+and builds with installation disabled do not enqueue or run deferred builds.
+The final build records deferred dependencies as build dependencies, not as
+runtime dependencies; recipes must separately declare any true runtime needs.
+
+For Python dependencies that should be sourced from PyPI, add a
   `REQUIRES_PYTHON_DEPENDENCIES=()` array with standard pip requirement
   strings such as `('requests==2.0')`; `lpm buildpkg` canonicalises the
   distribution names, skips entries already provided by packages exposing
