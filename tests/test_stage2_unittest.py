@@ -142,6 +142,57 @@ class Stage2Tests(unittest.TestCase):
         self.assertEqual(initial['REQUIRES'], [])
         self.assertEqual(final['REQUIRES'], ['pam', 'util-linux-libs'])
 
+    def strict_setup(self, cycle=False):
+        self.script.write_text(self.script.read_text() + '\nSTAGE_2_BUILD_REQUIRES=(finaldep)\n')
+        stage2.enqueue(self.root, self.script, self.root, self.meta,
+                       ['finaldep'], final_dependencies=['finaldep'])
+        def fetch(name, dest):
+            dest.write_text('NAME=finaldep\nVERSION=1\nRELEASE=1\nARCH=noarch\n'
+                'STAGE_2_REQUIRES=(bootstrap)\nbuild_stage2() { :; }\n' +
+                ('STAGE_2_BUILD_REQUIRES=(bootstrap)\n' if cycle else ''))
+        def build(script, outdir, stage, overrides):
+            scal, _, _ = app._capture_lpmbuild_metadata(script)
+            name = scal['NAME']
+            self.calls.append((name, stage))
+            self.current[name] = dataclasses.asdict(app.PkgMeta(name, '1', arch='noarch', build_stage=stage))
+            return name
+        return fetch, build
+
+    def test_strict_recursive_order(self):
+        fetch, build = self.strict_setup()
+        result = stage2.drain(self.root, lambda: self.current, build, fetch,
+                              read_recipe=app._capture_lpmbuild_metadata)
+        self.assertEqual(self.calls, [('finaldep', 1), ('finaldep', 2), ('bootstrap', 2)])
+        self.assertEqual(set(result), {'finaldep', 'bootstrap'})
+
+    def test_strict_cycle_before_any_build(self):
+        fetch, build = self.strict_setup(cycle=True)
+        with self.assertRaisesRegex(RuntimeError, 'bootstrap@2 -> finaldep@2 -> bootstrap@2'):
+            stage2.drain(self.root, lambda: self.current, build, fetch,
+                         read_recipe=app._capture_lpmbuild_metadata)
+        self.assertEqual(self.calls, [])
+
+    def test_plan_exports_graph_without_building(self):
+        fetch, build = self.strict_setup()
+        result = stage2.drain(self.root, lambda: self.current, build, fetch,
+                              read_recipe=app._capture_lpmbuild_metadata, plan_only=True)
+        self.assertEqual(result['order'], ['finaldep@2', 'bootstrap@2'])
+        self.assertEqual(len(result['edges']), 1)
+        self.assertEqual(self.calls, [])
+
+    def test_declined_strict_final_blocks_dependent_and_resumes(self):
+        fetch, build = self.strict_setup()
+        def decline(script, outdir, stage, overrides):
+            if script.name == 'finaldep.lpmbuild' and stage == 2:
+                return None
+            return build(script, outdir, stage, overrides)
+        stage2.drain(self.root, lambda: self.current, decline, fetch,
+                     read_recipe=app._capture_lpmbuild_metadata)
+        self.assertEqual(self.current['bootstrap']['build_stage'], 1)
+        stage2.drain(self.root, lambda: self.current, build, fetch,
+                     read_recipe=app._capture_lpmbuild_metadata)
+        self.assertEqual(self.current['bootstrap']['build_stage'], 2)
+
     def test_actual_recipe_cycle_and_phase_fallback(self):
         # Execute shell phases for real; stub only packaging, installation and DB.
         self.current.clear()
