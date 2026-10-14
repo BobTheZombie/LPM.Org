@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from email.parser import Parser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .parallel import ordered_map, configure_build_environment
+from .python_deps import aliases as python_aliases, satisfied as python_dependency_satisfied
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Iterable, Callable, BinaryIO, Mapping
@@ -1032,6 +1033,10 @@ def db_installed(conn) -> Dict[str,dict]:
             "explicit": bool(r[8]),
             "build_stage": int(r[9]),
         }
+    # Older Python packages predate explicit distribution aliases.
+    for name, metadata in res.items():
+        metadata["provides"] = list(dict.fromkeys(
+            metadata["provides"] + sorted(python_aliases(name, metadata["provides"]))))
     return res
 
 def _store_installed_package(conn, meta, manifest, explicit):
@@ -2346,7 +2351,7 @@ def _collect_python_package_metadata(
     provides: List[str] = []
     canonical = canonicalize_name(dist_name)
     if canonical:
-        provides.append(f"pypi({canonical})")
+        provides.extend([f"pypi({canonical})", canonical])
 
     return {
         "name": pkg_name,
@@ -4579,6 +4584,15 @@ def run_lpmbuild(
                     if manage_executor and local_executor is not None:
                         local_executor.shutdown(wait=True)
 
+        built_python_dependencies = {}
+
+        def _python_dep_satisfied(spec: str) -> bool:
+            conn = db()
+            try:
+                return python_dependency_satisfied(spec, {**db_installed(conn), **built_python_dependencies})
+            finally:
+                conn.close()
+
         for raw_spec in arr.get("REQUIRES_PYTHON_DEPENDENCIES", []):
             spec = (raw_spec or "").strip()
             if not spec:
@@ -4591,16 +4605,9 @@ def run_lpmbuild(
             canonical_name = canonicalize_name(requirement.name or "")
             if not canonical_name:
                 continue
-            capability_names = {canonical_name}
-            trimmed_name: Optional[str] = None
-            if canonical_name.startswith("python-"):
-                trimmed_name = canonical_name[len("python-") :]
-                if trimmed_name:
-                    capability_names.add(trimmed_name)
-            if any(name in capabilities for name in capability_names):
+            if _python_dep_satisfied(spec):
                 continue
-            if any(f"pypi({name})" in capabilities for name in capability_names):
-                continue
+            trimmed_name = canonical_name[7:] if canonical_name.startswith("python-") else None
             key = ("python", canonical_name)
             if key in seen:
                 continue
@@ -4616,6 +4623,7 @@ def run_lpmbuild(
             python_to_build.append((spec, canonical_name))
 
         def _register_python_capabilities_from_meta(meta: PkgMeta, canonical_name: str) -> None:
+            built_python_dependencies[meta.name] = dataclasses.asdict(meta)
             _register_meta_capabilities(meta)
             provided_caps = [
                 cap
@@ -4628,16 +4636,6 @@ def run_lpmbuild(
                 meta_canonical = canonicalize_name(getattr(meta, "name", "") or "")
                 if meta_canonical:
                     capabilities.add(f"pypi({meta_canonical})")
-
-        def _python_dep_satisfied(canonical_name: str) -> bool:
-            capability_names = {canonical_name}
-            if canonical_name.startswith("python-"):
-                trimmed = canonical_name[len("python-") :]
-                if trimmed:
-                    capability_names.add(trimmed)
-            if any(name in capabilities for name in capability_names):
-                return True
-            return any(f"pypi({name})" in capabilities for name in capability_names)
 
         def _build_python_dep(spec: str, canonical_name: str, idx: Optional[int] = None, total: Optional[int] = None):
             if idx is not None and total is not None:
@@ -4673,7 +4671,7 @@ def run_lpmbuild(
                     leave=True,
                 ) as pbar:
                     for idx, (spec, canonical_name) in enumerate(pbar, start=1):
-                        if _python_dep_satisfied(canonical_name):
+                        if _python_dep_satisfied(spec):
                             continue
                         pbar.set_description(f"[deps] pip {canonical_name}")
                         _build_python_dep(spec, canonical_name, idx, total)
@@ -4693,7 +4691,7 @@ def run_lpmbuild(
                         for idx, (spec, canonical_name) in enumerate(
                             python_to_build, start=1
                         )
-                        if not _python_dep_satisfied(canonical_name)
+                        if not _python_dep_satisfied(spec)
                     ]
                     for fut in progress_bar(
                         as_completed(futures),

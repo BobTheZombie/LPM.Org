@@ -790,3 +790,18 @@ requiring a particular instruction set. Existing CPU tuning remains available
 for compiled packages. Dependency builds, install hooks, filesystem commits and
 SQLite writers remain ordered; dependency layers do not launch simultaneous
 package builds sharing the chroot.
+
+### Reusing Python build dependencies
+
+`REQUIRES_PYTHON_DEPENDENCIES=("packaging>=24" "nuitka")` reuses installed
+LPM Python packages when their distribution versions satisfy the requirement.
+`python-packaging` aliases `packaging`, with PyPI name normalization for dashes,
+underscores and dots. New PyPI packages advertise both the unprefixed name and
+`pypi(name)`; older installed packages gain aliases when the database is read.
+Packages keep their `python-` installation names.
+
+Version constraints are checked with Python packaging semantics. Rebuilding a
+recipe does not automatically rebuild satisfying installed Python dependencies.
+Unsatisfied versions still build, and false environment markers are skipped.
+Extras and direct URL requirements are not considered satisfied solely by an
+installed base package because its metadata does not prove those requirements.
