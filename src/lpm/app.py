@@ -21,6 +21,7 @@ import importlib.util
 from datetime import datetime, timezone
 from email.parser import Parser
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from .parallel import ordered_map, configure_build_environment
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Iterable, Callable, BinaryIO, Mapping
@@ -964,7 +965,9 @@ def _open_state_db(path: Path) -> sqlite3.Connection:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     _apply_state_permissions(path.parent, directory=True)
-    c = sqlite3.connect(str(path))
+    c = sqlite3.connect(str(path), timeout=30.0)
+    c.execute("PRAGMA busy_timeout=30000")
+    c.execute("PRAGMA cache_size=-8192")
     c.execute("PRAGMA journal_mode=WAL")
     c.executescript(SCHEMA)
     cols = [r[1] for r in c.execute("PRAGMA table_info(installed)")]
@@ -2105,10 +2108,8 @@ def remove_service_files(pkg_name: str, root: Path, manifest_entries: Optional[L
 
 # =========================== Packaging helpers (.zst) ==========================
 def sha256sum(p: Path) -> str:
-    h=hashlib.sha256()
     with p.open("rb") as f:
-        for c in iter(lambda: f.read(1<<20), b""): h.update(c)
-    return h.hexdigest()
+        return hashlib.file_digest(f, "sha256").hexdigest()
 
 def _extract_symbols(p: Path) -> List[str]:
     try:
@@ -2147,6 +2148,20 @@ def collect_manifest(stagedir: Path) -> List[Dict[str, object]]:
     stagedir = stagedir.resolve()
     mani: List[Dict[str, object]] = []
     skip = {".lpm-meta.json", ".lpm-manifest.json"}
+    pending = []
+
+    def finish(item):
+        f, st, entry = item
+        try:
+            entry["sha256"] = sha256sum(f)
+        except OSError:
+            entry["sha256"] = ""
+        else:
+            if _should_extract_symbols(f, st):
+                syms = _extract_symbols(f)
+                if syms:
+                    entry["symbols"] = syms
+        return entry
 
     for root, dirs, files in os.walk(stagedir):
         root_path = Path(root)
@@ -2181,17 +2196,9 @@ def collect_manifest(stagedir: Path) -> List[Dict[str, object]]:
                 continue
 
             entry["size"] = st.st_size
-            try:
-                entry["sha256"] = sha256sum(f)
-            except OSError:
-                entry["sha256"] = ""
-            else:
-                if _should_extract_symbols(f, st):
-                    syms = _extract_symbols(f)
-                    if syms:
-                        entry["symbols"] = syms
+            pending.append((f, st, entry))
 
-            mani.append(entry)
+    mani.extend(ordered_map(finish, pending))
 
     return sorted(mani, key=lambda e: e["path"])
 
@@ -2634,7 +2641,7 @@ def open_package_tar(blob: Path, stream: bool = True) -> tarfile.TarFile:
         dctx = zstd.ZstdDecompressor()
         reader: io.BufferedIOBase = _ZstdStreamReaderWrapper(dctx.stream_reader(f), f)
         try:
-            return tarfile.open(fileobj=reader, mode="r|")
+            return tarfile.open(fileobj=reader, mode="r|", bufsize=1 << 20)
         except (tarfile.ReadError, zstd.ZstdError):
             reader.close()
             die(_ZSTD_ERROR_HELP)
@@ -4836,7 +4843,7 @@ def run_lpmbuild(
     else:
         helper_env_path = helper_path
 
-    env = os.environ.copy()
+    env = configure_build_environment(os.environ.copy())
     env.update({
         "DESTDIR": str(stagedir),
         "pkgdir": str(stagedir),
@@ -6783,8 +6790,7 @@ def installpkg(
 
         def _refresh_manifest_state(manifest: Iterable[dict]) -> List[dict]:
             """Record the payload state that is actually present on disk."""
-            realized: List[dict] = []
-            for original in manifest:
+            def refresh(original):
                 entry = dict(original)
                 dest = root / str(entry["path"]).lstrip("/")
                 st = dest.lstat()
@@ -6799,8 +6805,8 @@ def installpkg(
                 else:
                     entry.pop("link", None)
                     entry["sha256"] = sha256sum(dest)
-                realized.append(entry)
-            return realized
+                return entry
+            return list(ordered_map(refresh, manifest))
 
         @contextlib.contextmanager
         def _payload_filesystem_transaction(paths: Iterable[str]):

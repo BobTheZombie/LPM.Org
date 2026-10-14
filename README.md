@@ -759,3 +759,34 @@ lpm rebuild-stage2 --recipe /sources/packages/systemd.lpmbuild \
 strict final-stage dependencies are planned in dependency order. Use `--plan`
 to restore and inspect the graph without compiling. Failed or declined final
 installations remain pending for the next `lpm rebuild-stage2` invocation.
+
+### SMP execution and stage 2 ordering
+
+Stage 2 plans include deterministic dependency layers in `--plan` JSON. Strict
+final-stage dependencies are installed before their dependents; blocked jobs
+are reconsidered after another final installation makes progress. Declined
+final installations are attempted once per invocation. Queue snapshots and
+removals use the queue lock, including removal of already-completed jobs.
+
+File hashing, ELF symbol collection and post-install manifest refresh use a
+bounded worker pool and preserve deterministic manifests. SHA-256 uses Python's
+native file-digest implementation, backed by the installed crypto library.
+Streaming extraction uses a 1 MiB tar buffer; archive member ordering and link
+validation remain intact. Database connections allow 30 seconds for writer
+contention and use an 8 MiB page cache while retaining WAL and durable commits.
+
+`LPM_IO_WORKERS` sets file-processing concurrency (default: available CPUs,
+capped at eight). `LPM_BUILD_JOBS` sets the default Make/CMake concurrency; CPU
+availability respects process affinity. Existing `MAKEFLAGS` and
+`CMAKE_BUILD_PARALLEL_LEVEL` take precedence. Recipes with explicit `-j` values
+control their own build concurrency. For example:
+
+```sh
+LPM_IO_WORKERS=4 LPM_BUILD_JOBS=6 lpm rebuild-stage2 --install-default y
+```
+
+These changes work on Ryzen (including Zen 2) and other architectures without
+requiring a particular instruction set. Existing CPU tuning remains available
+for compiled packages. Dependency builds, install hooks, filesystem commits and
+SQLite writers remain ordered; dependency layers do not launch simultaneous
+package builds sharing the chroot.

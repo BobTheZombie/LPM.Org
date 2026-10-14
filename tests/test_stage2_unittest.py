@@ -178,6 +178,7 @@ class Stage2Tests(unittest.TestCase):
                               read_recipe=app._capture_lpmbuild_metadata, plan_only=True)
         self.assertEqual(result['order'], ['finaldep@2', 'bootstrap@2'])
         self.assertEqual(len(result['edges']), 1)
+        self.assertEqual(result['layers'], [['finaldep@2'], ['bootstrap@2']])
         self.assertEqual(self.calls, [])
 
     def test_declined_strict_final_blocks_dependent_and_resumes(self):
@@ -192,6 +193,34 @@ class Stage2Tests(unittest.TestCase):
         stage2.drain(self.root, lambda: self.current, build, fetch,
                      read_recipe=app._capture_lpmbuild_metadata)
         self.assertEqual(self.current['bootstrap']['build_stage'], 2)
+
+    def test_dynamic_dependency_completion_revisits_blocked_parent(self):
+        self.current['introspection'] = dict(name='introspection', version='1', release='1', arch='noarch', build_stage=1)
+        self.current['extra'] = dict(name='extra', version='1', release='1', arch='noarch', build_stage=1)
+        extra = self.root/'extra.lpmbuild'
+        extra.write_text('NAME=extra\nVERSION=1\nARCH=noarch\nSTAGE_2_REQUIRES=(introspection)\nbuild_stage2() { :; }\n')
+        stage2.enqueue(self.root, extra, self.root,
+                       app.PkgMeta('extra', '1', arch='noarch', build_stage=1), ['introspection'])
+        # The first install attempt is declined, but another completed final
+        # build makes the dependency available within this scheduler run.
+        self.current.pop('introspection')
+        finals = []
+        def fetch(name, dest):
+            dest.write_text(name)
+        def build(script, outdir, stage, overrides):
+            if stage == 2:
+                name = 'extra' if script == extra else 'bootstrap'
+                finals.append(name)
+                self.current[name]['build_stage'] = 2
+                self.current['introspection'] = dict(name='introspection', provides=[])
+            elif finals or script.name == 'introspection.lpmbuild':
+                # First attempt stays unavailable; second makes it ready.
+                if getattr(build, 'attempted', False):
+                    self.current['introspection'] = dict(name='introspection', provides=[])
+                build.attempted = True
+        stage2.drain(self.root, lambda: self.current, build, fetch,
+                     read_recipe=app._capture_lpmbuild_metadata)
+        self.assertEqual(finals, ['extra', 'bootstrap'])
 
     def test_actual_recipe_cycle_and_phase_fallback(self):
         # Execute shell phases for real; stub only packaging, installation and DB.

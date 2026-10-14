@@ -56,11 +56,13 @@ def plan(directory, installed, fetch, read_recipe):
     """
     directory = Path(directory)
     jobs = {}
-    for path in sorted(directory.glob("*.json")):
-        job = json.loads(path.read_text())
-        if job["name"] in jobs and jobs[job["name"]] != job:
-            raise RuntimeError("Multiple queued revisions for " + job["name"])
-        jobs[job["name"]] = job
+    with (directory / "queue.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_SH)
+        for path in sorted(directory.glob("*.json")):
+            job = json.loads(path.read_text())
+            if job["name"] in jobs and jobs[job["name"]] != job:
+                raise RuntimeError("Multiple queued revisions for " + job["name"])
+            jobs[job["name"]] = job
     order, visiting, done = [], [], set()
 
     def visit(name):
@@ -74,7 +76,7 @@ def plan(directory, installed, fetch, read_recipe):
         script = Path(job["script"])
         if not script.is_file() or hashlib.sha256(script.read_bytes()).hexdigest() != job["digest"]:
             raise RuntimeError(f"Stage 2 recipe changed or is missing: {script}; rebuild its bootstrap package")
-        for dep in job.get("final_dependencies", []):
+        for dep in sorted(job.get("final_dependencies", [])):
             validate_dependencies([dep])
             if dep not in jobs:
                 dep_script = directory / (dep + ".lpmbuild")
@@ -97,7 +99,7 @@ def plan(directory, installed, fetch, read_recipe):
         done.add(name)
         order.append(name)
 
-    for name in list(jobs):
+    for name in sorted(list(jobs)):
         visit(name)
     return jobs, order
 
@@ -124,6 +126,11 @@ def drain(state, installed, build, fetch, report=lambda message: None, *, read_r
             graph = {"order": [n + "@2" for n in order], "edges": [
                 {"package": name + "@2", "requires": dep + "@2"}
                 for name, job in planned.items() for dep in job.get("final_dependencies", [])]}
+            levels = {}
+            for name in order:
+                levels[name] = 1 + max((levels[dep] for dep in planned[name].get("final_dependencies", [])), default=-1)
+            graph["layers"] = [[name + "@2" for name in order if levels[name] == level]
+                               for level in sorted(set(levels.values()))]
             if plan_only:
                 return graph
             report("[stage2] final build order: " + " -> ".join(graph["order"])
@@ -140,6 +147,7 @@ def drain(state, installed, build, fetch, report=lambda message: None, *, read_r
                         temp.write_text(json.dumps(job))
                         temp.replace(path)
         attempted = set()
+        blocked = set()
         while True:
             jobs = [path for path in sorted(directory.glob("*.json"))
                     if path not in attempted]
@@ -155,7 +163,10 @@ def drain(state, installed, build, fetch, report=lambda message: None, *, read_r
                 current = installed()
                 base = current.get(job["name"])
                 if _matches(base, job, 2):
-                    path.unlink()
+                    with (directory / "queue.lock").open("a") as lock:
+                        fcntl.flock(lock, fcntl.LOCK_EX)
+                        if path.exists() and json.loads(path.read_text()) == job:
+                            path.unlink()
                     continue
                 if job["name"] in planned and not base:
                     build(Path(job["script"]), Path(job["outdir"]), 1, job["overrides"])
@@ -185,14 +196,18 @@ def drain(state, installed, build, fetch, report=lambda message: None, *, read_r
                     provides = meta.get("provides", []) if isinstance(meta, dict) else meta.provides
                     capabilities.update(re.split(r"[<>= ]", cap, 1)[0] for cap in provides)
                 if not all(dep in capabilities for dep in job["dependencies"]):
+                    blocked.add(path)
                     continue
                 if any(not _matches(current.get(dep), planned[dep], 2)
                        for dep in job.get("final_dependencies", [])):
+                    blocked.add(path)
                     continue
                 report(f"[stage2] rebuilding {job["name"]} after deferred dependencies were installed")
                 result = build(script, Path(job["outdir"]), 2, job["overrides"])
                 results[job["name"]] = result
                 if _matches(installed().get(job["name"]), job, 2):
+                    attempted.difference_update(blocked)
+                    blocked.clear()
                     with (directory / "queue.lock").open("a") as lock:
                         fcntl.flock(lock, fcntl.LOCK_EX)
                         # A concurrent bootstrap may have replaced the job.
