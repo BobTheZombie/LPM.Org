@@ -737,3 +737,25 @@ Run `lpm rebuild-stage2 --install-default y` to execute/resume the queue.
 
 Do not declare a strict final-stage cycle: if util-linux needs only bootstrap
 systemd, use `STAGE_2_REQUIRES=("systemd")` there, not a strict final-stage edge.
+
+### Recovering deferred builds after an older scheduler
+
+Installed package records retain `build_stage`, so bootstrap installations no
+longer satisfy final-stage dependencies or remove pending rebuild jobs. Existing
+databases recover this value from the latest matching install history when
+available. Packages without recorded provenance remain unknown until rebuilt.
+
+If an older scheduler already discarded jobs, restore them from the recipes
+matching the installed package version, release and architecture:
+
+```sh
+lpm rebuild-stage2 --recipe /sources/packages/systemd.lpmbuild \
+  --recipe /sources/packages/glib2.lpmbuild \
+  --recipe /sources/packages/dbus.lpmbuild \
+  --outdir /sources/packages --install-default y
+```
+
+`--recipe` is repeatable. Recovery reuses matching installed bootstrap packages;
+strict final-stage dependencies are planned in dependency order. Use `--plan`
+to restore and inspect the graph without compiling. Failed or declined final
+installations remain pending for the next `lpm rebuild-stage2` invocation.

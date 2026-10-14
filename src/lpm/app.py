@@ -911,7 +911,8 @@ CREATE TABLE IF NOT EXISTS installed(
   requires TEXT NOT NULL,
   manifest TEXT NOT NULL,
   explicit INTEGER NOT NULL,
-  install_time INTEGER NOT NULL
+  install_time INTEGER NOT NULL,
+  build_stage INTEGER NOT NULL DEFAULT 0 CHECK(build_stage IN (0,1,2))
 );
 CREATE TABLE IF NOT EXISTS history(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -973,6 +974,25 @@ def _open_state_db(path: Path) -> sqlite3.Connection:
         c.execute("ALTER TABLE installed ADD COLUMN requires TEXT NOT NULL DEFAULT '[]'")
     if "explicit" not in cols:
         c.execute("ALTER TABLE installed ADD COLUMN explicit INTEGER NOT NULL DEFAULT 0")
+    if "build_stage" not in cols:
+        # Legacy rows have unknown provenance, not an assumed final build.
+        c.execute("ALTER TABLE installed ADD COLUMN build_stage INTEGER NOT NULL DEFAULT 0 CHECK(build_stage IN (0,1,2))")
+        current = {row[0]: row[1:] for row in c.execute("SELECT name,version,release,arch FROM installed")}
+        seen = set()
+        for name, details in c.execute("SELECT name,details FROM history WHERE action IN ('install','upgrade') ORDER BY id DESC"):
+            if name in seen or name not in current:
+                continue
+            seen.add(name)
+            try:
+                saved = json.loads(details)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(saved, dict):
+                continue
+            stage = saved.get("build_stage")
+            if stage in (1, 2) and all(str(saved.get(key, "")) == str(value)
+                    for key, value in zip(("version", "release", "arch"), current[name])):
+                c.execute("UPDATE installed SET build_stage=? WHERE name=?", (stage, name))
     c.commit()
     _apply_state_permissions(path, directory=False)
     return c
@@ -995,7 +1015,7 @@ def db_installed(conn) -> Dict[str,dict]:
         return override(conn)
     res = {}
     rows = conn.execute(
-        "SELECT name,version,release,arch,provides,symbols,requires,manifest,explicit FROM installed"
+        "SELECT name,version,release,arch,provides,symbols,requires,manifest,explicit,build_stage FROM installed"
     )
     for r in rows:
         res[r[0]] = {
@@ -1007,8 +1027,22 @@ def db_installed(conn) -> Dict[str,dict]:
             "requires": json.loads(r[6]) if r[6] else [],
             "manifest": json.loads(r[7]),
             "explicit": bool(r[8]),
+            "build_stage": int(r[9]),
         }
     return res
+
+def _store_installed_package(conn, meta, manifest, explicit):
+    """Persist build provenance in the same transaction as installed payload state."""
+    if meta.build_stage not in (1, 2):
+        raise ValueError("Package build_stage must be 1 or 2")
+    conn.execute(
+        "REPLACE INTO installed(name,version,release,arch,provides,symbols,requires,manifest,explicit,install_time,build_stage) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        (meta.name, meta.version, meta.release, meta.arch,
+         json.dumps([meta.name] + meta.provides), json.dumps(meta.symbols),
+         json.dumps(meta.requires), json.dumps(manifest), 1 if explicit else 0,
+         int(time.time()), meta.build_stage),
+    )
+
 
 # =========================== Snapshots =====================================
 def create_snapshot(tag: str, files: Iterable[Path]) -> str:
@@ -5408,6 +5442,27 @@ def _run_stage2_queue(*, prompt_default=None, fetcher=None, on_built_package=Non
 
 
 def cmd_rebuild_stage2(a):
+    # Recovery for queues discarded by older schedulers: use explicit recipes,
+    # preserving existing bootstrap installations and checking exact identities.
+    for script in getattr(a, "recipe", None) or []:
+        from .stage2 import enqueue
+        scal, arrays, _ = _capture_lpmbuild_metadata(script, build_stage=1)
+        strict = arrays.get("STAGE_2_BUILD_REQUIRES", [])
+        dependencies = list(dict.fromkeys(arrays.get("STAGE_2_REQUIRES", []) + strict))
+        if not dependencies:
+            die(f"Recipe has no deferred stage 2 dependencies: {script}")
+        meta = PkgMeta(name=scal["NAME"], version=scal["VERSION"],
+                       release=scal.get("RELEASE", "1"), arch=scal.get("ARCH", ARCH), build_stage=1)
+        conn = db()
+        try:
+            installed = db_installed(conn).get(meta.name)
+        finally:
+            conn.close()
+        if not installed or any(str(installed.get(key, "")) != str(getattr(meta, key))
+                                for key in ("version", "release", "arch")):
+            die(f"Recovery requires the matching package installed first: {meta.name}")
+        enqueue(_current_state_dir(), script, a.outdir or Path.cwd(), meta,
+                dependencies, final_dependencies=strict)
     result = _run_stage2_queue(prompt_default=a.install_default, plan_only=a.plan)
     if a.plan:
         print(json.dumps(result, indent=2))
@@ -7161,21 +7216,7 @@ def installpkg(
                         mani = _refresh_manifest_state(mani)
 
                     # Update DB
-                    conn.execute(
-                        "REPLACE INTO installed(name,version,release,arch,provides,symbols,requires,manifest,explicit,install_time) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                        (
-                            meta.name,
-                            meta.version,
-                            meta.release,
-                            meta.arch,
-                            json.dumps([meta.name] + meta.provides),
-                            json.dumps(meta.symbols),
-                            json.dumps(meta.requires),
-                            json.dumps(mani),
-                            1 if explicit else 0,
-                            int(time.time()),
-                        ),
-                    )
+                    _store_installed_package(conn, meta, mani, explicit)
                     action = "upgrade" if previous_version is not None else "install"
                     conn.execute(
                         "INSERT INTO history(ts,action,name,from_ver,to_ver,details) VALUES(?,?,?,?,?,?)",
@@ -7695,6 +7736,8 @@ def build_parser()->argparse.ArgumentParser:
     sp.set_defaults(func=cmd_splitpkg)
 
     sp=sub.add_parser("rebuild-stage2", help="resume pending deferred stage 2 builds")
+    sp.add_argument("--recipe", action="append", type=Path, help="restore a lost deferred job from an installed package recipe (repeatable)")
+    sp.add_argument("--outdir", type=Path, help="output directory for restored stage 2 jobs")
     sp.add_argument("--plan", action="store_true", help="resolve and print the stage 2 dependency graph without building")
     sp.add_argument("--install-default", choices=("y", "n"), default=None)
     sp.set_defaults(func=cmd_rebuild_stage2)

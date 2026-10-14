@@ -45,7 +45,7 @@ def _matches(meta, job, stage=None):
         meta = dataclasses.asdict(meta)
     return (all(str(meta.get(key, "")) == str(job[key])
                 for key in ("version", "release", "arch"))
-            and (stage is None or meta.get("build_stage", 2) == stage))
+            and (stage is None or meta.get("build_stage", 0) == stage))
 
 
 def plan(directory, installed, fetch, read_recipe):
@@ -126,7 +126,8 @@ def drain(state, installed, build, fetch, report=lambda message: None, *, read_r
                 for name, job in planned.items() for dep in job.get("final_dependencies", [])]}
             if plan_only:
                 return graph
-            report("[stage2] final build order: " + " -> ".join(graph["order"]))
+            report("[stage2] final build order: " + " -> ".join(graph["order"])
+                   if graph["order"] else "[stage2] no pending final rebuilds")
             # Persist discovered jobs before any compilation, for crash recovery.
             with (directory / "queue.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
@@ -160,7 +161,9 @@ def drain(state, installed, build, fetch, report=lambda message: None, *, read_r
                     build(Path(job["script"]), Path(job["outdir"]), 1, job["overrides"])
                     base = installed().get(job["name"])
                 # Refused bootstrap installs and superseded versions stay pending.
-                if not _matches(base, job, 1):
+                if not (_matches(base, job, 1) or
+                        (_matches(base, job) and isinstance(base, dict) and base.get("build_stage", 0) == 0)):
+                    report(f"[stage2] waiting for matching bootstrap installation: {job['name']}")
                     continue
                 script = Path(job["script"])
                 if not script.is_file() or hashlib.sha256(script.read_bytes()).hexdigest() != job["digest"]:
