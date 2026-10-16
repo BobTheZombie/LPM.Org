@@ -1,0 +1,14 @@
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Target = usr/lib/systemd/boot/efi/*
+Target = usr/lib/modules/*/vmlinuz
+Target = boot/initrd-*.img
+Target = etc/kernel/cmdline
+Target = etc/lpm/systemd-boot.conf
+
+[Action]
+Description = Updating systemd-boot and LPM boot entries...
+When = PostTransaction
+Exec = /usr/libexec/lpm/hooks/update-systemd-boot

@@ -116,12 +116,11 @@ def main(argv: List[str] | None = None) -> None:
         _log("No actions to perform; exiting")
         return
 
-    if root == Path("/") and shutil.which("bootctl"):
-        _run_command(["bootctl", "update"], check=False)
-    elif root != Path("/"):
-        _log("Skipping systemd-boot update in target root to avoid host EFI variable changes")
+    systemd_boot_hook = root / "usr/libexec/lpm/hooks/update-systemd-boot"
+    if root == Path("/") and systemd_boot_hook.is_file():
+        _run_command([str(systemd_boot_hook)])
     else:
-        _log("Skipping systemd-boot update; bootctl not found")
+        _log("Skipping systemd-boot update; integration unavailable or alternate root")
 
     grub_cfg = root / "boot/grub/grub.cfg"
     if shutil.which("grub-mkconfig"):

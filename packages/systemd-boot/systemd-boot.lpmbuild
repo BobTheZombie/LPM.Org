@@ -1,0 +1,37 @@
+#!/bin/bash
+NAME="systemd-boot"
+VERSION="1.0.0"
+RELEASE="1"
+ARCH="noarch"
+SUMMARY="LPM configuration and transaction integration for systemd-boot"
+URL="https://github.com/BobTheZombie/LPM.Org"
+LICENSE=("MIT")
+SOURCE=("systemd-boot.conf" "kernel-cmdline.example" "README.md" "LICENSE")
+SHA256SUMS=("SKIP" "SKIP" "SKIP" "SKIP")
+PATCHES=()
+REQUIRES=("systemd" "python" "lpm>=1.0.3")
+BUILD_REQUIRES=()
+PROVIDES=("systemd-boot-integration")
+CONFLICTS=()
+OBSOLETES=()
+RECOMMENDS=("mkinitcpio")
+SUGGESTS=()
+BUILD_OPTIONS=()
+prepare() {
+    set -euxo pipefail
+    test -s "$SRCROOT/systemd-boot.conf"
+    test -s "$SRCROOT/kernel-cmdline.example"
+    if [ ! -x /usr/libexec/lpm/hooks/update-systemd-boot ]; then
+        echo "[ERROR] Install LPM with systemd-boot integration first" >&2
+        return 1
+    fi
+}
+build() { :; }
+staging() {
+    set -euxo pipefail
+    install -Dm644 "$SRCROOT/systemd-boot.conf" "$pkgdir/etc/lpm/systemd-boot.conf"
+    install -Dm644 "$SRCROOT/kernel-cmdline.example" "$pkgdir/usr/share/doc/systemd-boot/kernel-cmdline.example"
+    install -Dm644 "$SRCROOT/README.md" "$pkgdir/usr/share/doc/systemd-boot/README.md"
+    install -Dm644 "$SRCROOT/LICENSE" "$pkgdir/usr/share/licenses/systemd-boot/LICENSE"
+    # The hook/helper are owned by LPM; systemd owns bootctl and EFI binaries.
+}

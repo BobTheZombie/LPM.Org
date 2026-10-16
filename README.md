@@ -822,3 +822,13 @@ with a request for its matching local recipe. For recipe discovery, the planner
 prefers sibling `.lpmbuild` files and adjacent package directories, then cached
 stage2 recipes, before downloading from the repository. Completed queued jobs
 can be cleaned up even after their source recipe has been removed.
+
+### systemd-boot integration
+
+`packages/systemd-boot/` contains the integration lpmbuild, configuration and
+initial setup instructions. `update-systemd-boot.hook` invokes the LPM helper
+after relevant transactions, while the kernel helper invokes it after initramfs
+generation. First installation is explicit, requires a mounted ESP and a real
+`/etc/kernel/cmdline`, and does not modify firmware variables. Existing boot
+configuration and recovery kernel entries are preserved. See the package README
+for kernel/initramfs paths and Secure Boot limitations.
