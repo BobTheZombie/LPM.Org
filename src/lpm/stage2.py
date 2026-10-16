@@ -48,6 +48,30 @@ def _matches(meta, job, stage=None):
             and (stage is None or meta.get("build_stage", 0) == stage))
 
 
+def _final_installed(meta, job=None):
+    if not meta:
+        return False
+    if job is not None:
+        return _matches(meta, job, 2)
+    if not isinstance(meta, dict):
+        meta = dataclasses.asdict(meta)
+    return meta.get("build_stage", 0) == 2
+
+
+def _dependency_recipe(dep, parent, directory, fetch):
+    # Prefer a matching local recipe next to the queued recipe (or its package
+    # directory) before fetching a possibly older repository copy.
+    base = Path(parent["script"]).parent
+    candidates = [base / (dep + ".lpmbuild"), base / dep / (dep + ".lpmbuild"),
+                  base.parent / dep / (dep + ".lpmbuild"), directory / (dep + ".lpmbuild")]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    destination = directory / (dep + ".lpmbuild")
+    fetch(dep, destination)
+    return destination
+
+
 def plan(directory, installed, fetch, read_recipe):
     """Expand strict final-stage dependencies and reject cycles before compiling.
 
@@ -73,19 +97,30 @@ def plan(directory, installed, fetch, read_recipe):
             return
         visiting.append(name)
         job = jobs[name]
+        if _final_installed(installed.get(name), job):
+            visiting.pop()
+            done.add(name)
+            order.append(name)
+            return
         script = Path(job["script"])
         if not script.is_file() or hashlib.sha256(script.read_bytes()).hexdigest() != job["digest"]:
             raise RuntimeError(f"Stage 2 recipe changed or is missing: {script}; rebuild its bootstrap package")
         for dep in sorted(job.get("final_dependencies", [])):
             validate_dependencies([dep])
             if dep not in jobs:
-                dep_script = directory / (dep + ".lpmbuild")
-                fetch(dep, dep_script)
+                if _final_installed(installed.get(dep)):
+                    continue
+                dep_script = _dependency_recipe(dep, job, directory, fetch)
                 scal, arrays, _ = read_recipe(dep_script, build_stage=1)
                 if scal.get("NAME") != dep:
                     raise RuntimeError("Stage 2 dependency must identify a package, not a provider: " + dep)
                 strict = arrays.get("STAGE_2_BUILD_REQUIRES", [])
                 ordinary = list(dict.fromkeys(arrays.get("STAGE_2_REQUIRES", []) + strict))
+                base = installed.get(dep)
+                identity = dict(version=scal["VERSION"], release=scal.get("RELEASE", "1"),
+                                arch=scal.get("ARCH", job["arch"]))
+                if base and not _matches(base, identity):
+                    raise RuntimeError(f"Stage 2 recipe does not match installed {dep}; provide its matching local recipe")
                 if not ordinary:
                     raise RuntimeError("Required package has no stage 2 recipe: " + dep)
                 validate_dependencies(ordinary)
@@ -122,14 +157,17 @@ def drain(state, installed, build, fetch, report=lambda message: None, *, read_r
             return results
         planned = {}
         if read_recipe:
-            planned, order = plan(directory, installed(), fetch, read_recipe)
-            graph = {"order": [n + "@2" for n in order], "edges": [
+            snapshot = installed()
+            planned, order = plan(directory, snapshot, fetch, read_recipe)
+            pending = [name for name in order if not _final_installed(snapshot.get(name), planned[name])]
+            graph = {"order": [n + "@2" for n in pending], "edges": [
                 {"package": name + "@2", "requires": dep + "@2"}
-                for name, job in planned.items() for dep in job.get("final_dependencies", [])]}
+                for name, job in planned.items() for dep in job.get("final_dependencies", [])
+                if name in pending and dep in pending]}
             levels = {}
-            for name in order:
-                levels[name] = 1 + max((levels[dep] for dep in planned[name].get("final_dependencies", [])), default=-1)
-            graph["layers"] = [[name + "@2" for name in order if levels[name] == level]
+            for name in pending:
+                levels[name] = 1 + max((levels[dep] for dep in planned[name].get("final_dependencies", []) if dep in levels), default=-1)
+            graph["layers"] = [[name + "@2" for name in pending if levels[name] == level]
                                for level in sorted(set(levels.values()))]
             if plan_only:
                 return graph
@@ -198,7 +236,7 @@ def drain(state, installed, build, fetch, report=lambda message: None, *, read_r
                 if not all(dep in capabilities for dep in job["dependencies"]):
                     blocked.add(path)
                     continue
-                if any(not _matches(current.get(dep), planned[dep], 2)
+                if any(not _final_installed(current.get(dep), planned.get(dep))
                        for dep in job.get("final_dependencies", [])):
                     blocked.add(path)
                     continue

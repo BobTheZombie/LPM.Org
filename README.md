@@ -805,3 +805,20 @@ recipe does not automatically rebuild satisfying installed Python dependencies.
 Unsatisfied versions still build, and false environment markers are skipped.
 Extras and direct URL requirements are not considered satisfied solely by an
 installed base package because its metadata does not prove those requirements.
+
+### Installed stages in deferred dependency planning
+
+Ordinary `STAGE_2_REQUIRES` dependencies may already be installed at stage 1 or
+stage 2. A strict `STAGE_2_BUILD_REQUIRES` dependency must be installed at stage 2.
+The planner checks installed provenance before fetching a strict dependency's
+recipe, so completed final dependencies need no source checkout or remote recipe.
+An explicitly queued dependency still requires its exact version, release and
+architecture; a different installed revision does not silently complete the job.
+
+Installed stage 1 dependencies are reused as the bootstrap for their final pass.
+Unknown legacy stages never satisfy a strict final requirement. A dependency
+recipe that differs from an existing installation is rejected before building,
+with a request for its matching local recipe. For recipe discovery, the planner
+prefers sibling `.lpmbuild` files and adjacent package directories, then cached
+stage2 recipes, before downloading from the repository. Completed queued jobs
+can be cleaned up even after their source recipe has been removed.

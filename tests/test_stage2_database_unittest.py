@@ -132,6 +132,23 @@ class Stage2DatabaseTests(unittest.TestCase):
         self.assertEqual(len(list((self.root/'stage2').glob('*.json'))), 1)
         self.assertEqual(self.installed()['demo']['build_stage'], 1)
 
+    def test_real_database_strict_final_dependency_needs_no_recipe(self):
+        self.write('demo', 1)
+        self.write('dep', 2)
+        stage2.enqueue(self.root, self.recipe, self.root,
+                       app.PkgMeta('demo', '1', arch='noarch', build_stage=1),
+                       ['dep'], final_dependencies=['dep'])
+        calls = []
+        def build(script, outdir, build_stage, overrides):
+            calls.append(build_stage)
+            self.write('demo', build_stage)
+        def no_fetch(*args):
+            self.fail('SQLite stage2 installation should satisfy dependency')
+        stage2.drain(self.root, self.installed, build, no_fetch,
+                     read_recipe=app._capture_lpmbuild_metadata)
+        self.assertEqual(calls, [2])
+        self.assertEqual(self.installed()['demo']['build_stage'], 2)
+
     def test_explicit_recipe_recovery(self):
         self.write('demo',1)
         args = argparse.Namespace(recipe=[self.recipe],outdir=self.root,install_default='y',plan=False)

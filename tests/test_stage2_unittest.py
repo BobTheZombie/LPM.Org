@@ -222,6 +222,73 @@ class Stage2Tests(unittest.TestCase):
                      read_recipe=app._capture_lpmbuild_metadata)
         self.assertEqual(finals, ['extra', 'bootstrap'])
 
+    def test_strict_installed_final_skips_recipe_fetch(self):
+        fetch, build = self.strict_setup()
+        self.current['finaldep'] = dataclasses.asdict(app.PkgMeta('finaldep', '1', arch='noarch', build_stage=2))
+        def no_fetch(*args):
+            self.fail('installed final dependency must not fetch a recipe')
+        stage2.drain(self.root, lambda: self.current, build, no_fetch,
+                     read_recipe=app._capture_lpmbuild_metadata)
+        self.assertEqual(self.calls, [('bootstrap', 2)])
+
+    def test_strict_installed_bootstrap_is_finalized_without_rebootstrap(self):
+        fetch, build = self.strict_setup()
+        self.current['finaldep'] = dataclasses.asdict(app.PkgMeta('finaldep', '1', arch='noarch', build_stage=1))
+        stage2.drain(self.root, lambda: self.current, build, fetch,
+                     read_recipe=app._capture_lpmbuild_metadata)
+        self.assertEqual(self.calls, [('finaldep', 2), ('bootstrap', 2)])
+
+    def test_strict_unknown_stage_is_not_final(self):
+        fetch, build = self.strict_setup()
+        self.current['finaldep'] = dict(version='1', release='1', arch='noarch', build_stage=0)
+        stage2.drain(self.root, lambda: self.current, build, fetch,
+                     read_recipe=app._capture_lpmbuild_metadata)
+        self.assertEqual(self.calls, [('finaldep', 2), ('bootstrap', 2)])
+
+    def test_completed_job_needs_no_source_or_dependency_recipe(self):
+        fetch, build = self.strict_setup()
+        self.current['bootstrap']['build_stage'] = 2
+        self.script.unlink()
+        def no_fetch(*args):
+            self.fail('completed job must not fetch a recipe')
+        graph = stage2.drain(self.root, lambda: self.current, build, no_fetch,
+                            read_recipe=app._capture_lpmbuild_metadata, plan_only=True)
+        self.assertEqual(graph['order'], [])
+        stage2.drain(self.root, lambda: self.current, build, no_fetch,
+                     read_recipe=app._capture_lpmbuild_metadata)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(list((self.root/'stage2').glob('*.json')), [])
+
+    def test_local_dependency_recipe_preferred_over_remote(self):
+        fetch, build = self.strict_setup()
+        local = self.root/'finaldep.lpmbuild'
+        fetch('finaldep', local)
+        def no_fetch(*args):
+            self.fail('matching local recipe must take priority')
+        stage2.drain(self.root, lambda: self.current, build, no_fetch,
+                     read_recipe=app._capture_lpmbuild_metadata)
+        self.assertEqual(self.calls, [('finaldep', 1), ('finaldep', 2), ('bootstrap', 2)])
+
+    def test_mismatching_installed_dependency_not_rebuilt_or_downgraded(self):
+        fetch, build = self.strict_setup()
+        self.current['finaldep'] = dict(version='2', release='1', arch='noarch', build_stage=1)
+        with self.assertRaisesRegex(RuntimeError, 'does not match installed finaldep'):
+            stage2.drain(self.root, lambda: self.current, build, fetch,
+                         read_recipe=app._capture_lpmbuild_metadata)
+        self.assertEqual(self.calls, [])
+
+    def test_queued_identity_takes_priority_over_other_installed_final(self):
+        fetch, build = self.strict_setup()
+        local = self.root/'finaldep.lpmbuild'
+        fetch('finaldep', local)
+        stage2.enqueue(self.root, local, self.root,
+                       app.PkgMeta('finaldep', '1', arch='noarch', build_stage=1), ['bootstrap'])
+        self.current['finaldep'] = dict(version='2', release='1', arch='noarch', build_stage=2)
+        stage2.drain(self.root, lambda: self.current, build, fetch,
+                     read_recipe=app._capture_lpmbuild_metadata)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.current['bootstrap']['build_stage'], 1)
+
     def test_actual_recipe_cycle_and_phase_fallback(self):
         # Execute shell phases for real; stub only packaging, installation and DB.
         self.current.clear()
