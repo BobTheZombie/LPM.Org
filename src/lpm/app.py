@@ -21,7 +21,8 @@ import importlib.util
 from datetime import datetime, timezone
 from email.parser import Parser
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from .parallel import ordered_map, configure_build_environment
+from .parallel import ordered_map
+from .accelerators import configure as configure_accelerators
 from .python_deps import aliases as python_aliases, satisfied as python_dependency_satisfied
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -642,6 +643,9 @@ def sandboxed_run(
             "-c",
             f"set -e\ncd /src\n{pick_wrapper}\nsource {script_quoted}\n{wrapper_body}",
         ]
+        cache_directory = run_env.get("LPM_COMPILER_CACHE_DIR")
+        if cache_directory and run_env.get("LPM_COMPILER_CACHE_ACTIVE") in ("ccache", "sccache"):
+            cmd[4:4] = ["--bind", cache_directory, "/lpm-compiler-cache"]
         subprocess.run(cmd, check=True, env=run_env, cwd=str(cwd))
         return
 
@@ -4841,7 +4845,14 @@ def run_lpmbuild(
     else:
         helper_env_path = helper_path
 
-    env = configure_build_environment(os.environ.copy())
+    accelerator_env = os.environ.copy()
+    for key in ("LPM_COMPILER_CACHE", "LPM_COMPILER_CACHE_DIR", "LPM_COMPILER_CACHE_SIZE",
+                "LPM_BUILD_JOBS", "LPM_MEMORY_PER_JOB_MB", "LPM_LINK_JOBS", "LPM_BUILD_PROFILE"):
+        if key not in accelerator_env and CONF.get(key):
+            accelerator_env[key] = CONF[key]
+    profile = "kernel" if name in ("linux", "kernel", "linux-lts", "linux-zen") else ("qt" if name.startswith(("qt5", "qt6", "qtbase")) else "generic")
+    env = configure_accelerators(accelerator_env, buildroot, _current_state_dir(),
+                                 profile=profile, sandbox=sandbox_mode == "bwrap", report=log)
     env.update({
         "DESTDIR": str(stagedir),
         "pkgdir": str(stagedir),

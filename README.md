@@ -832,3 +832,11 @@ generation. First installation is explicit, requires a mounted ESP and a real
 `/etc/kernel/cmdline`, and does not modify firmware variables. Existing boot
 configuration and recovery kernel entries are preserved. See the package README
 for kernel/initramfs paths and Secure Boot limitations.
+
+### Compiler caching and large builds
+
+LPM supports optional ccache/sccache wrappers and persistent cache storage,
+memory-aware compile concurrency, and CMake/Ninja compile/link pools. Kernel and
+Qt profiles choose conservative memory estimates; explicit user settings win.
+See [BUILD-ACCELERATORS.md](docs/BUILD-ACCELERATORS.md) for configuration and
+recipe examples, including the kernel-specific `$LPM_KERNEL_MAKE` helper.
