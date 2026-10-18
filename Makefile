@@ -255,11 +255,12 @@ $(UI_BIN_TARGET): Makefile lpm_ui.py $(SRC_FILES) | nuitka-install
 	@mkdir -p $(BUILD_DIR)
 	$(NUITKA) $(NUITKA_FLAGS) $(NUITKA_UI_FLAGS) --output-dir=$(BUILD_DIR) --output-filename=$(UI_APP_NAME).bin $(UI_ENTRY)
 
-$(STAGING_DIR): check-binaries README.md LICENSE etc/lpm/lpm.conf usr/lib/sysusers.d/lpm.conf usr/lib/tmpfiles.d/lpm.conf $(BUILD_INFO_JSON)
+$(STAGING_DIR): scripts/kmake docs/KMAKE.md check-binaries README.md LICENSE etc/lpm/lpm.conf usr/lib/sysusers.d/lpm.conf usr/lib/tmpfiles.d/lpm.conf $(BUILD_INFO_JSON)
 	@mkdir -p $(DIST_DIR)
 	@rm -rf $@
 	mkdir -p $@/bin
 	cp $(BIN_TARGET) $@/bin/$(APP)
+	install -m755 scripts/kmake $@/bin/kmake
 	cp $(UI_BIN_TARGET) $@/bin/$(UI_APP_NAME)
 	mkdir -p $@/usr/share/lpm
 	cp $(BUILD_INFO_JSON) $@/usr/share/lpm/build-info.json
@@ -272,6 +273,7 @@ $(STAGING_DIR): check-binaries README.md LICENSE etc/lpm/lpm.conf usr/lib/sysuse
 	cp usr/lib/tmpfiles.d/lpm.conf $@/usr/lib/tmpfiles.d/lpm.conf
 	mkdir -p $@/etc/lpm
 	cp etc/lpm/lpm.conf $@/etc/lpm/lpm.conf
+	install -Dm644 docs/KMAKE.md $@/usr/share/doc/lpm/KMAKE.md
 	cp README.md LICENSE $@
 	cat <<-'INSTALL_SH' > $@/install.sh
 	#!/bin/sh
@@ -282,6 +284,7 @@ $(STAGING_DIR): check-binaries README.md LICENSE etc/lpm/lpm.conf usr/lib/sysuse
 	
 	mkdir -p "$${DESTDIR}$${PREFIX}/bin"
 	install -m 0755 "$${ROOT}/bin/lpm" "$${DESTDIR}$${PREFIX}/bin/lpm"
+	install -m 0755 "$${ROOT}/bin/kmake" "$${DESTDIR}$${PREFIX}/bin/kmake"
 	install -m 0755 "$${ROOT}/bin/$(UI_APP_NAME)" "$${DESTDIR}$${PREFIX}/bin/$(UI_APP_NAME)"
 	
 	HOOK_DEST="$${DESTDIR}/usr/share/lpm"
@@ -295,6 +298,7 @@ $(STAGING_DIR): check-binaries README.md LICENSE etc/lpm/lpm.conf usr/lib/sysuse
 	    install -m 0644 "$${BUILD_INFO_SRC}" "$${HOOK_DEST}/build-info.json"
 	fi
 
+	install -Dm644 "$${ROOT}/usr/share/doc/lpm/KMAKE.md" "$${DESTDIR}/usr/share/doc/lpm/KMAKE.md"
 	LIBLPM_HOOK_DEST="$${DESTDIR}/usr/share/liblpm"
 	rm -rf "$${LIBLPM_HOOK_DEST}/hooks"
 	mkdir -p "$${LIBLPM_HOOK_DEST}"
@@ -358,11 +362,13 @@ install: $(STAGING_DIR)
 
 # Install the command-line package manager without building or requiring
 # PySide6/lpm-ui. This is the bootstrap/chroot installation path.
-install-lpm: lpm $(BUILD_INFO_JSON)
+install-lpm: lpm $(BUILD_INFO_JSON) scripts/kmake docs/KMAKE.md
 	set -eu
 	install -Dm755 "$(BIN_TARGET)" "$(DESTDIR)$(PREFIX)/bin/lpm"
+	install -Dm755 scripts/kmake "$(DESTDIR)$(PREFIX)/bin/kmake"
 	install -Dm644 "$(BUILD_INFO_JSON)" "$(DESTDIR)/usr/share/lpm/build-info.json"
 	install -Dm644 README.md "$(DESTDIR)/usr/share/doc/lpm/README.md"
+	install -Dm644 docs/KMAKE.md "$(DESTDIR)/usr/share/doc/lpm/KMAKE.md"
 	install -Dm644 LICENSE "$(DESTDIR)/usr/share/licenses/lpm/LICENSE"
 	if [ -f docs/TECHNICAL-HOWTO.md ]; then
 		install -Dm644 docs/TECHNICAL-HOWTO.md "$(DESTDIR)/usr/share/doc/lpm/TECHNICAL-HOWTO.md"

@@ -41,6 +41,7 @@ BUILD_REQUIRES=(
 )
 
 PROVIDES=(
+    "kmake"
     "lpm"
     "lpm-core"
 )
