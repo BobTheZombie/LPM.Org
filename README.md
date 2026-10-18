@@ -840,3 +840,8 @@ memory-aware compile concurrency, and CMake/Ninja compile/link pools. Kernel and
 Qt profiles choose conservative memory estimates; explicit user settings win.
 See [BUILD-ACCELERATORS.md](docs/BUILD-ACCELERATORS.md) for configuration and
 recipe examples, including the kernel-specific `$LPM_KERNEL_MAKE` helper.
+
+### Kernel builds
+
+Use `kmake` (or `lpm kmake`) for resumable, resource-budgeted kernel builds.
+See [the kmake guide](docs/KMAKE.md) for configuration, compiler caches, and lpmbuild integration.

@@ -75,7 +75,7 @@ def __getattr__(name: str) -> Any:
         return paths[name]
     if name == "ResolutionError":
         return getattr(_load_app(), name)
-    if name in {"config", "fs_ops", "atomic_io", "privileges"}:
+    if name in {"config", "fs_ops", "atomic_io", "privileges", "kmake"}:
         return import_module(f"{__name__}.{name}")
     if name in {"__title__", "__version__", "__build__", "__build_date__", "__developer__", "__url__"}:
         app = _load_app()

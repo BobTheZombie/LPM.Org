@@ -24,6 +24,7 @@ ui = ["PySide6>=6.6"]
 
 [project.entry-points."console_scripts"]
 lpm = "lpm.app:main"
+kmake = "lpm.kmake:main"
 lpm-ui = "lpm.ui_launcher:main"
 
 [tool.setuptools]
@@ -36,6 +37,7 @@ py-modules = ["config", "first_run_ui", "fs", "installgen", "maintainer_mode"]
 lpm = ["bin/*"]
 
 [tool.setuptools.data-files]
+"share/doc/lpm" = ["docs/KMAKE.md"]
 "etc/lpm" = ["etc/lpm/lpm.conf"]
 "share/liblpm/hooks" = ["usr/share/liblpm/hooks/*.hook"]
 "libexec/lpm/hooks" = ["usr/libexec/lpm/hooks/[a-z]*", "usr/libexec/lpm/hooks/_targets.py"]

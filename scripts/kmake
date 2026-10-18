@@ -1,0 +1,3 @@
+#!/bin/sh
+# Use the adjacent LPM executable, including standalone Nuitka installs.
+exec "$(dirname -- "$0")/lpm" kmake "$@"

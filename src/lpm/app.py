@@ -7613,6 +7613,7 @@ def build_parser()->argparse.ArgumentParser:
         help="filesystem root used when generating system configuration files",
     )
     sub=p.add_subparsers(dest="cmd")
+    sub.add_parser("kmake", add_help=False, help="Configure, resume, validate and stage kernel builds (kmake --help)")
 
     sp=sub.add_parser("setup", help="Run the interactive configuration wizard"); sp.set_defaults(func=cmd_setup)
     sp=sub.add_parser("repolist", help="Show configured repositories"); sp.set_defaults(func=cmd_repolist)
@@ -7946,8 +7947,12 @@ def build_parser()->argparse.ArgumentParser:
     return p
 
 def main(argv=None):
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == "kmake":
+        from .kmake import main as kmake_main
+        return kmake_main(arguments[1:])
     parser=build_parser()
-    args=parser.parse_args(argv)
+    args=parser.parse_args(arguments)
     cmd = getattr(args, "cmd", None)
     if args.sysconfig:
         if cmd:
