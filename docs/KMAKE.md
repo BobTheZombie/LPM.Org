@@ -122,3 +122,19 @@ rejection, staging, and resource/cache controls. Tests against real Kconfig
 validate configuration and release resolution. Neither test is a complete kernel
 build, GCC 16 validation, or a hardware boot test. Run those on the target build
 machine before treating a generated kernel as boot validated.
+
+## Resume through buildpkg
+
+To finish packaging and installation after an interrupted build, use the
+package manager's checkpoint, not a recipe environment flag:
+
+```sh
+lpm buildpkg ./linux-kernel/linux-kernel.lpmbuild --status
+LPM_BUILD_JOBS=6 lpm buildpkg ./linux-kernel/linux-kernel.lpmbuild \
+    --resume --no-deps --install-default y
+```
+
+This skips source cleanup/extraction/patching and completed prepare/build/check
+phases. Failed staging is recreated separately. A direct `kmake resume` only
+continues Kbuild; it does not package/install. See [BUILD-RESUME.md](BUILD-RESUME.md)
+for restart semantics and persistent workspace configuration.

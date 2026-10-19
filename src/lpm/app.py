@@ -23,6 +23,7 @@ from email.parser import Parser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .parallel import ordered_map
 from .accelerators import configure as configure_accelerators
+from .build_state import resumable_build, BuildStateError
 from .python_deps import aliases as python_aliases, satisfied as python_dependency_satisfied
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -4354,6 +4355,7 @@ def _apply_lpmbuild_patches(
     return applied
 
 
+@resumable_build
 def run_lpmbuild(
     script: Path,
     outdir: Optional[Path] = None,
@@ -4370,21 +4372,18 @@ def run_lpmbuild(
     on_built_package: Optional[Callable[[Path, PkgMeta], None]] = None,
     _build_stage: int = 1,
     _defer_stage2: bool = False,
+    resume: bool = False,
+    restart: bool = False,
+    build_status: bool = False,
+    _session=None,
+    _metadata=None,
+    _resume_available: bool = False,
 ) -> Tuple[Path, float, int, List[Tuple[Path, PkgMeta]]]:
     script_path = script.resolve()
     script_dir = script_path.parent
 
-    # --- Capture metadata first ---
-    had_split_cmd = "LPM_SPLIT_PACKAGE" in os.environ
-    if not had_split_cmd:
-        os.environ["LPM_SPLIT_PACKAGE"] = shutil.which("true") or "/bin/true"
-
-    try:
-        scal, arr, maps = _capture_lpmbuild_metadata(script_path, build_stage=_build_stage)
-    finally:
-        if not had_split_cmd:
-            with contextlib.suppress(KeyError):
-                del os.environ["LPM_SPLIT_PACKAGE"]
+    # The checkpoint wrapper captured metadata before workspace mutation.
+    scal, arr, maps = _metadata
     name = scal.get("NAME", "")
     version = scal.get("VERSION", "")
     release = scal.get("RELEASE", "1")
@@ -4539,6 +4538,7 @@ def run_lpmbuild(
                 cpu_overrides=overrides,
                 on_built_package=on_built_package,
                 _defer_stage2=True,
+                resume=resume and (_current_state_dir() / "builds" / depname / "state.json").is_file(),
             )
             if prompt_install:
                 _refresh_capabilities_from_installed()
@@ -4710,9 +4710,14 @@ def run_lpmbuild(
                     if manage_executor and local_executor is not None:
                         local_executor.shutdown(wait=True)
 
-    stagedir_base = Path(f"/tmp/pkg-{name}")
-    buildroot_base = Path(f"/tmp/build-{name}")
-    srcroot_base = Path(f"/tmp/src-{name}")
+    workspace = os.environ.get("LPM_BUILD_WORKDIR") or CONF.get("LPM_BUILD_WORKDIR")
+    if workspace:
+        workspace_root = Path(workspace).expanduser().resolve() / name
+        stagedir_base, buildroot_base, srcroot_base = (workspace_root / label for label in ("pkg", "build", "src"))
+    else:
+        stagedir_base = Path(f"/tmp/pkg-{name}")
+        buildroot_base = Path(f"/tmp/build-{name}")
+        srcroot_base = Path(f"/tmp/src-{name}")
 
     def _prepare_directory(base: Path, *, label: str) -> Path:
         prepared = prepare_directory(
@@ -4728,9 +4733,17 @@ def run_lpmbuild(
             )
         return prepared
 
-    stagedir = _prepare_directory(stagedir_base, label="pkg")
-    buildroot = _prepare_directory(buildroot_base, label="build")
-    srcroot = _prepare_directory(srcroot_base, label="src")
+    saved_directories = _session.data.get("directories", {}) if _session.resume else {}
+    if saved_directories:
+        stagedir = Path(saved_directories["pkg"]["path"])
+        buildroot = Path(saved_directories["build"]["path"])
+        srcroot = Path(saved_directories["src"]["path"])
+        log(f"[resume] Preserving source and build directories: {srcroot}, {buildroot}")
+    else:
+        stagedir = _prepare_directory(stagedir_base, label="pkg")
+        buildroot = _prepare_directory(buildroot_base, label="build")
+        srcroot = _prepare_directory(srcroot_base, label="src")
+        _session.bind({"pkg": stagedir, "build": buildroot, "src": srcroot})
 
     provides_list, provides_by_package = _merge_provides_with_map(
         arr.get("PROVIDES", []), maps.get("META_PROVIDES")
@@ -4759,26 +4772,11 @@ def run_lpmbuild(
     }
     tmp_files: List[Path] = []
 
-    with tempfile.NamedTemporaryFile(
-        prefix="lpm-split-meta-",
-        suffix=".json",
-        delete=False,
-        mode="w",
-        encoding="utf-8",
-    ) as f:
-        json.dump(split_meta, f)
-        split_meta_path = Path(f.name)
-        tmp_files.append(split_meta_path)
-
-    with tempfile.NamedTemporaryFile(
-        prefix="lpm-split-record-",
-        suffix=".jsonl",
-        delete=False,
-        mode="w",
-        encoding="utf-8",
-    ) as f:
-        split_record_path = Path(f.name)
-        tmp_files.append(split_record_path)
+    split_meta_path = buildroot / "split-meta.json"
+    split_meta_path.write_text(json.dumps(split_meta), encoding="utf-8")
+    split_record_path = buildroot / "split-records.jsonl"
+    if not _session.done("package"):
+        split_record_path.write_text("", encoding="utf-8")
 
     # Directories have already been prepared above.
 
@@ -5015,204 +5013,216 @@ def run_lpmbuild(
         fallback_display = effective_cflags or script_cflags or "(unset)"
         log(f"[opt] Automatic CPU optimizations disabled; using lpmbuild flags: {fallback_display}")
 
-    sources = []
-    for raw_entry in arr.get("SOURCE", []):
-        entry = raw_entry.strip()
-        if entry:
-            sources.append(entry)
+    env["LPM_BUILD_STAGE"] = str(_build_stage)
+    env["LPM_BUILD_SESSION"] = _session.data["token"]
+    env["LPM_BUILD_STATE"] = str(_session.path)
+    env["LPM_BUILD_RESUME"] = "1" if _session.resume else "0"
+    env.pop("KMAKE_RESUME", None)  # Buildpkg, not recipe flags, selects resume phases.
+    _session.environment(env)
+    if not _session.done("source"):
+        _session.begin("source")
+        sources = []
+        for raw_entry in arr.get("SOURCE", []):
+            entry = raw_entry.strip()
+            if entry:
+                sources.append(entry)
 
-    declared_patches = [
-        str(raw_entry).strip()
-        for raw_entry in arr.get("PATCHES", [])
-        if str(raw_entry).strip()
-    ]
-    # PATCHES entries are source entries too. A local patch is copied from the
-    # recipe directory; a missing relative patch is fetched from the package
-    # source repository using the same rules as SOURCE.
-    for patch_entry in declared_patches:
-        if patch_entry not in sources:
-            sources.append(patch_entry)
+        declared_patches = [
+            str(raw_entry).strip()
+            for raw_entry in arr.get("PATCHES", [])
+            if str(raw_entry).strip()
+        ]
+        # PATCHES entries are source entries too. A local patch is copied from the
+        # recipe directory; a missing relative patch is fetched from the package
+        # source repository using the same rules as SOURCE.
+        for patch_entry in declared_patches:
+            if patch_entry not in sources:
+                sources.append(patch_entry)
 
-    fetch_url_opt_in = scal.get("FETCH_URL", "").strip().lower() in {"1", "true", "yes", "on"}
-    if fetch_url_opt_in:
-        # URL is project metadata unless the recipe explicitly opts in to
-        # treating it as a source archive.  Source-less metapackages and
-        # filesystem recipes must not download their homepage.
-        _maybe_fetch_source(url, srcroot)
+        fetch_url_opt_in = scal.get("FETCH_URL", "").strip().lower() in {"1", "true", "yes", "on"}
+        if fetch_url_opt_in:
+            # URL is project metadata unless the recipe explicitly opts in to
+            # treating it as a source archive.  Source-less metapackages and
+            # filesystem recipes must not download their homepage.
+            _maybe_fetch_source(url, srcroot)
 
-    base_repo = CONF.get("LPMBUILD_REPO", "https://gitlab.com/lpm-org/packages/-/raw/main").rstrip("/")
-    base_source_prefix = f"{base_repo}/{name}/"
-    for entry in sources:
-        alias: Optional[str] = None
-        source_ref = entry
-        if "::" in entry:
-            alias, source_ref = entry.split("::", 1)
-            alias = alias.strip() or None
-            source_ref = source_ref.strip()
+        base_repo = CONF.get("LPMBUILD_REPO", "https://gitlab.com/lpm-org/packages/-/raw/main").rstrip("/")
+        base_source_prefix = f"{base_repo}/{name}/"
+        for entry in sources:
+            alias: Optional[str] = None
+            source_ref = entry
+            if "::" in entry:
+                alias, source_ref = entry.split("::", 1)
+                alias = alias.strip() or None
+                source_ref = source_ref.strip()
 
-        parsed = urllib.parse.urlparse(source_ref)
-
-        if not parsed.scheme and not os.path.isabs(source_ref):
-            local_candidate = (script_dir / source_ref).resolve()
-            if local_candidate.exists():
-                target_name = alias or os.path.basename(source_ref.rstrip("/"))
-                if target_name:
-                    target_path = srcroot / target_name
-                    prepare_directory(target_path.parent, privileged=False)
-                    shutil.copy2(local_candidate, target_path)
-                continue
-
-            source_ref = urllib.parse.urljoin(f"{base_source_prefix}", source_ref)
             parsed = urllib.parse.urlparse(source_ref)
 
-        if not parsed.scheme:
-            local_candidate = (script_dir / source_ref).resolve()
-            if local_candidate.exists():
-                target_name = alias or os.path.basename(source_ref.rstrip("/"))
-                if target_name:
-                    target_path = srcroot / target_name
-                    prepare_directory(target_path.parent, privileged=False)
-                    shutil.copy2(local_candidate, target_path)
+            if not parsed.scheme and not os.path.isabs(source_ref):
+                local_candidate = (script_dir / source_ref).resolve()
+                if local_candidate.exists():
+                    target_name = alias or os.path.basename(source_ref.rstrip("/"))
+                    if target_name:
+                        target_path = srcroot / target_name
+                        prepare_directory(target_path.parent, privileged=False)
+                        shutil.copy2(local_candidate, target_path)
+                    continue
+
+                source_ref = urllib.parse.urljoin(f"{base_source_prefix}", source_ref)
+                parsed = urllib.parse.urlparse(source_ref)
+
+            if not parsed.scheme:
+                local_candidate = (script_dir / source_ref).resolve()
+                if local_candidate.exists():
+                    target_name = alias or os.path.basename(source_ref.rstrip("/"))
+                    if target_name:
+                        target_path = srcroot / target_name
+                        prepare_directory(target_path.parent, privileged=False)
+                        shutil.copy2(local_candidate, target_path)
+                    continue
+
+            if _fetch_git_source(source_ref, srcroot, alias=alias):
                 continue
 
-        if _fetch_git_source(source_ref, srcroot, alias=alias):
-            continue
+            _maybe_fetch_source(source_ref, srcroot, filename=alias)
 
-        _maybe_fetch_source(source_ref, srcroot, filename=alias)
+        staged_entries: List[str] = []
+        for path in sorted(srcroot.rglob("*")):
+            if path.is_file() or path.is_symlink():
+                try:
+                    rel = path.relative_to(srcroot)
+                except ValueError:
+                    rel = path
+                staged_entries.append(str(rel))
 
-    staged_entries: List[str] = []
-    for path in sorted(srcroot.rglob("*")):
-        if path.is_file() or path.is_symlink():
-            try:
-                rel = path.relative_to(srcroot)
-            except ValueError:
-                rel = path
-            staged_entries.append(str(rel))
+        def _iter_stage_candidates(entries: Iterable[str]) -> Iterable[Path]:
+            for raw in entries:
+                entry = raw.strip()
+                if not entry:
+                    continue
+                candidate = Path(entry)
+                if not candidate.is_absolute():
+                    candidate = srcroot / candidate
+                yield candidate
 
-    def _iter_stage_candidates(entries: Iterable[str]) -> Iterable[Path]:
-        for raw in entries:
-            entry = raw.strip()
-            if not entry:
-                continue
-            candidate = Path(entry)
-            if not candidate.is_absolute():
-                candidate = srcroot / candidate
-            yield candidate
+        signature_suffixes = (".sig", ".asc")
+        extra_compressed_exts = (".tar.zst", ".tar.lz4", ".tar.lzo")
 
-    signature_suffixes = (".sig", ".asc")
-    extra_compressed_exts = (".tar.zst", ".tar.lz4", ".tar.lzo")
+        def _is_signature(path: Path) -> bool:
+            name = path.name.lower()
+            return any(name.endswith(suffix) for suffix in signature_suffixes)
 
-    def _is_signature(path: Path) -> bool:
-        name = path.name.lower()
-        return any(name.endswith(suffix) for suffix in signature_suffixes)
+        def _is_extractable(path: Path) -> bool:
+            if not path.is_file():
+                return False
+            if _is_signature(path):
+                return False
+            if tarfile.is_tarfile(path):
+                return True
+            lowered = path.name.lower()
+            return any(lowered.endswith(ext) for ext in extra_compressed_exts)
 
-    def _is_extractable(path: Path) -> bool:
-        if not path.is_file():
-            return False
-        if _is_signature(path):
-            return False
-        if tarfile.is_tarfile(path):
-            return True
-        lowered = path.name.lower()
-        return any(lowered.endswith(ext) for ext in extra_compressed_exts)
-
-    archive_path: Optional[Path] = None
-    for candidate in _iter_stage_candidates(staged_entries):
-        if _is_extractable(candidate):
-            archive_path = candidate
-            break
-    if archive_path is None:
-        for candidate in sorted(srcroot.rglob("*")):
+        archive_path: Optional[Path] = None
+        for candidate in _iter_stage_candidates(staged_entries):
             if _is_extractable(candidate):
                 archive_path = candidate
                 break
+        if archive_path is None:
+            for candidate in sorted(srcroot.rglob("*")):
+                if _is_extractable(candidate):
+                    archive_path = candidate
+                    break
 
-    if archive_path is not None:
-        target_dir = srcroot / f"{name}-{version}"
-        prepare_directory(target_dir, privileged=False)
+        if archive_path is not None:
+            target_dir = srcroot / f"{name}-{version}"
+            prepare_directory(target_dir, privileged=False)
 
-        def _extract_with_tarfile(path: Path, dest: Path) -> None:
-            def _strip_member(name: str) -> Optional[str]:
-                parts = [part for part in name.split("/") if part and part != "."]
-                if len(parts) <= 1:
-                    return None
-                return "/".join(parts[1:])
+            def _extract_with_tarfile(path: Path, dest: Path) -> None:
+                def _strip_member(name: str) -> Optional[str]:
+                    parts = [part for part in name.split("/") if part and part != "."]
+                    if len(parts) <= 1:
+                        return None
+                    return "/".join(parts[1:])
 
-            fileobj: Optional[io.BytesIO] = None
-            tf: Optional[tarfile.TarFile] = None
+                fileobj: Optional[io.BytesIO] = None
+                tf: Optional[tarfile.TarFile] = None
+                try:
+                    lowered_name = path.name.lower()
+                    if lowered_name.endswith(".tar.zst"):
+                        data = zstd.ZstdDecompressor().decompress(path.read_bytes())
+                        fileobj = io.BytesIO(data)
+                        tf = tarfile.open(fileobj=fileobj, mode="r:")
+                    else:
+                        tf = tarfile.open(path)
+
+                    members = []
+                    for member in tf.getmembers():
+                        stripped = _strip_member(member.name)
+                        if stripped is None:
+                            continue
+                        member.name = stripped
+                        members.append(member)
+
+                    for member in progress_bar(
+                        members,
+                        desc=f"Extracting {path.name}",
+                        unit="file",
+                        total=len(members),
+                    ):
+                        tf.extract(member, path=str(dest), filter="data")
+                finally:
+                    if tf is not None:
+                        tf.close()
+                    if fileobj is not None:
+                        fileobj.close()
+
             try:
-                lowered_name = path.name.lower()
-                if lowered_name.endswith(".tar.zst"):
-                    data = zstd.ZstdDecompressor().decompress(path.read_bytes())
-                    fileobj = io.BytesIO(data)
-                    tf = tarfile.open(fileobj=fileobj, mode="r:")
-                else:
-                    tf = tarfile.open(path)
+                _extract_with_tarfile(archive_path, target_dir)
+            except Exception:
+                try:
+                    subprocess.run(
+                        [
+                            "tar",
+                            "--strip-components=1",
+                            "-xaf",
+                            str(archive_path),
+                            "-C",
+                            str(target_dir),
+                        ],
+                        check=True,
+                    )
+                except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+                    die(f"Could not extract {archive_path}: {exc}")
 
-                members = []
-                for member in tf.getmembers():
-                    stripped = _strip_member(member.name)
-                    if stripped is None:
-                        continue
-                    member.name = stripped
-                    members.append(member)
+        patch_target = srcroot
+        extracted_target = srcroot / f"{name}-{version}"
+        if archive_path is not None and extracted_target.is_dir():
+            patch_target = extracted_target
+        elif archive_path is None:
+            source_directories = [
+                candidate
+                for candidate in srcroot.iterdir()
+                if candidate.is_dir() and candidate.name != "__pycache__"
+            ]
+            if len(source_directories) == 1:
+                patch_target = source_directories[0]
 
-                for member in progress_bar(
-                    members,
-                    desc=f"Extracting {path.name}",
-                    unit="file",
-                    total=len(members),
-                ):
-                    tf.extract(member, path=str(dest), filter="data")
-            finally:
-                if tf is not None:
-                    tf.close()
-                if fileobj is not None:
-                    fileobj.close()
+        _apply_lpmbuild_patches(declared_patches, srcroot, patch_target)
 
-        try:
-            _extract_with_tarfile(archive_path, target_dir)
-        except Exception:
-            try:
-                subprocess.run(
-                    [
-                        "tar",
-                        "--strip-components=1",
-                        "-xaf",
-                        str(archive_path),
-                        "-C",
-                        str(target_dir),
-                    ],
-                    check=True,
-                )
-            except (FileNotFoundError, subprocess.CalledProcessError):
-                pass
+        run_hook(
+            "post_source_fetch",
+            {
+                "LPM_NAME": name,
+                "LPM_VERSION": version,
+                "LPM_RELEASE": release,
+                "LPM_SRCROOT": str(srcroot),
+                "LPM_SOURCE_ENTRIES": "\n".join(staged_entries),
+            },
+        )
 
-    patch_target = srcroot
-    extracted_target = srcroot / f"{name}-{version}"
-    if archive_path is not None and extracted_target.is_dir():
-        patch_target = extracted_target
-    elif archive_path is None:
-        source_directories = [
-            candidate
-            for candidate in srcroot.iterdir()
-            if candidate.is_dir() and candidate.name != "__pycache__"
-        ]
-        if len(source_directories) == 1:
-            patch_target = source_directories[0]
-
-    _apply_lpmbuild_patches(declared_patches, srcroot, patch_target)
-
-    run_hook(
-        "post_source_fetch",
-        {
-            "LPM_NAME": name,
-            "LPM_VERSION": version,
-            "LPM_RELEASE": release,
-            "LPM_SRCROOT": str(srcroot),
-            "LPM_SOURCE_ENTRIES": "\n".join(staged_entries),
-        },
-    )
+        _session.record_sources(srcroot)
+    else:
+        log("[resume] Skipping fetch, extraction, patches and source hooks")
 
     # --- Run build functions inside sandbox ---
     def run_func(func: str, cwd: Path):
@@ -5233,8 +5243,17 @@ def run_lpmbuild(
             aliases=phase_aliases,
         )
 
-    env["LPM_BUILD_STAGE"] = str(_build_stage)
-    phases = ("prepare", "build", "staging")
+    check_probe = subprocess.run(
+        ["bash", "-c", 'source "$1"; declare -F check >/dev/null || { [ "$2" = 2 ] && declare -F check_stage2 >/dev/null; }',
+         "bash", str(script_path), str(_build_stage)], env=env, check=False,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    phases = ("prepare", "build", "check", "staging") if check_probe.returncode == 0 else ("prepare", "build", "staging")
+    if not _session.done("package") and _session.resume:
+        # Re-stage from scratch on retry; never mix partially installed modules.
+        if "staging" in _session.data["completed"]:
+            _session.data["completed"].remove("staging")
+            _session.save()
     with progress_bar(
         phases,
         unit="phase",
@@ -5244,147 +5263,168 @@ def run_lpmbuild(
     ) as pbar:
         for phase in pbar:
             pbar.set_description(phase)
+            if _session.done(phase):
+                log(f"[resume] Skipping completed {phase}")
+                continue
+            _session.begin(phase)
+            if phase == "staging" and _session.resume:
+                prepare_directory(stagedir, privileged=True, reset=True)
+                _session.refresh("pkg", stagedir)
+                split_record_path.write_text("", encoding="utf-8")
             try:
                 run_func(phase, srcroot)
             except subprocess.CalledProcessError as e:
                 die(f"{script.name}: function '{phase}' failed with code {e.returncode}")
+            _session.complete(phase)
+            if phase == "prepare":
+                _session.record_kmake(srcroot)
     phase_count = getattr(pbar, "completed", pbar.n)
     duration = getattr(pbar, "end_time", time.time()) - getattr(pbar, "start_time", 0.0)
 
-    if build_options.stripping:
-        stripped_count = _strip_staged_payload(stagedir)
-        log(f"[build-options] stripped {stripped_count} staged file(s)")
+    if _session.package_available():
+        record = _session.data["package"]
+        out, meta = Path(record["path"]), PkgMeta.from_dict(record["meta"])
+        split_records = [(Path(item["path"]), PkgMeta.from_dict(item["meta"]))
+                         for item in _session.data.get("splits", [])]
+        log(f"[resume] Reusing verified package: {out}")
+    else:
+        _session.begin("package")
+        if build_options.stripping:
+            stripped_count = _strip_staged_payload(stagedir)
+            log(f"[build-options] stripped {stripped_count} staged file(s)")
 
-    # --- Generate or capture install script ---
-    install_sh = stagedir / ".lpm-install.sh"
-    install_embedded = False
-    install_spec = scal.get("INSTALL", "").strip()
+        # --- Generate or capture install script ---
+        install_sh = stagedir / ".lpm-install.sh"
+        install_embedded = False
+        install_spec = scal.get("INSTALL", "").strip()
 
-    if install_spec:
-        candidates: List[Path] = []
-        spec_path = Path(install_spec)
-        if spec_path.is_absolute():
-            candidates.append(spec_path)
-        else:
-            candidates.append(srcroot / spec_path)
-            if script_dir != srcroot:
-                candidates.append(script_dir / spec_path)
+        if install_spec:
+            candidates: List[Path] = []
+            spec_path = Path(install_spec)
+            if spec_path.is_absolute():
+                candidates.append(spec_path)
+            else:
+                candidates.append(srcroot / spec_path)
+                if script_dir != srcroot:
+                    candidates.append(script_dir / spec_path)
 
-        for candidate in candidates:
-            if not candidate.exists() or not candidate.is_file():
-                continue
-            try:
-                body = candidate.read_text(encoding="utf-8")
-            except Exception as exc:
-                warn(f"Failed to read install script {candidate}: {exc}")
-                continue
+            for candidate in candidates:
+                if not candidate.exists() or not candidate.is_file():
+                    continue
+                try:
+                    body = candidate.read_text(encoding="utf-8")
+                except Exception as exc:
+                    warn(f"Failed to read install script {candidate}: {exc}")
+                    continue
 
-            log(f"[lpm] Embedding install hooks from {candidate.name}")
-            with install_sh.open("w", encoding="utf-8") as f:
-                f.write("#!/bin/bash\n")
-                f.write("set -euo pipefail\n\n")
-                f.write("action=${1:-install}\n")
-                f.write("new_full=${2:-}\n")
-                f.write("old_full=${3:-}\n")
-                f.write("source /dev/stdin <<'__LPM_INSTALL_BODY__'\n")
-                if body:
-                    f.write(body)
-                    if not body.endswith("\n"):
-                        f.write("\n")
-                f.write("__LPM_INSTALL_BODY__\n\n")
-                f.write("if declare -f post_install >/dev/null; then\n")
-                f.write("  post_install \"$new_full\"\n")
-                f.write("fi\n")
-                f.write("if [[ \"$action\" == \"upgrade\" ]] && declare -f post_upgrade >/dev/null; then\n")
-                f.write("  post_upgrade \"$new_full\" \"$old_full\"\n")
-                f.write("fi\n")
-            install_sh.chmod(0o755)
-            install_embedded = True
-            break
+                log(f"[lpm] Embedding install hooks from {candidate.name}")
+                with install_sh.open("w", encoding="utf-8") as f:
+                    f.write("#!/bin/bash\n")
+                    f.write("set -euo pipefail\n\n")
+                    f.write("action=${1:-install}\n")
+                    f.write("new_full=${2:-}\n")
+                    f.write("old_full=${3:-}\n")
+                    f.write("source /dev/stdin <<'__LPM_INSTALL_BODY__'\n")
+                    if body:
+                        f.write(body)
+                        if not body.endswith("\n"):
+                            f.write("\n")
+                    f.write("__LPM_INSTALL_BODY__\n\n")
+                    f.write("if declare -f post_install >/dev/null; then\n")
+                    f.write("  post_install \"$new_full\"\n")
+                    f.write("fi\n")
+                    f.write("if [[ \"$action\" == \"upgrade\" ]] && declare -f post_upgrade >/dev/null; then\n")
+                    f.write("  post_upgrade \"$new_full\" \"$old_full\"\n")
+                    f.write("fi\n")
+                install_sh.chmod(0o755)
+                install_embedded = True
+                break
+
+            if not install_embedded:
+                warn(f"install script '{install_spec}' requested but not found; falling back to default installer")
 
         if not install_embedded:
-            warn(f"install script '{install_spec}' requested but not found; falling back to default installer")
-
-    if not install_embedded:
-        try:
-            custom = subprocess.run(
-                ["bash", "-c", f'source "{script_path}"; declare -f install_script'],
-                capture_output=True,
-                text=True,
-            )
-            if custom.stdout.strip():
-                log(f"[lpm] Embedding custom install_script() from {script.name}")
-                with install_sh.open("w", encoding="utf-8") as f:
-                    f.write("#!/bin/sh\nset -e\n")
-                    f.write(custom.stdout)
-                    f.write("\ninstall_script \"$@\"\n")
-                install_sh.chmod(0o755)
-            else:
-                script_text = _resolve_lpm_attr(
-                    "generate_install_script", generate_install_script
-                )(stagedir)
-                with install_sh.open("w", encoding="utf-8") as f:
-                    if script_text.lstrip().startswith("#!"):
-                        f.write(script_text)
-                        if not script_text.endswith("\n"):
-                            f.write("\n")
-                    else:
-                        f.write("#!/bin/sh\n")
-                        f.write("set -e\n")
-                        if script_text:
+            try:
+                custom = subprocess.run(
+                    ["bash", "-c", f'source "{script_path}"; declare -f install_script'],
+                    capture_output=True,
+                    text=True,
+                )
+                if custom.stdout.strip():
+                    log(f"[lpm] Embedding custom install_script() from {script.name}")
+                    with install_sh.open("w", encoding="utf-8") as f:
+                        f.write("#!/bin/sh\nset -e\n")
+                        f.write(custom.stdout)
+                        f.write("\ninstall_script \"$@\"\n")
+                    install_sh.chmod(0o755)
+                else:
+                    script_text = _resolve_lpm_attr(
+                        "generate_install_script", generate_install_script
+                    )(stagedir)
+                    with install_sh.open("w", encoding="utf-8") as f:
+                        if script_text.lstrip().startswith("#!"):
                             f.write(script_text)
                             if not script_text.endswith("\n"):
                                 f.write("\n")
-                install_sh.chmod(0o755)
-        except Exception as e:
-            warn(f"Could not embed install script for {name}: {e}")
+                        else:
+                            f.write("#!/bin/sh\n")
+                            f.write("set -e\n")
+                            if script_text:
+                                f.write(script_text)
+                                if not script_text.endswith("\n"):
+                                    f.write("\n")
+                    install_sh.chmod(0o755)
+            except Exception as e:
+                warn(f"Could not embed install script for {name}: {e}")
 
-    # --- Package metadata ---
-    meta = PkgMeta(
-        name=name, version=version, release=release, arch=arch,
-        summary=summary, url=url, license=license_, developer=developer,
-        requires=arr.get("REQUIRES", []),
-        build_stage=_build_stage if stage2_requires else 2,
-        build_requires=list(arr.get("BUILD_REQUIRES", [])) + (stage2_requires if _build_stage == 2 else []),
-        provides=provides_list,
-        provides_by_package=provides_by_package,
-        conflicts=arr.get("CONFLICTS", []),
-        obsoletes=arr.get("OBSOLETES", []),
-        recommends=arr.get("RECOMMENDS", []),
-        suggests=arr.get("SUGGESTS", []),
-        kernel=kernel,
-        mkinitcpio_preset=mkinitcpio_preset,
-    )
+        # --- Package metadata ---
+        meta = PkgMeta(
+            name=name, version=version, release=release, arch=arch,
+            summary=summary, url=url, license=license_, developer=developer,
+            requires=arr.get("REQUIRES", []),
+            build_stage=_build_stage if stage2_requires else 2,
+            build_requires=list(arr.get("BUILD_REQUIRES", [])) + (stage2_requires if _build_stage == 2 else []),
+            provides=provides_list,
+            provides_by_package=provides_by_package,
+            conflicts=arr.get("CONFLICTS", []),
+            obsoletes=arr.get("OBSOLETES", []),
+            recommends=arr.get("RECOMMENDS", []),
+            suggests=arr.get("SUGGESTS", []),
+            kernel=kernel,
+            mkinitcpio_preset=mkinitcpio_preset,
+        )
 
-    outdir = script_dir if outdir is None else outdir
-    out = outdir / f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}"
-    _resolve_lpm_attr("build_package", build_package)(stagedir, meta, out, sign=True)
-    split_records: List[Tuple[Path, PkgMeta]] = []
-    try:
-        if split_record_path.exists():
-            for line in split_record_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                    path = Path(data.get("path", "")).resolve()
-                    meta_dict = data.get("meta", {})
-                    meta_dict.setdefault("name", meta.name)
-                    meta_dict.setdefault("version", meta.version)
-                    meta_dict.setdefault("release", meta.release)
-                    meta_dict.setdefault("arch", meta.arch)
-                    meta_dict.setdefault("developer", meta.developer)
-                    pkg_meta = PkgMeta.from_dict(meta_dict)
-                    split_records.append((path, pkg_meta))
-                except Exception as e:
-                    warn(f"Failed to parse split package record: {e}")
-    finally:
-        for tmp in tmp_files:
+        outdir = script_dir if outdir is None else outdir
+        out = outdir / f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}"
+        _resolve_lpm_attr("build_package", build_package)(stagedir, meta, out, sign=True)
+        split_records: List[Tuple[Path, PkgMeta]] = []
+        try:
+            if split_record_path.exists():
+                for line in split_record_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        path = Path(data.get("path", "")).resolve()
+                        meta_dict = data.get("meta", {})
+                        meta_dict.setdefault("name", meta.name)
+                        meta_dict.setdefault("version", meta.version)
+                        meta_dict.setdefault("release", meta.release)
+                        meta_dict.setdefault("arch", meta.arch)
+                        meta_dict.setdefault("developer", meta.developer)
+                        pkg_meta = PkgMeta.from_dict(meta_dict)
+                        split_records.append((path, pkg_meta))
+                    except Exception as e:
+                        warn(f"Failed to parse split package record: {e}")
+        finally:
+            for tmp in tmp_files:
+                with contextlib.suppress(Exception):
+                    tmp.unlink()
             with contextlib.suppress(Exception):
-                tmp.unlink()
-        with contextlib.suppress(Exception):
-            helper_path.unlink()
+                helper_path.unlink()
+
+    _session.finish(out, meta, split_records)
 
     if maintainer_mode.is_enabled():
         try:
@@ -5449,7 +5489,7 @@ def _run_stage2_queue(*, prompt_default=None, fetcher=None, on_built_package=Non
             script, outdir, prompt_default=prompt_default, fetcher=fetcher,
             cpu_overrides=CpuOverrides(**overrides) if overrides else None,
             on_built_package=on_built_package, _build_stage=stage,
-            _defer_stage2=True,
+            _defer_stage2=True, _resume_available=True,
         )
 
     return drain(_current_state_dir(), installed, build,
@@ -6232,6 +6272,8 @@ def cmd_buildpkg(a):
     cpu_override = _parse_cpu_overrides(getattr(a, "overrides", []))
 
     if a.python_pip:
+        if any(getattr(a, option, False) for option in ("resume", "restart", "build_status")):
+            die("Build checkpoints currently require a .lpmbuild recipe, not --python-pip")
         if a.script:
             die("Cannot specify both a .lpmbuild script and --python-pip")
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
@@ -6272,6 +6314,14 @@ def cmd_buildpkg(a):
                 die(f".lpmbuild script not found: {raw_script}")
 
     run_lpmbuild_fn = _resolve_lpm_attr("run_lpmbuild", run_lpmbuild)
+    build_control = {}
+    for option in ("resume", "restart", "build_status"):
+        if getattr(a, option, False):
+            build_control[option] = True
+    if build_control.get("build_status"):
+        status = run_lpmbuild_fn(script_path, a.outdir, cpu_overrides=cpu_override, **build_control)
+        print(json.dumps(status, indent=2, sort_keys=True))
+        return
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         future = executor.submit(
             run_lpmbuild_fn,
@@ -6282,6 +6332,7 @@ def cmd_buildpkg(a):
             prompt_default=a.install_default,
             executor=executor if worker_count > 1 else None,
             cpu_overrides=cpu_override,
+            **build_control,
         )
         out, duration, phases, splits = future.result()
 
@@ -7766,6 +7817,10 @@ def build_parser()->argparse.ArgumentParser:
         metavar="@Override=...",
         help="override CPU tuning, e.g. @Override=\"arch=x86_64v3 -march=x86_64v3 -mtune=generic\"",
     )
+    build_control = sp.add_mutually_exclusive_group()
+    build_control.add_argument("--resume", action="store_true", help="resume a validated checkpoint without source cleanup or extraction")
+    build_control.add_argument("--restart", action="store_true", help="explicitly discard the previous workspace and start fresh")
+    build_control.add_argument("--status", dest="build_status", action="store_true", help="show persistent build state without building")
     sp.add_argument("--outdir", default=Path.cwd(), type=Path)
     sp.add_argument("--no-deps", action="store_true", help="do not fetch or build dependencies")
     sp.add_argument(
@@ -7979,6 +8034,8 @@ def main(argv=None):
         die(str(e))
     except PermissionError as e:
         die(_state_setup_permission_message(e))
+    except BuildStateError as e:
+        die(str(e))
     except ResolutionError as e:
         die(f"dependency resolution failed: {e}")
 

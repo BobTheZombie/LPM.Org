@@ -255,7 +255,7 @@ $(UI_BIN_TARGET): Makefile lpm_ui.py $(SRC_FILES) | nuitka-install
 	@mkdir -p $(BUILD_DIR)
 	$(NUITKA) $(NUITKA_FLAGS) $(NUITKA_UI_FLAGS) --output-dir=$(BUILD_DIR) --output-filename=$(UI_APP_NAME).bin $(UI_ENTRY)
 
-$(STAGING_DIR): scripts/kmake docs/KMAKE.md check-binaries README.md LICENSE etc/lpm/lpm.conf usr/lib/sysusers.d/lpm.conf usr/lib/tmpfiles.d/lpm.conf $(BUILD_INFO_JSON)
+$(STAGING_DIR): scripts/kmake docs/KMAKE.md docs/BUILD-RESUME.md check-binaries README.md LICENSE etc/lpm/lpm.conf usr/lib/sysusers.d/lpm.conf usr/lib/tmpfiles.d/lpm.conf $(BUILD_INFO_JSON)
 	@mkdir -p $(DIST_DIR)
 	@rm -rf $@
 	mkdir -p $@/bin
@@ -274,6 +274,7 @@ $(STAGING_DIR): scripts/kmake docs/KMAKE.md check-binaries README.md LICENSE etc
 	mkdir -p $@/etc/lpm
 	cp etc/lpm/lpm.conf $@/etc/lpm/lpm.conf
 	install -Dm644 docs/KMAKE.md $@/usr/share/doc/lpm/KMAKE.md
+	install -Dm644 docs/BUILD-RESUME.md $@/usr/share/doc/lpm/BUILD-RESUME.md
 	cp README.md LICENSE $@
 	cat <<-'INSTALL_SH' > $@/install.sh
 	#!/bin/sh
@@ -299,6 +300,7 @@ $(STAGING_DIR): scripts/kmake docs/KMAKE.md check-binaries README.md LICENSE etc
 	fi
 
 	install -Dm644 "$${ROOT}/usr/share/doc/lpm/KMAKE.md" "$${DESTDIR}/usr/share/doc/lpm/KMAKE.md"
+	install -Dm644 "$${ROOT}/usr/share/doc/lpm/BUILD-RESUME.md" "$${DESTDIR}/usr/share/doc/lpm/BUILD-RESUME.md"
 	LIBLPM_HOOK_DEST="$${DESTDIR}/usr/share/liblpm"
 	rm -rf "$${LIBLPM_HOOK_DEST}/hooks"
 	mkdir -p "$${LIBLPM_HOOK_DEST}"
@@ -362,13 +364,14 @@ install: $(STAGING_DIR)
 
 # Install the command-line package manager without building or requiring
 # PySide6/lpm-ui. This is the bootstrap/chroot installation path.
-install-lpm: lpm $(BUILD_INFO_JSON) scripts/kmake docs/KMAKE.md
+install-lpm: lpm $(BUILD_INFO_JSON) scripts/kmake docs/KMAKE.md docs/BUILD-RESUME.md
 	set -eu
 	install -Dm755 "$(BIN_TARGET)" "$(DESTDIR)$(PREFIX)/bin/lpm"
 	install -Dm755 scripts/kmake "$(DESTDIR)$(PREFIX)/bin/kmake"
 	install -Dm644 "$(BUILD_INFO_JSON)" "$(DESTDIR)/usr/share/lpm/build-info.json"
 	install -Dm644 README.md "$(DESTDIR)/usr/share/doc/lpm/README.md"
 	install -Dm644 docs/KMAKE.md "$(DESTDIR)/usr/share/doc/lpm/KMAKE.md"
+	install -Dm644 docs/BUILD-RESUME.md "$(DESTDIR)/usr/share/doc/lpm/BUILD-RESUME.md"
 	install -Dm644 LICENSE "$(DESTDIR)/usr/share/licenses/lpm/LICENSE"
 	if [ -f docs/TECHNICAL-HOWTO.md ]; then
 		install -Dm644 docs/TECHNICAL-HOWTO.md "$(DESTDIR)/usr/share/doc/lpm/TECHNICAL-HOWTO.md"
