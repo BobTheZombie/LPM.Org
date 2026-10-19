@@ -175,6 +175,20 @@ args=sys.argv[1:]; base=Path(args[args.index('-b')+1])
         output=subprocess.check_output([*shlex.split(env['CC']), '--version'],env=env,text=True)
         self.assertIn('test-gcc-1',output)
 
+    def test_explicit_resume_and_session_mismatch(self):
+        with patch.dict(os.environ, {'LPM_BUILD_SESSION':'one'}):
+            self.configure()
+            with patch.dict(os.environ, {'TEST_FAIL_BUILD':'1'}):
+                self.assertEqual(self.run_cli('build'),1)
+            self.assertEqual(self.run_cli('resume'),0)
+        with patch.dict(os.environ, {'LPM_BUILD_SESSION':'two'}):
+            self.assertEqual(self.run_cli('resume'),1)
+        self.assertTrue((self.output/'reused.o').is_file())
+
+    def test_resume_does_not_configure_missing_state(self):
+        self.assertEqual(self.run_cli('resume'),1)
+        self.assertFalse((self.output/'.config').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

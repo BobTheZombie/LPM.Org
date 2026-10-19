@@ -188,6 +188,7 @@ def test_run_lpmbuild_force_rebuild_builds_installed_dependencies(monkeypatch, t
             prompt_install=False,
             build_deps=True,
             force_rebuild=True,
+            restart=True,  # Previous sandbox failure left a protected workspace.
         )
 
     assert fetch_calls[-1] == "installed-dep"

@@ -120,13 +120,20 @@ class KernelBuild:
     def locked(self):
         self.output.mkdir(parents=True, exist_ok=True)
         with (self.output/'.kmake.lock').open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise ValueError('Another kmake operation is using this output directory') from None
             if self.path.exists():
                 self.state = json.loads(self.path.read_text())
                 if self.state.get('schema') != SCHEMA:
                     raise ValueError('Unsupported kmake state schema')
                 if self.state.get('source') != str(self.source):
                     raise ValueError('This output directory belongs to another source tree')
+                token = os.environ.get('LPM_BUILD_SESSION')
+                previous = self.state.get('lpm_build_session')
+                if token and previous and token != previous:
+                    raise ValueError('Kernel objects belong to another buildpkg session; resume refused')
             yield
 
     def save(self):
@@ -202,7 +209,8 @@ class KernelBuild:
         release = self.command('-s', '--no-print-directory', 'kernelrelease', capture=True)
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]*', release):
             raise ValueError(f'Invalid kernel release: {release!r}')
-        self.state.update(configured=True, release=release, config_hash=digest(config),
+        self.state.update(lpm_build_session=os.environ.get('LPM_BUILD_SESSION', self.state.get('lpm_build_session')),
+                          configured=True, release=release, config_hash=digest(config),
                           makefile_hash=digest(self.source/'Makefile'), compiler=self.identity(),
                           inputs={str(p):digest(p) for p in ([baseline] if baseline else [])+fragments})
         self.save()
@@ -314,6 +322,7 @@ def parser():
     c.add_argument('--defconfig', action='store_true', help='explicitly opt into architecture defaults')
     c.add_argument('--require', action='append', default=[], help='additional symbol required built-in')
     sub.add_parser('build', help='resume incremental kernel and module compilation')
+    sub.add_parser('resume', help='resume an existing configured kernel build without configure or cleanup')
     sub.add_parser('check', help='validate completed build artifacts')
     sub.add_parser('status', help='print recorded state and current configuration fingerprint')
     s = sub.add_parser('stage', help='stage modules/image for an LPM package; never boot deployment')
@@ -342,7 +351,7 @@ def main(argv=None):
                     raise ValueError('No completed build')
                 build.check_artifacts()
             else:
-                getattr(build, args.action)()
+                getattr(build, 'build' if args.action == 'resume' else args.action)()
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
         print(f'[kmake] ERROR: {exc}', file=sys.stderr)

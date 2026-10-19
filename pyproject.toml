@@ -37,7 +37,7 @@ py-modules = ["config", "first_run_ui", "fs", "installgen", "maintainer_mode"]
 lpm = ["bin/*"]
 
 [tool.setuptools.data-files]
-"share/doc/lpm" = ["docs/KMAKE.md"]
+"share/doc/lpm" = ["docs/KMAKE.md", "docs/BUILD-RESUME.md"]
 "etc/lpm" = ["etc/lpm/lpm.conf"]
 "share/liblpm/hooks" = ["usr/share/liblpm/hooks/*.hook"]
 "libexec/lpm/hooks" = ["usr/libexec/lpm/hooks/[a-z]*", "usr/libexec/lpm/hooks/_targets.py"]

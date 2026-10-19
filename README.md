@@ -845,3 +845,11 @@ recipe examples, including the kernel-specific `$LPM_KERNEL_MAKE` helper.
 
 Use `kmake` (or `lpm kmake`) for resumable, resource-budgeted kernel builds.
 See [the kmake guide](docs/KMAKE.md) for configuration, compiler caches, and lpmbuild integration.
+
+### Resuming interrupted package builds
+
+`lpm buildpkg recipe.lpmbuild --resume` validates its saved state before any
+source cleanup and continues from the unfinished phase. `--status` shows the
+checkpoint; `--restart` explicitly discards the workspace. See
+[build resume](docs/BUILD-RESUME.md). The recipe-only `KMAKE_RESUME` flag is not a
+replacement for `buildpkg --resume`.
