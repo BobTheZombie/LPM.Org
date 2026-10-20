@@ -73,7 +73,7 @@ def _mkinitcpio_extra_args(root: Path) -> List[str]:
     if not config.is_file():
         return []
     contents = config.read_text(encoding="utf-8")
-    match = re.search(r"^\\s*HOOKS\\s*=\\s*\\((.*?)\\)", contents, re.MULTILINE | re.DOTALL)
+    match = re.search(r"^\s*HOOKS\s*=\s*\((.*?)\)", contents, re.MULTILINE | re.DOTALL)
     if not match or "systemd" not in shlex.split(match.group(1), comments=True):
         return []
     loader = root / "usr/lib/ld-linux-x86-64.so.2"
