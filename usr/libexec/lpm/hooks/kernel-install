@@ -91,9 +91,17 @@ def _run_mkinitcpio(root: Path, version: str) -> None:
     args = ["mkinitcpio"]
     if root != Path("/"):
         args.extend(["-r", str(root)])
-    args.extend(_mkinitcpio_extra_args(root))
+    extras = _mkinitcpio_extra_args(root)
+    args.extend(extras)
     args.extend(["-k", version, "-g", str(output)])
     _run_command(args)
+    if extras:
+        listing = subprocess.run(
+            ["lsinitcpio", "-l", str(output)],
+            check=True, capture_output=True, text=True,
+        ).stdout.splitlines()
+        if "usr/lib/ld-linux-x86-64.so.2" not in listing:
+            raise RuntimeError(f"Initramfs lacks required systemd ELF interpreter: {output}")
 
 
 def _run_depmod(root: Path, version: str) -> None:
