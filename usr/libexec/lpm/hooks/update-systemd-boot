@@ -87,6 +87,47 @@ def prepare_entries(root, esp, config):
     return entries
 
 
+def ensure_esp_mounted(root, esp, device=''):
+    """Mount the ESP from fstab, or an explicitly configured UUID/PARTUUID."""
+    if not esp.is_absolute() or esp.is_symlink():
+        raise RuntimeError(f'Invalid ESP mountpoint: {esp}')
+    if os.path.ismount(esp):
+        return
+    if not esp.is_dir():
+        raise RuntimeError(f'ESP mountpoint does not exist: {esp}')
+    fstab = root/'etc/fstab'
+    entries = []
+    if fstab.is_file():
+        for line in fstab.read_text(encoding='utf-8').splitlines():
+            line = line.split('#', 1)[0].strip()
+            fields = line.split()
+            if len(fields) >= 3 and fields[1] == str(esp):
+                entries.append(fields)
+    if len(entries) > 1:
+        raise RuntimeError(f'Ambiguous ESP /etc/fstab entries: {esp}')
+    if entries and entries[0][2] not in ('vfat', 'auto'):
+        raise RuntimeError(f'ESP fstab entry must specify vfat or auto: {esp}')
+    mount = shutil.which('mount')
+    if mount is None:
+        raise RuntimeError('mount utility not found; cannot mount ESP')
+    if entries:
+        command = [mount, str(esp)]
+    else:
+        if not re.fullmatch(r'(?:UUID|PARTUUID)=[A-Za-z0-9-]+', device):
+            raise RuntimeError(
+                f'ESP is unmounted: add {esp} to /etc/fstab or configure '
+                'esp_device = UUID=... in /etc/lpm/systemd-boot.conf'
+            )
+        command = [mount, '-t', 'vfat', device, str(esp)]
+    print(f'[lpm:systemd-boot] Mounting configured ESP: {esp}')
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f'Failed mounting configured ESP: {esp}') from exc
+    if not os.path.ismount(esp):
+        raise RuntimeError(f'ESP mount command succeeded but mountpoint remains unmounted: {esp}')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--install', action='store_true', help='explicitly install systemd-boot without modifying firmware variables')
@@ -108,12 +149,7 @@ def main(argv=None):
         return 0
     config = cfg['boot']
     esp = Path(config.get('esp', '/boot/efi'))
-    if not esp.is_absolute() or not os.path.ismount(esp):
-        message = f'Configured ESP is not mounted: {esp}'
-        if args.install:
-            raise RuntimeError(message)
-        print('[lpm:systemd-boot] '+message+'; skipping')
-        return 0
+    ensure_esp_mounted(root, esp, config.get('esp_device', '').strip())
     bootctl = shutil.which('bootctl')
     if not bootctl:
         raise RuntimeError('bootctl is missing; install systemd with bootloader support')

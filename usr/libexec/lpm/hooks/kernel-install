@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -58,6 +60,29 @@ def _collect_versions(argv: Iterable[str]) -> List[str]:
     return ordered
 
 
+def _mkinitcpio_extra_args(root: Path) -> List[str]:
+    """Include the x86-64 systemd ELF interpreter for systemd initramfs profiles.
+
+    LPM's mkinitcpio integration has observed the interpreter disappear when
+    supplied via FILES, while mkinitcpio --include reliably stages it.
+    Do not impose this systemd-specific dependency on other initramfs profiles.
+    """
+    if platform.machine() != "x86_64":
+        return []
+    config = root / "etc/mkinitcpio.conf"
+    if not config.is_file():
+        return []
+    contents = config.read_text(encoding="utf-8")
+    match = re.search(r"^\s*HOOKS\s*=\s*\((.*?)\)", contents, re.MULTILINE | re.DOTALL)
+    if not match or "systemd" not in shlex.split(match.group(1), comments=True):
+        return []
+    loader = root / "usr/lib/ld-linux-x86-64.so.2"
+    if not loader.is_file():
+        raise RuntimeError(f"systemd initramfs requires ELF interpreter: {loader}")
+    _log(f"Including systemd ELF interpreter: {loader}")
+    return ["--include", "/usr/lib/ld-linux-x86-64.so.2"]
+
+
 def _run_mkinitcpio(root: Path, version: str) -> None:
     output = root / "boot" / f"initrd-{version}.img"
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -66,8 +91,17 @@ def _run_mkinitcpio(root: Path, version: str) -> None:
     args = ["mkinitcpio"]
     if root != Path("/"):
         args.extend(["-r", str(root)])
+    extras = _mkinitcpio_extra_args(root)
+    args.extend(extras)
     args.extend(["-k", version, "-g", str(output)])
     _run_command(args)
+    if extras:
+        listing = subprocess.run(
+            ["lsinitcpio", "-l", str(output)],
+            check=True, capture_output=True, text=True,
+        ).stdout.splitlines()
+        if "usr/lib/ld-linux-x86-64.so.2" not in listing:
+            raise RuntimeError(f"Initramfs lacks required systemd ELF interpreter: {output}")
 
 
 def _run_depmod(root: Path, version: str) -> None:
@@ -82,6 +116,7 @@ def _run_preset(root: Path, preset: str) -> None:
     args = ["mkinitcpio"]
     if root != Path("/"):
         args.extend(["-r", str(root)])
+    args.extend(_mkinitcpio_extra_args(root))
     args.extend(["-p", preset])
     _run_command(args)
 

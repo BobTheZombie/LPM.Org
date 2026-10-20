@@ -930,3 +930,56 @@ def test_transaction_strict_mode_raises(tmp_path):
     manager.add_package_event(name="demo", operation="Remove", version="1", release="1", paths=["/usr/bin/demo"])
     with pytest.raises(HookExecutionError):
         manager.run_post_transaction()
+
+
+def test_hook_uses_targets_file_for_oversized_single_environment_value(monkeypatch, tmp_path):
+    hook = Hook(
+        name="large-kernel",
+        path=tmp_path / "large-kernel.hook",
+        triggers=[],
+        action=HookAction(when="PostTransaction", exec=["/usr/bin/fake-hook"], needs_targets=True),
+    )
+    manager = HookTransactionManager(hooks={hook.name: hook}, root=tmp_path)
+    calls = []
+
+    def fake_run(argv, check, env):
+        calls.append((list(argv), dict(env)))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr("src.lpm.hooks.__init__.subprocess.run", fake_run)
+    # Below the normal total ARG_MAX on Linux but above MAX_ARG_STRLEN.
+    targets = ["/usr/lib/modules/7-lpm/kernel/" + "a" * 90 for _ in range(1500)]
+    manager._run_hook(hook, targets)
+
+    assert len(calls) == 1
+    argv, env = calls[0]
+    assert argv == hook.action.exec
+    assert "LPM_TARGETS" not in env
+    assert "LPM_TARGETS_FILE" in env
+    assert env["LPM_TARGET_COUNT"] == str(len(targets))
+
+
+def test_hook_target_file_failure_is_collected(monkeypatch, tmp_path):
+    from src.lpm.hooks import HookFailureMode
+
+    hook = Hook(
+        name="large-failing",
+        path=tmp_path / "large-failing.hook",
+        triggers=[],
+        action=HookAction(when="PostTransaction", exec=["/usr/bin/fake-hook"], needs_targets=True),
+    )
+    manager = HookTransactionManager(
+        hooks={hook.name: hook}, root=tmp_path, failure_mode=HookFailureMode.COLLECT
+    )
+    monkeypatch.setattr(
+        "src.lpm.hooks.__init__._should_use_temp_targets", lambda argv, env: True
+    )
+
+    def fail_run(argv, check, env):
+        raise subprocess.CalledProcessError(8, argv)
+
+    monkeypatch.setattr("src.lpm.hooks.__init__.subprocess.run", fail_run)
+    manager._run_hook(hook, ["/usr/lib/modules/7-lpm/vmlinuz"])
+    assert len(manager.failures) == 1
+    assert manager.failures[0].hook_name == hook.name
+    assert "exit=8" in manager.failures[0].reason
