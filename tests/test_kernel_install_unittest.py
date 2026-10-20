@@ -52,9 +52,9 @@ class KernelInstallTests(unittest.TestCase):
 
 
     def test_missing_loader_in_successful_image_fails_validation(self):
-        (self.root / 'etc/mkinitcpio.conf').write_text('HOOKS=(systemd block filesystems)\\n')
+        (self.root / 'etc/mkinitcpio.conf').write_text('HOOKS=(systemd block filesystems)\n')
         (self.root / 'usr/lib/ld-linux-x86-64.so.2').write_bytes(b'loader')
-        listing = subprocess.CompletedProcess([], 0, stdout='init\\nusr/lib/systemd/systemd\\n')
+        listing = subprocess.CompletedProcess([], 0, stdout='init\nusr/lib/systemd/systemd\n')
         with patch.object(hook.platform, 'machine', return_value='x86_64'), \
              patch.object(hook, '_run_command'), \
              patch.object(hook.subprocess, 'run', return_value=listing):
