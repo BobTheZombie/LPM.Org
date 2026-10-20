@@ -11,10 +11,12 @@ this package does not enroll keys or sign kernels.
 
 ## Initial setup inside the target chroot
 
-1. Mount the existing EFI System Partition at /boot/efi (or change `esp` in
-   /etc/lpm/systemd-boot.conf). Add its UUID and mount point to /etc/fstab.
-   Do not format an existing partition. /boot/efi is only a default, not an
-   instruction to use a particular disk or partition.
+1. Configure the existing EFI System Partition mountpoint (`esp`, default
+   `/boot/efi`) in `/etc/lpm/systemd-boot.conf`. Add its UUID and mountpoint
+   to `/etc/fstab`, or set `esp_device = UUID=...` in the configuration
+   when fstab is unavailable. The helper mounts the partition automatically
+   if needed and reports mount failures rather than skipping deployment.
+   Do not format an existing partition. Do not guess a disk or partition.
 2. Install a kernel as /usr/lib/modules/VERSION/vmlinuz.
 3. Generate /boot/initrd-VERSION.img using your configured initramfs generator.
    LPM's existing kernel-install helper uses mkinitcpio. Change `initrd` in the
@@ -46,7 +48,8 @@ copied onto the ESP so paths in the entries are accessible to systemd-boot.
 
 The transaction hook responds to bootloader EFI binaries, versioned kernels,
 initramfs images and configuration changes. It updates only when systemd-boot
-is already installed on the configured, mounted ESP. Alternate-root LPM
+is already installed on the configured ESP. The helper can mount that ESP
+using /etc/fstab or an explicitly configured ESP UUID/PARTUUID. Alternate-root LPM
 transactions skip the helper; run setup inside the prepared target chroot.
 The existing LPM kernel helper calls this updater after generating initramfs.
 
