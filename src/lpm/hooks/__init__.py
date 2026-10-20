@@ -429,60 +429,57 @@ class HookTransactionManager:
             env["LPM_TARGET_COUNT"] = str(len(targets))
             env["LPM_TARGETS"] = "\n".join(targets)
             argv = base_argv + targets
-            if _should_use_temp_targets(argv, env):
+            use_targets_file = _should_use_temp_targets(argv, env)
+        else:
+            argv = base_argv
+            use_targets_file = False
+
+        package_context = ", ".join(sorted({e.name for e in self.events})) or "transaction"
+        try:
+            if use_targets_file:
                 logger.info(
-                    "Hook %s command line would exceed safe argument limits; "
+                    "Hook %s targets exceed safe argument/environment limits; "
                     "using temporary targets file",
                     hook.name,
                 )
                 _run_hook_with_temp_targets(
-                    base_argv=base_argv,
-                    env=env,
-                    hook_name=hook.name,
-                    targets=targets,
+                    base_argv=base_argv, env=env, hook_name=hook.name, targets=targets
                 )
-                return
-        else:
-            argv = base_argv
-        package_context = ", ".join(sorted({e.name for e in self.events})) or "transaction"
-        try:
-            with privileged_section():
-                subprocess.run(argv, check=True, env=env)
-        except OSError as exc:
-            if exc.errno == errno.E2BIG and action.needs_targets:
+            else:
+                with privileged_section():
+                    subprocess.run(argv, check=True, env=env)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            if (
+                isinstance(exc, OSError)
+                and exc.errno == errno.E2BIG
+                and action.needs_targets
+                and not use_targets_file
+            ):
                 logger.warning(
-                    "Hook %s command line exceeded argument limits; "
-                    "retrying without target arguments",
+                    "Hook %s exceeded argument limits; retrying with a targets file",
                     hook.name,
                 )
-                _run_hook_with_temp_targets(
-                    base_argv=base_argv,
-                    env=env,
-                    hook_name=hook.name,
-                    targets=targets,
-                )
-                return
-            error = HookExecutionError(
-                hook_name=hook.name,
-                hook_path=hook.path,
-                package_context=package_context,
-                command=argv,
-                reason=str(exc),
-            )
-            if action.abort_on_fail is not False:
-                self._handle_failure(error)
-            else:
-                self.failures.append(error)
-                logger.error("%s", error)
-        except subprocess.CalledProcessError as exc:
-            if action.abort_on_fail is True:
+                try:
+                    _run_hook_with_temp_targets(
+                        base_argv=base_argv, env=env, hook_name=hook.name, targets=targets
+                    )
+                except (OSError, subprocess.CalledProcessError) as retry_exc:
+                    exc = retry_exc
+                else:
+                    return
+            if isinstance(exc, subprocess.CalledProcessError) and action.abort_on_fail is True:
                 raise
+            reason = (
+                f"exit={exc.returncode}"
+                if isinstance(exc, subprocess.CalledProcessError)
+                else str(exc)
+            )
             error = HookExecutionError(
                 hook_name=hook.name,
                 hook_path=hook.path,
                 package_context=package_context,
                 command=argv,
-                reason=f"exit={exc.returncode}",
+                reason=reason,
             )
             if action.abort_on_fail is False:
                 self.failures.append(error)
@@ -501,11 +498,22 @@ class HookTransactionManager:
 def _should_use_temp_targets(
     argv: Sequence[str], env: Mapping[str, str]
 ) -> bool:
+    # Linux also limits each *individual* argument or environment string
+    # (MAX_ARG_STRLEN), independently of the aggregate ARG_MAX budget.
+    # A kernel transaction can exceed that limit through LPM_TARGETS alone.
+    single_limit = 128 * 1024 - 4096
+    if any(len(os.fsencode(value)) + 1 >= single_limit for value in argv):
+        return True
+    if any(
+        len(os.fsencode(key)) + len(os.fsencode(value)) + 2 >= single_limit
+        for key, value in env.items()
+    ):
+        return True
     arg_max = _get_arg_max()
     if arg_max <= 0:
         return False
     size = _estimate_command_size(argv, env)
-    threshold = max(arg_max - 4096, int(arg_max * 0.8))
+    threshold = min(max(arg_max - 4096, 0), int(arg_max * 0.8))
     return size >= threshold
 
 
