@@ -84,6 +84,34 @@ class SystemdBootTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'configured kernel command'):
             hook.prepare_entries(self.root,self.esp,self.config)
 
+    def test_mounts_unmounted_esp_using_fstab(self):
+        (self.root/'etc/fstab').write_text(
+            f'UUID=1234 {self.esp} vfat defaults 0 2\n'
+        )
+        with patch.object(hook.os.path, 'ismount', side_effect=[False, True]), \
+             patch.object(hook.shutil, 'which', return_value='/usr/bin/mount'), \
+             patch.object(hook.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+            hook.ensure_esp_mounted(self.root, self.esp)
+        run.assert_called_once_with(['/usr/bin/mount', str(self.esp)], check=True)
+
+    def test_unmounted_esp_without_fstab_entry_fails(self):
+        (self.root/'etc/fstab').write_text('UUID=1234 /other vfat defaults 0 2\n')
+        with patch.object(hook.os.path, 'ismount', return_value=False), \
+             patch.object(hook.subprocess, 'run') as run:
+            with self.assertRaisesRegex(RuntimeError, 'no /etc/fstab entry'):
+                hook.ensure_esp_mounted(self.root, self.esp)
+        run.assert_not_called()
+
+    def test_mount_command_must_result_in_mounted_esp(self):
+        (self.root/'etc/fstab').write_text(
+            f'UUID=1234 {self.esp} vfat defaults 0 2\n'
+        )
+        with patch.object(hook.os.path, 'ismount', return_value=False), \
+             patch.object(hook.shutil, 'which', return_value='/usr/bin/mount'), \
+             patch.object(hook.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
+            with self.assertRaisesRegex(RuntimeError, 'remains unmounted'):
+                hook.ensure_esp_mounted(self.root, self.esp)
+
     def test_alternate_root_skips(self):
         with patch.dict(hook.os.environ,LPM_ROOT=str(self.root)),patch.object(hook.subprocess,'run') as run:
             self.assertEqual(hook.main([]),0)
