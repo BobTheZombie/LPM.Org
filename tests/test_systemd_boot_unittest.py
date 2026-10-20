@@ -98,9 +98,19 @@ class SystemdBootTests(unittest.TestCase):
         (self.root/'etc/fstab').write_text('UUID=1234 /other vfat defaults 0 2\n')
         with patch.object(hook.os.path, 'ismount', return_value=False), \
              patch.object(hook.subprocess, 'run') as run:
-            with self.assertRaisesRegex(RuntimeError, 'no /etc/fstab entry'):
+            with self.assertRaisesRegex(RuntimeError, 'add '):
                 hook.ensure_esp_mounted(self.root, self.esp)
         run.assert_not_called()
+
+    def test_mounts_esp_using_explicit_uuid_when_fstab_lacks_entry(self):
+        with patch.object(hook.os.path, 'ismount', side_effect=[False, True]), \
+             patch.object(hook.shutil, 'which', return_value='/usr/bin/mount'), \
+             patch.object(hook.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+            hook.ensure_esp_mounted(self.root, self.esp, 'UUID=22D2-05C4')
+        run.assert_called_once_with(
+            ['/usr/bin/mount', '-t', 'vfat', 'UUID=22D2-05C4', str(self.esp)],
+            check=True,
+        )
 
     def test_mount_command_must_result_in_mounted_esp(self):
         (self.root/'etc/fstab').write_text(
