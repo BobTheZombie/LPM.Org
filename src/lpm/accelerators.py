@@ -57,9 +57,22 @@ def configure(env, buildroot, state, *, profile='generic', sandbox=False, report
     # CMake initializes this from the environment on a fresh configure. An
     # explicit project/user toolchain remains authoritative.
     pools = directory/'job-pools.cmake'
-    pools.write_text(f'set(CMAKE_JOB_POOLS "lpm_compile={jobs};lpm_link={links}" CACHE STRING "LPM Ninja pools")\n'
-                     'set(CMAKE_JOB_POOL_COMPILE lpm_compile CACHE STRING "LPM compile pool")\n'
-                     'set(CMAKE_JOB_POOL_LINK lpm_link CACHE STRING "LPM link pool")\n')
+    # CMAKE_JOB_POOLS is ignored when a project explicitly sets JOB_POOLS.
+    # Nested LLVM builds append their own pools to that global property.
+    # Register ours explicitly, without duplicates when toolchains are reloaded.
+    pools.write_text(
+        f'set(CMAKE_JOB_POOLS "lpm_compile={jobs};lpm_link={links}" CACHE STRING "LPM Ninja pools")\n'
+        'get_property(_lpm_registered_pools GLOBAL PROPERTY JOB_POOLS)\n'
+        'if(NOT ";${_lpm_registered_pools};" MATCHES ";lpm_compile=[0-9]+;")\n'
+        f'  set_property(GLOBAL APPEND PROPERTY JOB_POOLS "lpm_compile={jobs}")\n'
+        'endif()\n'
+        'if(NOT ";${_lpm_registered_pools};" MATCHES ";lpm_link=[0-9]+;")\n'
+        f'  set_property(GLOBAL APPEND PROPERTY JOB_POOLS "lpm_link={links}")\n'
+        'endif()\n'
+        'unset(_lpm_registered_pools)\n'
+        'set(CMAKE_JOB_POOL_COMPILE lpm_compile CACHE STRING "LPM compile pool")\n'
+        'set(CMAKE_JOB_POOL_LINK lpm_link CACHE STRING "LPM link pool")\n'
+    )
     env.setdefault('CMAKE_TOOLCHAIN_FILE', str(visible/pools.name))
     env['LPM_CMAKE_JOB_POOLS_FILE'] = str(visible/pools.name)
     kernel_make = directory/'kernel-make'

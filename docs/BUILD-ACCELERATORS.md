@@ -40,9 +40,13 @@ CMAKE_BUILD_PARALLEL_LEVEL and CMAKE_TOOLCHAIN_FILE are preserved. Recipes that
 hardcode `-j$(nproc)` override the resource budget: change those invocations to
 `-j"$LPM_BUILD_JOBS"` or `--parallel "$LPM_BUILD_JOBS"`.
 
-For CMake/Ninja, a generated toolchain file declares compile and link job pools,
-with one link job by default. Override LPM_LINK_JOBS if memory allows. This
-applies to fresh CMake configuration, not an already configured build directory.
+For CMake/Ninja, a generated toolchain file registers compile and link job pools
+in CMake's global `JOB_POOLS` property, with one link job by default. This avoids
+missing Ninja pool definitions when a nested project (such as Rust's LLVM build)
+adds its own pools and makes CMake ignore the `CMAKE_JOB_POOLS` fallback. Pool
+registration is idempotent because CMake can load toolchains multiple times.
+Override LPM_LINK_JOBS if memory allows. This applies to fresh CMake
+configuration, not an already configured build directory.
 If supplying your own toolchain, include `$ENV{LPM_CMAKE_JOB_POOLS_FILE}` there
 (or merge the pool settings manually). Project-specific pool overrides win.
 Raw Ninja and Meson projects retain their own scheduling; no unsupported global

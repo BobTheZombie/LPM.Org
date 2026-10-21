@@ -27,6 +27,34 @@ class AcceleratorTests(unittest.TestCase):
         self.assertEqual(qt['LPM_LINK_JOBS'],'1')
         self.assertIn('lpm_link=1', (self.root/'build/accelerators/job-pools.cmake').read_text())
 
+    def test_nested_llvm_cmake_pools_are_defined_once(self):
+        # LLVM sets the JOB_POOLS global property explicitly. CMake then
+        # ignores CMAKE_JOB_POOLS, so LPM must register its pools globally.
+        if not all(shutil.which(cmd) for cmd in ("cmake", "ninja", "cc")):
+            self.skipTest("CMake, Ninja or C compiler unavailable")
+        env = self.configure()
+        source = self.root / "nested-llvm"
+        source.mkdir()
+        (source / "CMakeLists.txt").write_text(
+            "cmake_minimum_required(VERSION 3.18)\n"
+            "project(nested_llvm LANGUAGES C)\n"
+            "set_property(GLOBAL APPEND PROPERTY JOB_POOLS llvm_compile=2 llvm_link=1)\n"
+            # Deliberately reload the toolchain: CMake itself can load it twice.
+            "include(\"${CMAKE_TOOLCHAIN_FILE}\")\n"
+            "add_executable(pooltest main.c)\n"
+        )
+        (source / "main.c").write_text("int main(void) { return 0; }\n")
+        build = self.root / "nested-llvm-build"
+        subprocess.run([
+            "cmake", "-S", str(source), "-B", str(build), "-G", "Ninja",
+            "-DCMAKE_TOOLCHAIN_FILE=" + env["CMAKE_TOOLCHAIN_FILE"],
+        ], check=True, capture_output=True, text=True)
+        rules = (build / "CMakeFiles" / "rules.ninja").read_text()
+        for pool in ("lpm_compile", "lpm_link", "llvm_compile", "llvm_link"):
+            self.assertEqual(rules.count(f"pool {pool}\n"), 1)
+        subprocess.run(["ninja", "-C", str(build)],
+                       check=True, capture_output=True, text=True)
+
     def test_explicit_jobs_and_toolchain_preserved(self):
         env=self.configure({**self.env,'LPM_BUILD_JOBS':'12','MAKEFLAGS':'-j3',
                             'CMAKE_BUILD_PARALLEL_LEVEL':'3','CMAKE_TOOLCHAIN_FILE':'custom.cmake'})
