@@ -139,6 +139,8 @@ def test_remote_fetch_category_relative_source_origin(tmp_path, monkeypatch):
             return json.dumps(tree).encode(), url
         if url == BASE + "/--KDE--/qt6-base/qt6-base.lpmbuild":
             return recipe, url
+        if url == BASE + "/--KDE--/qt6-base/patch.diff":
+            return b"patch-data", url
         raise FileNotFoundError(url)
 
     monkeypatch.setattr(lpm, "urlread", reader)
@@ -166,8 +168,7 @@ def test_remote_fetch_category_relative_source_origin(tmp_path, monkeypatch):
     assert out.is_file()
     assert BASE + "/--KDE--/qt6-base/patch.diff" in urls
 
-    # With an already cached index, a second categorized recipe is fetched
-    # without a failed request against the flat package path.
+    # Remove the temporary sandboxed build paths after validation.
     import shutil
     shutil.rmtree(Path("/tmp/src-qt6-base"), ignore_errors=True)
     shutil.rmtree(Path("/tmp/pkg-qt6-base"), ignore_errors=True)
