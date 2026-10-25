@@ -886,3 +886,30 @@ their historic flat-directory fetching behavior.
 The GitLab tree endpoint requires read access to the project; public projects
 work without authentication. This feature does not change binary `index.json`
 repositories, package names, or LPM's dependency solver.
+
+
+### Building a package by name from the source repository
+
+`lpm buildpkg` accepts either a local recipe file or a package name. For
+example, all of these forms are supported:
+
+```sh
+lpm buildpkg plasma6-full
+lpm buildpkg qt6-base.lpmbuild
+lpm buildpkg ./custom.lpmbuild
+lpm buildpkg -- ./--KDE--/kwin/kwin.lpmbuild
+```
+
+An existing local `.lpmbuild` path takes priority. Bare package names also
+check the current directory and local package trees, including
+`packages/<name>/<name>.lpmbuild` and
+`--KDE--/<name>/<name>.lpmbuild`. If the named package has no local
+recipe, LPM fetches its recipe from `LPMBUILD_REPO` in
+`/etc/lpm/lpm.conf`. Remote categories such as `--KDE--` are resolved
+automatically using GitLab tree discovery, and the normal recursive
+dependency builder can fetch other remote recipe names the same way.
+
+If a path containing a slash (such as `./missing.lpmbuild`) is missing,
+LPM reports a missing local file rather than silently downloading another
+package. Use the bare package name to request remote resolution. Passing
+`--no-deps` disables dependency builds, not fetching the target recipe.
