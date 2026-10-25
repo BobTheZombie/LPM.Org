@@ -234,6 +234,13 @@ from installgen import generate_install_script, relativize_symlink_target
 from first_run_ui import FirstRunSetupError, run_first_run_wizard
 import maintainer_mode
 from . import config as _config
+from .repo_categories import (
+    CategoryLookupError,
+    cached_category_path,
+    discover_category_path,
+    supports_category_discovery,
+    valid_package_name,
+)
 from .atomic_io import atomic_replace, safe_write
 from .fs_ops import operation_phase, prepare_directory
 from .privileges import privilege_info, privileged_section, privileges_enabled, require_root
@@ -4117,25 +4124,69 @@ def _fetch_git_source(url: str, dst_dir: Path, *, alias: Optional[str] = None) -
     return True
 
 # ======================= LPMBUILD =============================================
+# In-process provenance for remote recipe files. Dependency builders download
+# to /tmp, so the script directory alone cannot locate relative SOURCE entries.
+_LPMBUILD_RECIPE_SOURCE_BASES: Dict[str, str] = {}
+
+
 def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
-    """
-    Fetch a .lpmbuild script from the configured source repo.
-    Default: https://gitlab.com/lpm-org/packages/-/raw/main/<pkg>/<pkg>.lpmbuild
-    Can be overridden in /etc/lpm/lpm.conf:
-      LPMBUILD_REPO=https://gitlab.com/myuser/myrepo/-/raw/main
-    """
-    base_url = CONF.get("LPMBUILD_REPO", "https://gitlab.com/lpm-org/packages/-/raw/main")
+    """Fetch a remote lpmbuild, including GitLab --CATEGORY-- directories.
 
-    url = f"{base_url.rstrip('/')}/{pkgname}/{pkgname}.lpmbuild"
+    Flat <name>/<name>.lpmbuild paths retain priority. A cached GitLab tree
+    index avoids re-probing missing flat paths for successive dependencies.
+    """
+    if not valid_package_name(pkgname):
+        die(f"Invalid lpmbuild package name: {pkgname!r}")
 
-    ok(f"Fetching lpmbuild for {pkgname} from {url}")
+    base_url = str(CONF.get(
+        "LPMBUILD_REPO", "https://gitlab.com/lpm-org/packages/-/raw/main"
+    )).rstrip("/")
+    reader = _resolve_lpm_attr("urlread", urlread)
+    flat_path = f"{pkgname}/{pkgname}.lpmbuild"
+    tried: List[str] = []
+    errors: List[str] = []
+    dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
+
+    def try_path(path: str) -> bool:
+        url = f"{base_url}/{path}"
+        if url in tried:
+            return False
+        tried.append(url)
+        ok(f"Fetching lpmbuild for {pkgname} from {url}")
+        try:
+            data, _ = reader(url)
+        except Exception as exc:
+            errors.append(f"{url}: {exc}")
+            return False
+        dst.write_bytes(data)
+        # Remember the original repository directory for relative SOURCE files.
+        _LPMBUILD_RECIPE_SOURCE_BASES[str(dst.resolve())] = url.rsplit("/", 1)[0] + "/"
+        return True
+
     try:
-        data, _ = _resolve_lpm_attr("urlread", urlread)(url)
-    except Exception as e:
-        die(f"Failed to fetch lpmbuild for {pkgname}: {e}")
-    dst.write_bytes(data)
-    return dst
+        known = cached_category_path(base_url, pkgname)
+    except CategoryLookupError as exc:
+        die(f"Failed to fetch lpmbuild for {pkgname}: {exc}")
+
+    if known and try_path(known):
+        return dst
+    if try_path(flat_path):
+        return dst
+
+    if supports_category_discovery(base_url):
+        try:
+            discovered = discover_category_path(
+                base_url, pkgname, reader, refresh=bool(known)
+            )
+        except CategoryLookupError as exc:
+            die(f"Failed to fetch lpmbuild for {pkgname}: {exc}")
+        if discovered and try_path(discovered):
+            return dst
+
+    reason = "; ".join(errors) if errors else "no matching recipe found"
+    die(f"Failed to fetch lpmbuild for {pkgname}: {reason}")
+
 
 
     
@@ -5047,7 +5098,9 @@ def run_lpmbuild(
             _maybe_fetch_source(url, srcroot)
 
         base_repo = CONF.get("LPMBUILD_REPO", "https://gitlab.com/lpm-org/packages/-/raw/main").rstrip("/")
-        base_source_prefix = f"{base_repo}/{name}/"
+        base_source_prefix = _LPMBUILD_RECIPE_SOURCE_BASES.get(
+            str(script_path), f"{base_repo}/{name}/"
+        )
         for entry in sources:
             alias: Optional[str] = None
             source_ref = entry

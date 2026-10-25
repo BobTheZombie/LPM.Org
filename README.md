@@ -853,3 +853,36 @@ source cleanup and continues from the unfinished phase. `--status` shows the
 checkpoint; `--restart` explicitly discards the workspace. See
 [build resume](docs/BUILD-RESUME.md). The recipe-only `KMAKE_RESUME` flag is not a
 replacement for `buildpkg --resume`.
+
+
+### Categorized GitLab source recipes
+
+LPM source repositories may keep ordinary flat package paths and also group
+recipes beneath top-level category markers such as `--KDE--`:
+
+```text
+packages/
+  glibc/glibc.lpmbuild
+  --KDE--/
+    qt6-base/qt6-base.lpmbuild
+    plasma-meta/plasma-meta.lpmbuild
+```
+
+Only a top-level directory named `--CATEGORY--` marks a category. Its
+name does not become part of the package name: `lpm buildpkg qt6-base`
+and dependencies like `REQUIRES=("qt6-base")` work unchanged. Direct
+`--KDE--/qt6-base.lpmbuild` recipes are also recognized.
+
+For a GitLab `LPMBUILD_REPO` raw URL, LPM first tries the historic flat
+path; when missing, it indexes the GitLab repository tree API and resolves
+categorized recipes by their exact file names. The discovery index is reused
+for five minutes within the LPM process, including recursive dependency builds.
+Flat paths are preferred on first lookup; duplicate package names across
+categories cause an explicit error rather than selecting an arbitrary package.
+Relative `SOURCE` entries fetched by LPM are resolved from the remote
+recipe's own category directory. Existing non-GitLab repositories retain
+their historic flat-directory fetching behavior.
+
+The GitLab tree endpoint requires read access to the project; public projects
+work without authentication. This feature does not change binary `index.json`
+repositories, package names, or LPM's dependency solver.
