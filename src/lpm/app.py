@@ -230,7 +230,7 @@ from .config import (
     initialize_state,
 )
 from fs import read_json, write_json, urlread
-from installgen import generate_install_script
+from installgen import generate_install_script, relativize_symlink_target
 from first_run_ui import FirstRunSetupError, run_first_run_wizard
 import maintainer_mode
 from . import config as _config
@@ -6782,7 +6782,8 @@ def installpkg(
                 return
 
         def _verify_committed_payload(
-            manifest: Iterable[dict], *, verify_content: bool = True
+            manifest: Iterable[dict], *, verify_content: bool = True,
+            allow_rewritten_absolute_links: bool = False
         ) -> None:
             """Prove every manifest payload exists at its final destination."""
             failures: List[str] = []
@@ -6802,7 +6803,19 @@ def installpkg(
                         failures.append(f"{raw_path}: expected symlink")
                         continue
                     actual_link = os.readlink(dest)
-                    if actual_link != expected_link:
+                    # The generated install script rewrites package-absolute
+                    # links into exactly one relative representation so they
+                    # also work when installed under a non-root prefix.
+                    # Only permit that precise rewrite after the script runs;
+                    # archive/pre-script verification still requires an exact match.
+                    rewritten_link = (
+                        allow_rewritten_absolute_links
+                        and expected_link.startswith("/")
+                        and actual_link == relativize_symlink_target(
+                            str(raw_path), expected_link
+                        )
+                    )
+                    if actual_link != expected_link and not rewritten_link:
                         failures.append(
                             f"{raw_path}: link target is {actual_link!r}, expected {expected_link!r}"
                         )
@@ -6821,7 +6834,15 @@ def installpkg(
                             payload_hash = sha256sum(payload.resolve())
                     except (FileNotFoundError, OSError, RuntimeError):
                         pass
-                    if expected_hash and expected_hash not in (actual_hash, payload_hash):
+                    accepted_hashes = (actual_hash, payload_hash)
+                    if rewritten_link:
+                        # The signed manifest contains the original absolute
+                        # link digest, whereas disk contains the rewritten
+                        # relative link. Keep accepting legacy payload digests.
+                        accepted_hashes += (
+                            hashlib.sha256(expected_link.encode()).hexdigest(),
+                        )
+                    if expected_hash and expected_hash not in accepted_hashes:
                         failures.append(f"{raw_path}: symlink digest mismatch")
                     continue
 
@@ -7278,7 +7299,10 @@ def installpkg(
 
                         # Never publish package state to SQLite until every
                         # promised payload has been re-read from its final path.
-                        _verify_committed_payload(mani, verify_content=False)
+                        _verify_committed_payload(
+                            mani, verify_content=False,
+                            allow_rewritten_absolute_links=True,
+                        )
                         mani = _refresh_manifest_state(mani)
 
                     # Update DB

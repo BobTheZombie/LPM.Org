@@ -43,6 +43,19 @@ def _build_simple_commands(stagedir: Path) -> list[str]:
     return cmds
 
 
+def relativize_symlink_target(link_path: str, absolute_target: str) -> str:
+    """Return the canonical in-root relative form of an absolute symlink.
+
+    Both inputs describe paths inside the package root, independent of the
+    staging/installation prefix. The verifier must use the same calculation
+    as the generated installation script.
+    """
+    if not absolute_target.startswith("/"):
+        raise ValueError("expected an absolute symlink target")
+    parent = os.path.dirname(link_path.lstrip("/")) or "."
+    return os.path.relpath(absolute_target.lstrip("/") or ".", parent)
+
+
 def _find_absolute_symlinks(stagedir: Path) -> list[tuple[str, str]]:
     results: list[tuple[str, str]] = []
     for link in stagedir.rglob("*"):
@@ -62,12 +75,10 @@ def _find_absolute_symlinks(stagedir: Path) -> list[tuple[str, str]]:
 
         try:
             rel_path = link.relative_to(stagedir).as_posix()
-            parent_rel = link.parent.relative_to(stagedir).as_posix()
         except ValueError:
             continue
 
-        start = parent_rel or "."
-        rel_target = os.path.relpath(target.lstrip("/"), start)
+        rel_target = relativize_symlink_target(rel_path, target)
         results.append((rel_path, rel_target))
 
     return results
@@ -288,4 +299,4 @@ def generate_install_script(stagedir: Path) -> str:
     return "\n".join(line for line in lines if line is not None)
 
 
-__all__ = ["generate_install_script"]
+__all__ = ["generate_install_script", "relativize_symlink_target"]

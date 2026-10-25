@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import sys
@@ -107,7 +108,7 @@ def _make_ldso_pkg(lpm, tmp_path):
     return out
 
 
-def _make_absolute_symlink_pkg(lpm, tmp_path):
+def _make_absolute_symlink_pkg(lpm, tmp_path, *, script_tail="", legacy_payload_digest=False):
     staged = tmp_path / "stage-absolute"
     (staged / "usr/bin").mkdir(parents=True)
     (staged / "usr/lib").mkdir(parents=True)
@@ -120,10 +121,16 @@ def _make_absolute_symlink_pkg(lpm, tmp_path):
 
     install_script = staged / ".lpm-install.sh"
     script_body = lpm.generate_install_script(staged)
+    if script_tail:
+        script_body += "\n" + script_tail
     install_script.write_text("#!/bin/sh\nset -e\n" + script_body + "\n")
     install_script.chmod(0o755)
 
     manifest = lpm.collect_manifest(staged)
+    if legacy_payload_digest:
+        for entry in manifest:
+            if entry["path"] == "/usr/bin/libabsolute.so":
+                entry["sha256"] = lpm.sha256sum(payload)
     meta = lpm.PkgMeta(name="absolute-symlink", version="1", release="1", arch="noarch")
 
     (staged / ".lpm-meta.json").write_text(json.dumps(dataclasses.asdict(meta)))
@@ -225,6 +232,75 @@ def test_installpkg_recreates_absolute_symlink(lpm_module, absolute_symlink_pack
     assert installed_link.is_symlink()
     assert os.readlink(installed_link) == "../lib/libabsolute.so"
     assert (root / "usr/lib/libabsolute.so").is_file()
+    # The committed database must record the actual link bytes, not the
+    # archive's original absolute target and checksum.
+    conn = lpm_module.db()
+    try:
+        (manifest_raw,) = conn.execute(
+            "SELECT manifest FROM installed WHERE name=?", ("absolute-symlink",)
+        ).fetchone()
+    finally:
+        conn.close()
+    link_entry = next(
+        e for e in json.loads(manifest_raw)
+        if e["path"] == "/usr/bin/libabsolute.so"
+    )
+    assert link_entry["link"] == "../lib/libabsolute.so"
+    assert link_entry["sha256"] == hashlib.sha256(
+        b"../lib/libabsolute.so"
+    ).hexdigest()
+
+
+def test_xkeyboard_config_absolute_link_conversion():
+    from installgen import relativize_symlink_target
+
+    assert relativize_symlink_target(
+        "/usr/share/X11/xkb", "/usr/share/xkeyboard-config-2"
+    ) == "../xkeyboard-config-2"
+
+
+def test_installpkg_rewrites_legacy_payload_hash_for_absolute_link(lpm_module, tmp_path):
+    root = tmp_path / "root-legacy-absolute"
+    root.mkdir()
+    pkg = _make_absolute_symlink_pkg(
+        lpm_module, tmp_path, legacy_payload_digest=True
+    )
+
+    lpm_module.installpkg(pkg, root=root, dry_run=False, verify=False, force=False, explicit=True)
+    assert os.readlink(root / "usr/bin/libabsolute.so") == "../lib/libabsolute.so"
+
+
+@pytest.mark.parametrize("wrong_target", (
+    "../lib/missing.so",
+    "../lib/./libabsolute.so",  # resolves correctly, but is not LPM's exact rewrite
+))
+def test_installpkg_rejects_unexpected_postinstall_link_change(
+    lpm_module, tmp_path, wrong_target
+):
+    root = tmp_path / "root-corrupt-absolute"
+    root.mkdir()
+    pkg = _make_absolute_symlink_pkg(
+        lpm_module, tmp_path,
+        script_tail=(
+            f'ln -sfn "{wrong_target}" '
+            '"${LPM_ROOT%/}/usr/bin/libabsolute.so"'
+        ),
+    )
+
+    with pytest.raises(SystemExit):
+        lpm_module.installpkg(
+            pkg, root=root, dry_run=False, verify=False, force=False, explicit=True
+        )
+
+    assert not (root / "usr/bin/libabsolute.so").is_symlink()
+    assert not (root / "usr/lib/libabsolute.so").exists()
+    conn = lpm_module.db()
+    try:
+        assert conn.execute(
+            "SELECT 1 FROM installed WHERE name=?", ("absolute-symlink",)
+        ).fetchone() is None
+    finally:
+        conn.close()
 
 
 def test_installpkg_replace_all_option(tmp_path, monkeypatch):
