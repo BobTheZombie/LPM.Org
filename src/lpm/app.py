@@ -241,6 +241,10 @@ from .repo_categories import (
     supports_category_discovery,
     valid_package_name,
 )
+from .buildpkg_resolver import (
+    BuildpkgRecipeResolutionError,
+    resolve_buildpkg_recipe,
+)
 from .atomic_io import atomic_replace, safe_write
 from .fs_ops import operation_phase, prepare_directory
 from .privileges import privilege_info, privileged_section, privileges_enabled, require_root
@@ -6346,25 +6350,15 @@ def cmd_buildpkg(a):
     if not a.script:
         die("buildpkg requires a .lpmbuild script or --python-pip")
 
-    raw_script = Path(a.script)
-    script_path = raw_script
-    if not script_path.exists():
-        candidate_name = raw_script.name
-        if candidate_name.endswith(".lpmbuild"):
-            candidate_name = candidate_name[:-len(".lpmbuild")]
-
-        local_candidate = _resolve_local_lpmbuild_script(candidate_name)
-        if local_candidate.exists():
-            script_path = local_candidate
-            ok(f"Resolved local lpmbuild script: {script_path}")
-        else:
-            fetched_script = Path(f"/tmp/lpm-{candidate_name}.lpmbuild")
-            fetch_fn = _resolve_lpm_attr("fetch_lpmbuild", fetch_lpmbuild)
-            try:
-                script_path = fetch_fn(candidate_name, fetched_script)
-                ok(f"Resolved repository lpmbuild script: {script_path}")
-            except Exception:
-                die(f".lpmbuild script not found: {raw_script}")
+    fetch_fn = _resolve_lpm_attr("fetch_lpmbuild", fetch_lpmbuild)
+    try:
+        script_path, script_origin = resolve_buildpkg_recipe(a.script, fetch_fn)
+    except BuildpkgRecipeResolutionError as exc:
+        die(str(exc))
+    if script_origin == "remote":
+        ok(f"Resolved remote lpmbuild for {a.script}: {script_path}")
+    else:
+        ok(f"Using local lpmbuild: {script_path}")
 
     run_lpmbuild_fn = _resolve_lpm_attr("run_lpmbuild", run_lpmbuild)
     build_control = {}
@@ -7886,8 +7880,11 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--install-default", choices=("y", "n"), default=None)
     sp.set_defaults(func=cmd_rebuild_stage2)
 
-    sp=sub.add_parser("buildpkg", help=f"Build a {EXT} package from a .lpmbuild script")
-    sp.add_argument("script", nargs="?", type=Path)
+    sp=sub.add_parser("buildpkg", help=f"Build a {EXT} package from a local .lpmbuild or remote package name")
+    sp.add_argument(
+        "script", nargs="?",
+        help="local .lpmbuild file path, or package name resolved from local trees and LPMBUILD_REPO",
+    )
     sp.add_argument(
         "overrides",
         nargs="*",
