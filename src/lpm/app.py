@@ -4723,6 +4723,13 @@ def run_lpmbuild(
             else:
                 _register_built_dependency_blob(built_blob, splits=split_records)
             if _sat_plan is not None:
+                # A declined install cannot satisfy subsequent source builds.
+                # Do not compile against an uninstalled planned provider.
+                if prompt_install and depname not in installed_snapshot:
+                    die(
+                        f"[deps] SAT planned dependency {depname!r} was not installed; "
+                        "build aborted to avoid an inconsistent transaction"
+                    )
                 _sat_plan.completed.add(depname)
             return built_blob
 
