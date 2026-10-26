@@ -51,6 +51,8 @@ def plan_source_build(
     *,
     force_rebuild: bool = False,
     target_arch: str = "",
+    pins: Optional[Mapping[str, str]] = None,
+    holds: Optional[Iterable[str]] = None,
 ) -> SourceBuildPlan:
     """Discover the source closure, solve it globally, and bind build recipes.
 
@@ -60,7 +62,9 @@ def plan_source_build(
     root_name = root_scalars["NAME"]
     effective_installed = {} if force_rebuild else dict(installed)
     installed_providers = _installed_provider_map(effective_installed)
-    u = Universe({}, {}, effective_installed, {}, set())
+    u = Universe(
+        {}, {}, effective_installed, dict(pins or {}), set(holds or ())
+    )
     plan = SourceBuildPlan(root=root_name)
     examined: Set[str] = set()
     unavailable: Dict[str, str] = {}
