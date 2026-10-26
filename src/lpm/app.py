@@ -1261,10 +1261,10 @@ def _iter_requires(meta: PkgMeta, include_build_requires: bool = False) -> Itera
 
 def prune_universe_missing_providers(
     u: Universe, include_build_requires: bool = False
-) -> Tuple[Dict[Tuple[str, str], str], Dict[str, List[str]]]:
+) -> Tuple[Dict[int, str], Dict[str, List[str]]]:
     """Prune candidates that reference dependencies with no providers."""
 
-    disqualified: Dict[Tuple[str, str], str] = {}
+    disqualified: Dict[int, str] = {}
     terminal: Dict[str, List[str]] = {}
     installed_providers = _installed_provider_map(u.installed)
 
@@ -1277,7 +1277,7 @@ def prune_universe_missing_providers(
         ]
         for name, candidates in snapshot:
             for meta in candidates:
-                key = (meta.name, meta.version)
+                key = id(meta)
                 if key in disqualified:
                     continue
 
@@ -1314,16 +1314,41 @@ def prune_universe_missing_providers(
     return disqualified, terminal
 
 
+def _version_of_capability(
+    capability: str, package_name: str, package_version: str,
+    provides: Iterable[str],
+) -> Optional[str]:
+    """Compare versioned virtual deps against the *provided* version."""
+    if capability == package_name:
+        return package_version
+    for raw in provides or ():
+        try:
+            expr = parse_dep_expr(str(raw))
+        except (ValueError, TypeError):
+            continue
+        if (expr.kind == "atom" and expr.atom
+                and expr.atom.name == capability
+                and expr.atom.op in ("=", "==") and expr.atom.ver):
+            return expr.atom.ver
+    return None
+
+
 def providers_for(u: Universe, atom: Atom) -> List[PkgMeta]:
     cands = list(u.providers.get(atom.name, []))
     if atom.op and atom.ver:
-        cands = [p for p in cands if satisfies(p.version, f"{atom.op}{atom.ver}")]
-    return cands
+        cands = [
+            p for p in cands
+            if (cap_ver := _version_of_capability(
+                atom.name, p.name, p.version, p.provides
+            )) is not None and satisfies(cap_ver, f"{atom.op}{atom.ver}")
+        ]
+    # A package that provides its own name may appear twice in the index.
+    return list({id(p): p for p in cands}.values())
 
 # =========================== Resolver encoding =================================
-def expr_to_cnf_disj(u: Universe, e: DepExpr, cnf: CNF, var_of: Dict[Tuple[str,str],int]) -> List[int]:
+def expr_to_cnf_disj(u: Universe, e: DepExpr, cnf: CNF, var_of: Dict[int, int]) -> List[int]:
     if e.kind=="atom":
-        lits=[var_of[(p.name,p.version)] for p in providers_for(u, e.atom)]
+        lits=[var_of[id(p)] for p in providers_for(u, e.atom)]
         return lits
     elif e.kind=="or":
         return list(set(expr_to_cnf_disj(u, e.left, cnf, var_of) + expr_to_cnf_disj(u, e.right, cnf, var_of)))
@@ -1338,12 +1363,12 @@ def encode_resolution(
     include_build_requires: bool = False,
 ) -> Tuple[
     CNF,
-    Dict[Tuple[str, str], int],
+    Dict[int, int],
     Set[int],
     Set[int],
     Dict[int, float],
     Dict[int, float],
-    Dict[Tuple[str, str], str],
+    Dict[int, str],
     Dict[str, List[str]],
 ]:
     disqualified, terminal = prune_universe_missing_providers(
@@ -1352,18 +1377,23 @@ def encode_resolution(
     installed_providers = _installed_provider_map(u.installed)
 
     cnf = CNF()
-    var_of: Dict[Tuple[str,str],int] = {}
+    var_of: Dict[int, int] = {}
     bias_map: Dict[int,float] = {}
     decay_map: Dict[int,float] = {}
     for name,lst in u.candidates_by_name.items():
         for p in lst:
-            v = cnf.new_var(f"{p.name}=={p.version}")
-            var_of[(p.name,p.version)] = v
+            # Repository candidates have independent SAT variables even when
+            # their name and upstream version match.
+            v = cnf.new_var(
+                f"{p.name}=={p.version}-{p.release}.{p.arch}@{p.repo}"
+                f"#{cnf.next_var}"
+            )
+            var_of[id(p)] = v
             bias_map[v] = p.bias
             decay_map[v] = p.decay
     # At-most-one per name
     for name, lst in u.candidates_by_name.items():
-        vars_for_name = [var_of[(p.name, p.version)] for p in lst]
+        vars_for_name = [var_of[id(p)] for p in lst]
         n = len(vars_for_name)
         if n <= 1:
             continue
@@ -1377,29 +1407,48 @@ def encode_resolution(
             cnf.add([-v, -aux[i - 1]])
         cnf.add([-vars_for_name[-1], -aux[-1]])
 
-    prefer_true: Set[int]=set(); prefer_false: Set[int]=set()
-    # Bias: installed, newest
-    for name,lst in u.candidates_by_name.items():
-        inst=u.installed.get(name)
-        if inst and (name,inst["version"]) in var_of:
-            prefer_true.add(var_of[(name,inst["version"])])
-        if lst:
-            prefer_true.add(var_of[(lst[0].name,lst[0].version)])
+    prefer_true: Set[int]=set()
+    prefer_false: Set[int] = set(var_of.values())
+    # Preserve installed candidates. Other packages default to FALSE unless
+    # selected by a goal or required dependency (not 'install everything').
+    for name, lst in u.candidates_by_name.items():
+        inst = u.installed.get(name)
+        if inst:
+            for p in lst:
+                if p.version == inst["version"]:
+                    prefer_true.add(var_of[id(p)])
+
+    # The newest/preferred candidate is a positive decision for explicit goals.
+    for goal in goals:
+        for part in (flatten_and(goal) if goal.kind == "and" else [goal]):
+            if part.kind == "atom" and part.atom:
+                options = providers_for(u, part.atom)
+                if options:
+                    prefer_true.add(var_of[id(options[0])])
+
+    # Holds are hard constraints; a held installed version cannot be changed.
+    for name in u.holds:
+        inst = u.installed.get(name)
+        if inst:
+            for p in u.candidates_by_name.get(name, []):
+                if (p.version != inst["version"] or
+                        (inst.get("release") and p.release != inst["release"])):
+                    cnf.add([-var_of[id(p)]])
 
     # Pins: hard restrict
     for name, cons in u.pins.items():
         if name in u.candidates_by_name:
             allowed=[]
             for p in u.candidates_by_name[name]:
-                if satisfies(p.version, cons): allowed.append(var_of[(p.name,p.version)])
-            if allowed:
-                allowed_set=set(allowed)
-                for p in u.candidates_by_name[name]:
-                    v=var_of[(p.name,p.version)]
-                    if v not in allowed_set: cnf.add([-v])
-                for v in allowed: prefer_true.add(v)
+                if satisfies(p.version, cons): allowed.append(var_of[id(p)])
+            # Even an impossible pin must forbid every unsuitable candidate.
+            allowed_set=set(allowed)
+            for p in u.candidates_by_name[name]:
+                v=var_of[id(p)]
+                if v not in allowed_set: cnf.add([-v])
+            for v in allowed: prefer_true.add(v)
     def add_pkg_constraints(p: PkgMeta):
-        vp = var_of[(p.name,p.version)]
+        vp = var_of[id(p)]
         # requires
         for s in _iter_requires(p, include_build_requires):
             if not s:
@@ -1463,6 +1512,12 @@ def encode_resolution(
         if goal_texts and idx < len(goal_texts):
             goal_label = goal_texts[idx]
         goal_label = goal_label or dep_expr_to_str(g)
+        if (g.kind == "atom" and g.atom
+                and g.atom.name in u.holds
+                and _match_dep_expr_against_installed(
+                    g, u.installed, installed_providers
+                )):
+            continue
         if g.kind=="and":
             for part in flatten_and(g):
                 disj = expr_to_cnf_disj(u, part, cnf, var_of)
@@ -1614,9 +1669,15 @@ def solve(
         max_learnts=MAX_LEARNT_CLAUSES,
     )
     res = solver.solve([])
-    inv: Dict[int,Tuple[str,str]] = {v:k for k,v in var_of.items()}
+    meta_lookup = {
+        id(p): p for candidates in universe.candidates_by_name.values()
+        for p in candidates
+    }
+    inv: Dict[int, PkgMeta] = {
+        vid: meta_lookup[key] for key, vid in var_of.items()
+    }
     if not res.sat:
-        names = sorted({inv.get(abs(l))[0] for l in (res.unsat_core or []) if abs(l) in inv})
+        names = sorted({inv[abs(l)].name for l in (res.unsat_core or []) if abs(l) in inv})
         # A SAT core is intentionally minimal and may contain only the package
         # where the contradiction surfaced.  Expand it through package
         # requirements before producing diagnostics so cycles and the actual
@@ -1646,11 +1707,9 @@ def solve(
     chosen: Dict[str,PkgMeta] = {}
     for vid,val in res.assign.items():
         if not val: continue
-        key = inv.get(vid); 
-        if not key: continue
-        name,ver = key
-        for p in universe.candidates_by_name.get(name, []):
-            if p.version==ver: chosen[name]=p; break
+        p = inv.get(vid)
+        if p is not None:
+            chosen[p.name] = p
     # Stable dependency-first ordering.  Cycles are legal when the selected
     # packages are otherwise satisfiable, so collapse them naturally by
     # stopping recursion at the active DFS stack instead of recursing forever.
@@ -6759,7 +6818,11 @@ def _match_dep_expr_against_installed(
             if meta is None:
                 continue
             if atom.op and atom.ver:
-                if not satisfies(meta.get("version", ""), f"{atom.op}{atom.ver}"):
+                cap_ver = _version_of_capability(
+                    atom.name, pkg_name, meta.get("version", ""),
+                    meta.get("provides", []),
+                )
+                if cap_ver is None or not satisfies(cap_ver, f"{atom.op}{atom.ver}"):
                     continue
             matches.add(pkg_name)
         return matches
@@ -6774,7 +6837,8 @@ def _match_dep_expr_against_installed(
         right = _match_dep_expr_against_installed(expr.right, installed, providers) if expr.right else set()
         if not left or not right:
             return set()
-        return left & right
+        # Different packages may satisfy separate AND conjuncts.
+        return left | right
 
     return set()
 

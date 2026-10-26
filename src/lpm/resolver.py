@@ -20,6 +20,7 @@ class CNF:
         self.activity: List[float] = []
         self.lbd: List[int] = []
         self.learnts: Set[int] = set()
+        self.has_empty_clause = False
 
     def new_var(self, name: str) -> int:
         if name in self.namevar:
@@ -31,6 +32,9 @@ class CNF:
         return v
 
     def add_clause(self, clause: List[int], learnt: bool = False, lbd: int = 0) -> int:
+        clause = list(clause)
+        if any(lit == 0 or abs(lit) >= self.next_var for lit in clause):
+            raise ValueError("clause contains an invalid literal")
         idx = len(self.clauses)
         self.clauses.append(clause)
         self.activity.append(0.0)
@@ -38,6 +42,7 @@ class CNF:
         if learnt:
             self.learnts.add(idx)
         if not clause:
+            self.has_empty_clause = True
             self.watchers.append((0, 0))
             return idx
         if len(clause) == 1:
@@ -54,8 +59,7 @@ class CNF:
     def add(self, *clauses: Iterable[int]) -> None:
         for c in clauses:
             clause = list(c)
-            if clause:
-                self.add_clause(clause)
+            self.add_clause(clause)
 
     def remove_clause(self, idx: int) -> None:
         clause = self.clauses[idx]
@@ -144,6 +148,25 @@ class CDCLSolver:
         """Solve the stored CNF instance under optional assumptions."""
         cnf = self.cnf
         nvars = cnf.next_var - 1
+        for lit in assumptions:
+            if not isinstance(lit, int) or lit == 0 or abs(lit) > nvars:
+                raise ValueError(f"invalid SAT assumption: {lit!r}")
+        if assumptions:
+            # Treat assumptions as ephemeral unit clauses. Learned clauses
+            # arising from these assumptions cannot leak into later solves.
+            working = CNF()
+            for var in range(1, nvars + 1):
+                working.new_var(cnf.varname[var])
+            for idx, clause in enumerate(cnf.clauses):
+                if clause:
+                    working.add_clause(
+                        clause, learnt=idx in cnf.learnts, lbd=cnf.lbd[idx]
+                    )
+            if cnf.has_empty_clause:
+                working.add_clause([])
+            for lit in assumptions:
+                working.add_clause([lit])
+            cnf = working
         # ensure activity arrays cover all variables
         for v in range(1, nvars + 1):
             if v not in self.var_activity:
@@ -243,11 +266,11 @@ class CDCLSolver:
                 return None
             return val if lit > 0 else not val
 
-        def enqueue(lit: int, rsn: Optional[int]) -> None:
+        def enqueue(lit: int, rsn: Optional[int]) -> bool:
             v = abs(lit)
             val = lit > 0
             if assigns[v] is not None:
-                return
+                return assigns[v] == val
             assigns[v] = val
             active_vars.discard(v)
             saved_phase[v] = val
@@ -262,13 +285,15 @@ class CDCLSolver:
                 node.preds = [l for l in cnf.clauses[rsn] if abs(l) != v]
             else:
                 node.preds = []
+            return True
 
+        if cnf.has_empty_clause:
+            return SATResult(False, {v: False for v in assigns}, [])
         for i, cl in enumerate(cnf.clauses):
-            if len(cl) == 1:
-                enqueue(cl[0], i)
-
-        for lit in assumptions:
-            enqueue(lit, None)
+            if len(cl) == 1 and not enqueue(cl[0], i):
+                return SATResult(
+                    False, {v: False for v in assigns}, [-cl[0], cl[0]]
+                )
 
         def propagate() -> Optional[int]:
             while queue:
@@ -367,7 +392,8 @@ class CDCLSolver:
                 clause = imp_graph[v].preds.copy() if clause_idx is not None else []
                 counter -= 1
                 if counter <= 0:
-                    learnt.append(-lit)
+                    # First-UIP is the asserting literal after backtracking.
+                    learnt.insert(0, -lit)
                     break
             back_lvl = 0
             if len(learnt) > 1:
@@ -391,6 +417,7 @@ class CDCLSolver:
                 queue.clear()
 
         conflicts = 0
+        conflicts_since_restart = 0
         restart_count = 1
         restart_limit = luby(restart_count) * 100
 
@@ -398,6 +425,7 @@ class CDCLSolver:
             confl = propagate()
             if confl is not None:
                 conflicts += 1
+                conflicts_since_restart += 1
                 if current_level() == 0:
                     core_clause = cnf.clauses[confl][:]
                     changed = True
@@ -427,8 +455,9 @@ class CDCLSolver:
                 decay_var_activity()
                 if len(cnf.learnts) > max_learnts:
                     reduce_db()
-                if conflicts >= restart_limit:
+                if conflicts_since_restart >= restart_limit:
                     restart_count += 1
+                    conflicts_since_restart = 0
                     restart_limit = luby(restart_count) * 100
                     self.last_restarts += 1
                     backtrack(0)

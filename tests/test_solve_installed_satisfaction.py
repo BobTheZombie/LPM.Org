@@ -50,3 +50,13 @@ def test_no_provider_error_when_not_installed_and_no_repo_candidate():
         solve(["missing>=2.0"], universe)
 
     assert "No provider for goal 'missing>=2.0'" in str(excinfo.value)
+
+def test_installed_virtual_provide_uses_advertised_version():
+    universe = _universe(installed={
+        "engine": {"version": "99.0", "provides": ["virtual-abi=2.0"]}
+    })
+    assert solve(["virtual-abi>=2"], universe) == []
+    with pytest.raises(ResolutionError):
+        solve(["virtual-abi>=3"], _universe(installed={
+            "engine": {"version": "99.0", "provides": ["virtual-abi=2.0"]}
+        }))

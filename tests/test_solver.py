@@ -72,3 +72,52 @@ def test_vsids_unsat_regression():
     solver = CDCLSolver(cnf, decay_map=decay_map)
     res = solver.solve([])
     assert not res.sat
+
+def test_empty_clause_is_unsatisfiable():
+    cnf = CNF()
+    cnf.add([])
+    assert not CDCLSolver(cnf).solve([]).sat
+
+
+def test_opposite_unit_clauses_are_unsatisfiable():
+    cnf = CNF()
+    a = cnf.new_var("A")
+    cnf.add([a], [-a])
+    assert not CDCLSolver(cnf).solve([]).sat
+
+
+def test_contradictory_assumptions_do_not_pollute_later_solves():
+    cnf = CNF()
+    a = cnf.new_var("A")
+    b = cnf.new_var("B")
+    cnf.add([-a, b])
+    solver = CDCLSolver(cnf)
+    assert not solver.solve([a, -b]).sat
+    assert solver.solve([a]).sat
+    assert solver.solve([-a, -b]).sat
+
+
+def test_duplicate_assumptions_are_checked():
+    cnf = CNF()
+    a = cnf.new_var("A")
+    solver = CDCLSolver(cnf)
+    assert not solver.solve([a, -a]).sat
+    assert solver.solve([]).sat
+
+
+def test_invalid_sat_literal_is_rejected():
+    cnf = CNF()
+    cnf.new_var("A")
+    with pytest.raises(ValueError):
+        cnf.add_clause([0])
+    with pytest.raises(ValueError):
+        CDCLSolver(cnf).solve([2])
+
+
+def test_clause_content_is_owned_by_cnf():
+    cnf = CNF()
+    a = cnf.new_var("A")
+    literals = [a]
+    cnf.add_clause(literals)
+    literals.clear()
+    assert cnf.clauses[0] == [a]

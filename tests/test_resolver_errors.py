@@ -99,3 +99,62 @@ def test_unsat_details_include_dependency_cycle():
     msg = str(excinfo.value)
     assert "Unsatisfiable dependency set involving" in msg
     assert "dependency cycle:" in msg
+
+def test_same_version_different_releases_are_distinct_candidates():
+    universe = Universe({}, {}, {}, {}, set())
+    register_universe_candidate(
+        universe, PkgMeta(name="libqt", version="6.12.0", release="1", repo="older")
+    )
+    register_universe_candidate(
+        universe, PkgMeta(name="libqt", version="6.12.0", release="2", repo="newer")
+    )
+    from src.lpm.app import encode_resolution, parse_dep_expr
+    cnf, var_of, *_ = encode_resolution(
+        universe, [parse_dep_expr("libqt")]
+    )
+    assert len(var_of) == 2
+    assert cnf.next_var >= 4
+    chosen = solve(["libqt"], universe)
+    assert len(chosen) == 1
+    assert chosen[0].name == "libqt"
+
+
+def test_irrelevant_package_is_not_selected():
+    universe = Universe({}, {}, {}, {}, set())
+    register_universe_candidate(universe, PkgMeta(name="requested", version="1"))
+    register_universe_candidate(universe, PkgMeta(name="unrelated", version="1"))
+    assert [p.name for p in solve(["requested"], universe)] == ["requested"]
+
+
+def test_holds_reject_incompatible_candidate_updates():
+    universe = Universe(
+        {}, {}, {"libqt": {"version": "6.11", "release": "1", "provides": []}},
+        {}, {"libqt"}
+    )
+    register_universe_candidate(
+        universe, PkgMeta(name="libqt", version="6.12", release="1")
+    )
+    assert solve(["libqt"], universe) == []
+    with pytest.raises(ResolutionError):
+        solve(["libqt>=6.12"], universe)
+
+
+def test_pin_with_no_matching_version_is_not_ignored():
+    universe = Universe({}, {}, {}, {"libqt": "==6.12"}, set())
+    register_universe_candidate(
+        universe, PkgMeta(name="libqt", version="6.11")
+    )
+    with pytest.raises(ResolutionError):
+        solve(["libqt"], universe)
+
+
+def test_virtual_provides_use_advertised_version():
+    universe = Universe({}, {}, {}, {}, set())
+    register_universe_candidate(
+        universe, PkgMeta(
+            name="engine", version="99.0", provides=["virtual-abi=2.0"]
+        )
+    )
+    assert [p.name for p in solve(["virtual-abi>=2"], universe)] == ["engine"]
+    with pytest.raises(ResolutionError):
+        solve(["virtual-abi>=3"], universe)
