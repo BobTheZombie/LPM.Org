@@ -217,7 +217,7 @@ def test_run_lpmbuild_skips_python_dependencies_when_provided(tmp_path, monkeypa
     monkeypatch.setattr(
         lpm,
         "db_installed",
-        lambda conn: {"python-requests": {"provides": ["pypi(requests)"]}},
+        lambda conn: {"python-requests": {"version": "2.0", "provides": ["pypi(requests)"]}},
     )
 
     def fake_build_python_package_from_pip(*args, **kwargs):
@@ -422,7 +422,7 @@ def test_run_lpmbuild_builds_build_requires(tmp_path, monkeypatch):
     shutil.rmtree(Path("/tmp/src-foo"), ignore_errors=True)
 
 
-def test_run_lpmbuild_builds_remaining_dependencies_after_failed_install(
+def test_run_lpmbuild_aborts_when_selected_dependency_is_not_installed(
     tmp_path, monkeypatch
 ):
     script = tmp_path / "main.lpmbuild"
@@ -526,20 +526,21 @@ def test_run_lpmbuild_builds_remaining_dependencies_after_failed_install(
     monkeypatch.setattr(lpm, "prompt_install_pkg", fake_prompt_install_pkg)
     monkeypatch.setattr(lpm_app, "prompt_install_pkg", fake_prompt_install_pkg)
 
-    out_path, _, _, _ = lpm.run_lpmbuild(
-        script,
-        outdir=tmp_path,
-        prompt_install=True,
-        build_deps=True,
-    )
+    with pytest.raises(SystemExit):
+        lpm.run_lpmbuild(
+            script,
+            outdir=tmp_path,
+            prompt_install=True,
+            build_deps=True,
+        )
 
-    assert out_path.exists()
+    # The minimum-change plan chooses dep-fail because it provides both
+    # dependencies. Declining that install must abort rather than build the
+    # root against missing headers or silently substitute another provider.
     assert built.count("dep-fail") == 1
-    assert built.count("dep-success") == 1
+    assert built.count("dep-success") == 0
     assert "dep-fail-1-1.noarch.zst" in prompt_calls
-    assert "dep-success-1-1.noarch.zst" in prompt_calls
 
-    out_path.unlink()
     shutil.rmtree(Path("/tmp/pkg-main"), ignore_errors=True)
     shutil.rmtree(Path("/tmp/build-main"), ignore_errors=True)
     shutil.rmtree(Path("/tmp/src-main"), ignore_errors=True)
