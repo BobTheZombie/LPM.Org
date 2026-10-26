@@ -4513,6 +4513,7 @@ def run_lpmbuild(
     force_rebuild: bool = False,
     fetcher: Optional[Callable[[str, Path], Path]] = None,
     _building_stack: Optional[Tuple[str, ...]] = None,
+    _sat_plan=None,
     executor: Optional[ThreadPoolExecutor] = None,
     cpu_overrides: Optional[CpuOverrides] = None,
     on_built_package: Optional[Callable[[Path, PkgMeta], None]] = None,
@@ -4623,22 +4624,40 @@ def run_lpmbuild(
             arr.get("BUILD_REQUIRES", [])
         )
 
-        for dep in combined_requires:
+        if combined_requires and _sat_plan is None:
+            # One global SAT plan handles versioned dependencies, providers,
+            # conflicts, and alternative sources before any build is launched.
+            from .buildpkg_sat import plan_source_build
+            conn = db()
             try:
-                e = parse_dep_expr(dep)
-            except Exception:
-                continue
-            parts = flatten_and(e) if e.kind == "and" else [e]
-            for part in parts:
-                if part.kind == "atom":
-                    depname = part.atom.name
-                    key = ("pkg", depname)
-                    if key in seen:
-                        continue
-                    seen.add(key)
+                installed_for_plan = db_installed(conn)
+            finally:
+                conn.close()
+            _sat_plan = plan_source_build(
+                script_path, scal, arr, installed_for_plan, fetch_fn,
+                _capture_lpmbuild_metadata, force_rebuild=force_rebuild,
+                target_arch=arch,
+            )
+            log(f"[deps] SAT planned {len(_sat_plan.selected)} source builds")
 
-                    if depname not in capabilities:
-                        deps_to_build.append(depname)
+        if _sat_plan is not None:
+            deps_to_build.extend(_sat_plan.direct_for(name))
+        else:
+            for dep in combined_requires:
+                try:
+                    e = parse_dep_expr(dep)
+                except Exception:
+                    continue
+                parts = flatten_and(e) if e.kind == "and" else [e]
+                for part in parts:
+                    if part.kind == "atom":
+                        depname = part.atom.name
+                        key = ("pkg", depname)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        if depname not in capabilities:
+                            deps_to_build.append(depname)
 
         def _register_built_dependency_blob(
             blob: Path,
@@ -4668,8 +4687,13 @@ def run_lpmbuild(
             if depname in building_stack_set:
                 cycle = " -> ".join((*building_stack, depname))
                 die(f"dependency cycle detected: {cycle}")
-            tmp = Path(f"/tmp/lpm-dep-{depname}.lpmbuild")
-            fetch_fn(depname, tmp)
+            if _sat_plan is not None and depname in _sat_plan.completed:
+                return None
+            if _sat_plan is not None:
+                tmp = _sat_plan.recipes[depname]
+            else:
+                tmp = Path(f"/tmp/lpm-dep-{depname}.lpmbuild")
+                fetch_fn(depname, tmp)
             built_blob, _, _, split_records = run_lpmbuild(
                 tmp,
                 outdir or script_dir,
@@ -4680,6 +4704,7 @@ def run_lpmbuild(
                 force_rebuild=force_rebuild,
                 fetcher=fetch_fn,
                 _building_stack=building_stack,
+                _sat_plan=_sat_plan,
                 executor=executor,
                 cpu_overrides=overrides,
                 on_built_package=on_built_package,
@@ -4690,10 +4715,19 @@ def run_lpmbuild(
                 _refresh_capabilities_from_installed()
             else:
                 _register_built_dependency_blob(built_blob, splits=split_records)
+            if _sat_plan is not None:
+                _sat_plan.completed.add(depname)
             return built_blob
 
         if deps_to_build:
-            if prompt_install:
+            if _sat_plan is not None:
+                # Global planning makes serial execution deterministic and
+                # avoids racing shared prerequisites in diamond graphs.
+                total = len(deps_to_build)
+                for idx, dep in enumerate(deps_to_build, start=1):
+                    if dep not in _sat_plan.completed:
+                        _build_dep(dep, idx, total)
+            elif prompt_install:
                 total = len(deps_to_build)
                 with progress_bar(
                     deps_to_build,
