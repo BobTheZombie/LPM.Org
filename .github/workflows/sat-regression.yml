@@ -1,0 +1,42 @@
+name: SAT resolver regression
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/lpm/resolver.py"
+      - "src/lpm/app.py"
+      - "tests/test_solver.py"
+      - "tests/test_property_cnf.py"
+      - "tests/test_heuristics.py"
+      - "tests/test_resolver_errors.py"
+      - "tests/test_solve_installed_satisfaction.py"
+      - ".github/workflows/sat-regression.yml"
+  pull_request:
+    paths:
+      - "src/lpm/resolver.py"
+      - "src/lpm/app.py"
+      - "tests/test_solver.py"
+      - "tests/test_property_cnf.py"
+      - "tests/test_heuristics.py"
+      - "tests/test_resolver_errors.py"
+      - "tests/test_solve_installed_satisfaction.py"
+
+jobs:
+  resolver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -e . pytest hypothesis packaging
+      - name: Run SAT and package-resolution regression tests
+        run: |
+          python -m pytest -q \
+            tests/test_solver.py \
+            tests/test_property_cnf.py \
+            tests/test_heuristics.py \
+            tests/test_resolver_errors.py \
+            tests/test_solve_installed_satisfaction.py
