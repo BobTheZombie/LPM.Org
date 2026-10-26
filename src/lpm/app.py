@@ -1413,6 +1413,30 @@ def encode_resolution(
             cnf.add([-v, -aux[i - 1]])
         cnf.add([-vars_for_name[-1], -aux[-1]])
 
+    # Model retention of installed packages explicitly. Each installed
+    # capability is available at zero change cost unless this transaction
+    # selects a different candidate of that same package name.
+    installed_stay: Dict[str, int] = {}
+    for installed_name in u.installed:
+        kept = cnf.new_var(f"installed::{installed_name}#{cnf.next_var}")
+        installed_stay[installed_name] = kept
+        replacements = [
+            var_of[id(p)] for p in u.candidates_by_name.get(installed_name, [])
+            if not _matches_installed_candidate(p, u.installed)
+        ]
+        for replacement in replacements:
+            cnf.add([-kept, -replacement])
+        cnf.add([kept, *replacements])
+
+    def provider_literals(expression: DepExpr) -> List[int]:
+        repo_lits = expr_to_cnf_disj(u, expression, cnf, var_of)
+        retained = _match_dep_expr_against_installed(
+            expression, u.installed, installed_providers
+        )
+        return list(dict.fromkeys(
+            [*repo_lits, *(installed_stay[name] for name in sorted(retained))]
+        ))
+
     prefer_true: Set[int]=set()
     prefer_false: Set[int] = set(var_of.values())
     # Preserve installed candidates. Other packages default to FALSE unless
@@ -1462,7 +1486,7 @@ def encode_resolution(
             e = parse_dep_expr(s)
             if e.kind == "and":
                 for part in flatten_and(e):
-                    disj = expr_to_cnf_disj(u, part, cnf, var_of)
+                    disj = provider_literals(part)
                     if not disj:
                         if _match_dep_expr_against_installed(part, u.installed, installed_providers):
                             continue
@@ -1472,7 +1496,7 @@ def encode_resolution(
                         )
                     cnf.add([-vp] + disj)
             else:
-                disj = expr_to_cnf_disj(u, e, cnf, var_of)
+                disj = provider_literals(e)
                 if not disj:
                     if _match_dep_expr_against_installed(e, u.installed, installed_providers):
                         continue
@@ -1488,7 +1512,7 @@ def encode_resolution(
                 e = parse_dep_expr(s)
                 parts = flatten_and(e) if e.kind=="and" else [e]
                 for part in parts:
-                    disj = expr_to_cnf_disj(u, part, cnf, var_of)
+                    disj = provider_literals(part)
                     for q in disj: cnf.add([-vp, -q])
         # soft deps bias
         for s in p.recommends + p.suggests:
@@ -1496,9 +1520,9 @@ def encode_resolution(
             except Exception: continue
             lits=[]
             if e.kind=="and":
-                for part in flatten_and(e): lits += expr_to_cnf_disj(u, part, cnf, var_of)
+                for part in flatten_and(e): lits += provider_literals(part)
             else:
-                lits = expr_to_cnf_disj(u, e, cnf, var_of)
+                lits = provider_literals(e)
             for lit in lits: prefer_true.add(lit)
 
     for name,lst in u.candidates_by_name.items():
@@ -1526,7 +1550,7 @@ def encode_resolution(
             continue
         if g.kind=="and":
             for part in flatten_and(g):
-                disj = expr_to_cnf_disj(u, part, cnf, var_of)
+                disj = provider_literals(part)
                 if not disj:
                     if _match_dep_expr_against_installed(part, u.installed, installed_providers):
                         continue
@@ -1541,7 +1565,7 @@ def encode_resolution(
                     )
                 cnf.add(disj)
         else:
-            disj = expr_to_cnf_disj(u, g, cnf, var_of)
+            disj = provider_literals(g)
             if not disj:
                 if _match_dep_expr_against_installed(g, u.installed, installed_providers):
                     continue
