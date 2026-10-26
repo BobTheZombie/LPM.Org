@@ -35,9 +35,10 @@ jobs:
       - name: Run SAT and package-resolution regression tests
         env:
           PYTHONPATH: ${{ github.workspace }}/src
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
         run: |
-          # LPM ships a local hypothesis compatibility module; running pytest
-          # outside the checkout prevents it shadowing the installed plugin.
+          # LPM includes a local Hypothesis shim; disable the real package's
+          # auto-loaded pytest plugin to avoid a namespace collision.
           cd "$RUNNER_TEMP"
           python -m pytest -q \
             "$GITHUB_WORKSPACE/tests/test_solver.py" \
