@@ -4671,11 +4671,18 @@ def run_lpmbuild(
             # One global SAT plan handles versioned dependencies, providers,
             # conflicts, and alternative sources before any build is launched.
             from .buildpkg_sat import plan_source_build
+            pin_data = {}
+            if Path(PIN_FILE).is_file():
+                pin_data = read_json(PIN_FILE)
+                if not isinstance(pin_data, dict):
+                    die(f"invalid LPM pin database: {PIN_FILE}")
             try:
                 _sat_plan = plan_source_build(
                     script_path, scal, arr, installed_snapshot, fetch_fn,
                     _capture_lpmbuild_metadata, force_rebuild=force_rebuild,
                     target_arch=arch,
+                    pins=pin_data.get("prefer", {}),
+                    holds=pin_data.get("hold", []),
                 )
             except ResolutionError as exc:
                 die(f"[deps] SAT source planning failed: {exc}")
