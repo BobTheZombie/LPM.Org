@@ -30,6 +30,10 @@ def satisfied(requirement, installed):
         provided = metadata.get('provides', [])
         if wanted not in aliases(package_name, provided):
             continue
+        # Unversioned dependencies need only a matching installed provider.
+        # Versioned requirements still require real installed version metadata.
+        if not requirement.specifier:
+            return True
         try:
             if requirement.specifier.contains(str(metadata['version']), prereleases=None):
                 return True
