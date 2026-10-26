@@ -88,3 +88,46 @@ def test_cardinality_encoding_exhaustive_small_assignments():
                     cnf.add([v if bit else -v])
                 constrain_at_most(cnf, variables, bound)
                 assert CDCLSolver(cnf).solve([]).sat == (sum(bits) <= bound)
+
+
+def test_installed_virtual_provider_outweighs_new_repo_candidate():
+    universe = empty({
+        "engine": {
+            "version": "99.0", "release": "1",
+            "provides": ["virtual-abi=2.0"]
+        }
+    })
+    register_universe_candidate(
+        universe, PkgMeta(name="new-engine", version="6.12.0",
+                          provides=["virtual-abi=2.0"])
+    )
+    assert solve(["virtual-abi>=2"], universe) == []
+
+
+def test_conflict_with_retained_installed_package_is_rejected():
+    from src.lpm.app import ResolutionError
+    import pytest
+    universe = empty({
+        "existing-service": {"version": "1.0", "provides": []}
+    })
+    register_universe_candidate(
+        universe, PkgMeta(name="replacement", version="2.0",
+                          conflicts=["existing-service"])
+    )
+    with pytest.raises(ResolutionError):
+        solve(["replacement"], universe)
+
+
+def test_upgrading_installed_provider_does_not_keep_old_virtual_abi():
+    from src.lpm.app import ResolutionError
+    import pytest
+    universe = empty({
+        "qt": {"version": "6.11.2", "provides": ["qt-abi=6.11"]}
+    })
+    register_universe_candidate(
+        universe, PkgMeta(name="qt", version="6.12.0",
+                          provides=["qt-abi=6.12"])
+    )
+    # The original ABI disappears when its provider is replaced.
+    with pytest.raises(ResolutionError):
+        solve(["qt>=6.12.0", "qt-abi==6.11"], universe)
