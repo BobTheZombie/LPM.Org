@@ -59,3 +59,32 @@ def test_too_tight_cardinality_bound_unsat():
     constrain_at_most(cnf, [a, b], 1)
     from src.lpm.resolver import CDCLSolver
     assert not CDCLSolver(cnf).solve([]).sat
+
+
+def test_explicit_upgrade_keeps_newest_candidate_selection():
+    universe = empty({"qt6-base": {"version": "6.11.2", "release": "1"}})
+    register_universe_candidate(
+        universe, PkgMeta(name="qt6-base", version="6.11.2", release="1")
+    )
+    register_universe_candidate(
+        universe, PkgMeta(name="qt6-base", version="6.12.0", release="1")
+    )
+    assert solve(["qt6-base"], universe) == []
+    updated = solve(["qt6-base"], universe, minimize_transaction=False)
+    assert [(p.name, p.version) for p in updated] == [
+        ("qt6-base", "6.12.0")
+    ]
+
+
+def test_cardinality_encoding_exhaustive_small_assignments():
+    from itertools import product
+    from src.lpm.resolver import CDCLSolver
+    for n in range(1, 6):
+        for bound in range(0, n):
+            for bits in product((False, True), repeat=n):
+                cnf = CNF()
+                variables = [cnf.new_var(f"v{i}") for i in range(n)]
+                for v, bit in zip(variables, bits):
+                    cnf.add([v if bit else -v])
+                constrain_at_most(cnf, variables, bound)
+                assert CDCLSolver(cnf).solve([]).sat == (sum(bits) <= bound)
