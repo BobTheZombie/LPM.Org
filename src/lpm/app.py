@@ -1577,7 +1577,9 @@ def _matches_installed_candidate(pkg: PkgMeta, installed: Dict[str, dict]) -> bo
 
 
 def solve(
-    goals: List[str], universe: Universe, *, include_build_requires: bool = False
+    goals: List[str], universe: Universe, *,
+    include_build_requires: bool = False,
+    minimize_transaction: bool = True,
 ) -> List[PkgMeta]:
     def _summarize_unsat_packages(packages: List[str]) -> str:
         pkg_set = set(packages)
@@ -1684,12 +1686,20 @@ def solve(
         var for key, var in var_of.items()
         if not _matches_installed_candidate(meta_lookup[key], universe.installed)
     ]
-    res = minimize_changes(
-        cnf, change_vars, prefer_true=ptrue, prefer_false=pfalse,
-        bias=bias_map, decay_map=decay_map,
-        var_decay=var_decay, cla_decay=cla_decay,
-        max_learnts=MAX_LEARNT_CLAUSES,
-    )
+    if minimize_transaction:
+        res = minimize_changes(
+            cnf, change_vars, prefer_true=ptrue, prefer_false=pfalse,
+            bias=bias_map, decay_map=decay_map,
+            var_decay=var_decay, cla_decay=cla_decay,
+            max_learnts=MAX_LEARNT_CLAUSES,
+        )
+    else:
+        # An explicit upgrade is not a request to minimize changes.
+        res = CDCLSolver(
+            cnf, ptrue, pfalse, bias_map, decay_map,
+            var_decay=var_decay, cla_decay=cla_decay,
+            max_learnts=MAX_LEARNT_CLAUSES,
+        ).solve([])
     inv: Dict[int, PkgMeta] = {
         vid: meta_lookup[key] for key, vid in var_of.items()
     }
@@ -3486,7 +3496,7 @@ def do_upgrade(targets: List[str], root: Path, dry: bool, verify: bool, force: b
         goals += targets
 
     try:
-        plan = solve(goals, u)
+        plan = solve(goals, u, minimize_transaction=False)
     except ResolutionError:
         warn("SAT solver failed to find upgrade set, falling back to GitLab fetch...")
         for dep in targets:
@@ -5965,7 +5975,7 @@ def cmd_upgrade(a):
             goals += a.names
 
         try:
-            plan = solve(goals, u)
+            plan = solve(goals, u, minimize_transaction=False)
         except ResolutionError:
             if not allow_fallback:
                 die(
