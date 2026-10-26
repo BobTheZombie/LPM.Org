@@ -236,7 +236,7 @@ import maintainer_mode
 from . import config as _config
 from .repo_categories import (
     CategoryLookupError,
-    cached_category_path,
+    CategoryAmbiguityError,
     discover_category_path,
     supports_category_discovery,
     valid_package_name,
@@ -4133,11 +4133,16 @@ def _fetch_git_source(url: str, dst_dir: Path, *, alias: Optional[str] = None) -
 _LPMBUILD_RECIPE_SOURCE_BASES: Dict[str, str] = {}
 
 
-def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
-    """Fetch a remote lpmbuild, including GitLab --CATEGORY-- directories.
+# In-process recipe cache prevents repeat downloads during dependency traversal.
+# Every destination still retains its own relative SOURCE URL provenance.
+_LPMBUILD_RECIPE_CACHE: Dict[str, bytes] = {}
 
-    Flat <name>/<name>.lpmbuild paths retain priority. A cached GitLab tree
-    index avoids re-probing missing flat paths for successive dependencies.
+
+def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
+    """Fetch one indexed recipe, preserving flat-path priority.
+
+    The GitLab tree identifies either a flat or categorized recipe before
+    fetching it. Other repositories retain their historical flat lookup.
     """
     if not valid_package_name(pkgname):
         die(f"Invalid lpmbuild package name: {pkgname!r}")
@@ -4157,43 +4162,58 @@ def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
         if url in tried:
             return False
         tried.append(url)
-        ok(f"Fetching lpmbuild for {pkgname} from {url}")
-        try:
-            data, _ = reader(url)
-        except Exception as exc:
-            errors.append(f"{url}: {exc}")
-            return False
+        data = _LPMBUILD_RECIPE_CACHE.get(url)
+        if data is None:
+            ok(f"Fetching lpmbuild for {pkgname} from {url}")
+            try:
+                data, _ = reader(url)
+            except Exception as exc:
+                errors.append(f"{url}: {exc}")
+                return False
+            _LPMBUILD_RECIPE_CACHE[url] = data
         dst.write_bytes(data)
-        # Remember the original repository directory for relative SOURCE files.
+        # Preserve origin for remote relative SOURCE and PATCHES entries.
         _LPMBUILD_RECIPE_SOURCE_BASES[str(dst.resolve())] = url.rsplit("/", 1)[0] + "/"
         return True
 
-    try:
-        known = cached_category_path(base_url, pkgname)
-    except CategoryLookupError as exc:
-        die(f"Failed to fetch lpmbuild for {pkgname}: {exc}")
-
-    if known and try_path(known):
-        return dst
-    if try_path(flat_path):
-        return dst
-
     if supports_category_discovery(base_url):
         try:
-            discovered = discover_category_path(
-                base_url, pkgname, reader, refresh=bool(known)
-            )
-        except CategoryLookupError as exc:
+            located = discover_category_path(base_url, pkgname, reader)
+            if located is None:
+                # A recipe might have appeared since the index was populated.
+                located = discover_category_path(base_url, pkgname, reader, refresh=True)
+        except CategoryAmbiguityError as exc:
             die(f"Failed to fetch lpmbuild for {pkgname}: {exc}")
-        if discovered and try_path(discovered):
-            return dst
+        except CategoryLookupError as exc:
+            # A temporary GitLab API outage should not prevent flat fetching.
+            errors.append(f"GitLab recipe index unavailable: {exc}")
+        else:
+            if located and try_path(located):
+                return dst
+            if located:
+                # A stale index entry may point at a moved or deleted recipe.
+                try:
+                    refreshed = discover_category_path(
+                        base_url, pkgname, reader, refresh=True
+                    )
+                except CategoryLookupError as exc:
+                    errors.append(f"GitLab recipe index refresh failed: {exc}")
+                else:
+                    if refreshed and try_path(refreshed):
+                        return dst
 
+            reason = "; ".join(errors) if errors else (
+                f"package {pkgname!r} not found in GitLab repository index"
+            )
+            die(f"Failed to fetch lpmbuild for {pkgname}: {reason}")
+
+    # Non-GitLab repositories, or GitLab with an unavailable tree API.
+    if try_path(flat_path):
+        return dst
     reason = "; ".join(errors) if errors else "no matching recipe found"
     die(f"Failed to fetch lpmbuild for {pkgname}: {reason}")
 
 
-
-    
 def build_from_gitlab(pkgname: str) -> Path:
     """
     Fetch lpmbuild from GitLab, build it if not already cached,

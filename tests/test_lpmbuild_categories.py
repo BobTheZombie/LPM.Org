@@ -23,8 +23,12 @@ BASE = "https://gitlab.com/lpm-org/packages/-/raw/main"
 @pytest.fixture(autouse=True)
 def clear_category_cache():
     _TREE_CACHE.clear()
+    if "lpm.app" in sys.modules:
+        sys.modules["lpm.app"]._LPMBUILD_RECIPE_CACHE.clear()
     yield
     _TREE_CACHE.clear()
+    if "lpm.app" in sys.modules:
+        sys.modules["lpm.app"]._LPMBUILD_RECIPE_CACHE.clear()
 
 
 def _blob(path):
@@ -49,7 +53,7 @@ def test_gitlab_category_lookup_and_index_reuse():
         "--KDE--/qt6-base/qt6-base.lpmbuild"
     )
     assert discover_category_path(BASE, "qt6-svg", reader) == "--KDE--/qt6-svg.lpmbuild"
-    assert discover_category_path(BASE, "glibc", reader) is None
+    assert discover_category_path(BASE, "glibc", reader) == "glibc/glibc.lpmbuild"
     assert len(urls) == 1
     assert "/api/v4/projects/lpm-org%2Fpackages/repository/tree?" in urls[0]
     assert "ref=main" in urls[0]
@@ -151,8 +155,9 @@ def test_remote_fetch_category_relative_source_origin(tmp_path, monkeypatch):
     assert app._LPMBUILD_RECIPE_SOURCE_BASES[str(dst.resolve())] == (
         BASE + "/--KDE--/qt6-base/"
     )
-    assert urls[0] == BASE + "/qt6-base/qt6-base.lpmbuild"
-    assert urls[2] == BASE + "/--KDE--/qt6-base/qt6-base.lpmbuild"
+    assert "/api/v4/projects/" in urls[0]
+    assert urls[1] == BASE + "/--KDE--/qt6-base/qt6-base.lpmbuild"
+    assert BASE + "/qt6-base/qt6-base.lpmbuild" not in urls
 
     # The downloaded recipe's relative sources come from its remote category,
     # even though the script itself was downloaded to a temporary directory.
@@ -175,7 +180,7 @@ def test_remote_fetch_category_relative_source_origin(tmp_path, monkeypatch):
     shutil.rmtree(Path("/tmp/build-qt6-base"), ignore_errors=True)
 
 
-def test_cached_category_path_is_used_before_flat_fallback(tmp_path, monkeypatch):
+def test_indexed_category_recipe_is_fetched_once_and_cached(tmp_path, monkeypatch):
     lpm = _import_lpm(tmp_path, monkeypatch)
     monkeypatch.setitem(lpm.CONF, "LPMBUILD_REPO", BASE)
     entries = [_blob("--KDE--/kwin/kwin.lpmbuild")]
@@ -195,17 +200,28 @@ def test_cached_category_path_is_used_before_flat_fallback(tmp_path, monkeypatch
     second = tmp_path / "second.lpmbuild"
     lpm.fetch_lpmbuild("kwin", second)
     assert second.read_bytes() == first.read_bytes()
-    assert urls.count(BASE + "/kwin/kwin.lpmbuild") == 1
+    assert urls.count(BASE + "/kwin/kwin.lpmbuild") == 0
+    assert urls.count(BASE + "/--KDE--/kwin/kwin.lpmbuild") == 1
     assert len([url for url in urls if "/api/v4/projects/" in url]) == 1
+    from lpm import app
+    assert app._LPMBUILD_RECIPE_SOURCE_BASES[str(second.resolve())] == (
+        BASE + "/--KDE--/kwin/"
+    )
 
 
-def test_flat_recipe_remains_first_and_does_not_query_gitlab_tree(tmp_path, monkeypatch):
+def test_flat_recipe_has_priority_without_category_probe(tmp_path, monkeypatch):
     lpm = _import_lpm(tmp_path, monkeypatch)
     monkeypatch.setitem(lpm.CONF, "LPMBUILD_REPO", BASE)
     urls = []
+    tree = [
+        _blob("--KDE--/glibc/glibc.lpmbuild"),
+        _blob("glibc/glibc.lpmbuild"),
+    ]
 
     def reader(url, timeout=10):
         urls.append(url)
+        if "/api/v4/projects/" in url:
+            return json.dumps(tree).encode(), url
         if url == BASE + "/glibc/glibc.lpmbuild":
             return b"NAME=glibc\\nVERSION=2\\n", url
         raise AssertionError(f"unexpected request: {url}")
@@ -213,4 +229,73 @@ def test_flat_recipe_remains_first_and_does_not_query_gitlab_tree(tmp_path, monk
     monkeypatch.setattr(lpm, "urlread", reader)
     dest = tmp_path / "glibc.lpmbuild"
     lpm.fetch_lpmbuild("glibc", dest)
-    assert urls == [BASE + "/glibc/glibc.lpmbuild"]
+    assert dest.read_bytes() == b"NAME=glibc\\nVERSION=2\\n"
+    assert len([url for url in urls if "/api/v4/projects/" in url]) == 1
+    assert urls.count(BASE + "/glibc/glibc.lpmbuild") == 1
+    assert BASE + "/--KDE--/glibc/glibc.lpmbuild" not in urls
+
+
+def test_non_gitlab_repo_keeps_flat_lookup(tmp_path, monkeypatch):
+    lpm = _import_lpm(tmp_path, monkeypatch)
+    base = "https://example.org/recipes"
+    monkeypatch.setitem(lpm.CONF, "LPMBUILD_REPO", base)
+    urls = []
+
+    def reader(url, timeout=10):
+        urls.append(url)
+        return b"NAME=glibc\\n", url
+
+    monkeypatch.setattr(lpm, "urlread", reader)
+    lpm.fetch_lpmbuild("glibc", tmp_path / "glibc.lpmbuild")
+    assert urls == [base + "/glibc/glibc.lpmbuild"]
+
+
+def test_gitlab_index_unavailable_falls_back_to_flat(tmp_path, monkeypatch):
+    lpm = _import_lpm(tmp_path, monkeypatch)
+    monkeypatch.setitem(lpm.CONF, "LPMBUILD_REPO", BASE)
+    urls = []
+
+    def reader(url, timeout=10):
+        urls.append(url)
+        if "/api/v4/projects/" in url:
+            raise ConnectionError("GitLab API unavailable")
+        if url == BASE + "/glibc/glibc.lpmbuild":
+            return b"NAME=glibc\\n", url
+        raise AssertionError(f"unexpected request: {url}")
+
+    monkeypatch.setattr(lpm, "urlread", reader)
+    lpm.fetch_lpmbuild("glibc", tmp_path / "glibc.lpmbuild")
+    assert len(urls) == 2
+    assert "/api/v4/projects/" in urls[0]
+    assert urls[1] == BASE + "/glibc/glibc.lpmbuild"
+
+
+def test_missing_package_avoids_blind_raw_requests(tmp_path, monkeypatch):
+    lpm = _import_lpm(tmp_path, monkeypatch)
+    monkeypatch.setitem(lpm.CONF, "LPMBUILD_REPO", BASE)
+    urls = []
+
+    def reader(url, timeout=10):
+        urls.append(url)
+        if "/api/v4/projects/" in url:
+            return b"[]", url
+        raise AssertionError(f"unexpected raw recipe request: {url}")
+
+    monkeypatch.setattr(lpm, "urlread", reader)
+    with pytest.raises(SystemExit):
+        lpm.fetch_lpmbuild("not-real", tmp_path / "not-real.lpmbuild")
+    assert len(urls) == 2
+    assert all("/api/v4/projects/" in url for url in urls)
+
+
+def test_flat_recipe_overrides_multiple_categories():
+    paths = [
+        _blob("--KDE--/kwin/kwin.lpmbuild"),
+        _blob("--EXTRA--/kwin/kwin.lpmbuild"),
+        _blob("kwin/kwin.lpmbuild"),
+    ]
+
+    def reader(url):
+        return json.dumps(paths).encode(), url
+
+    assert discover_category_path(BASE, "kwin", reader) == "kwin/kwin.lpmbuild"

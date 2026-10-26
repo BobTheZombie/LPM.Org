@@ -1,4 +1,4 @@
-"""Discover LPM recipe category directories from the GitLab repository tree.
+"""Index flat and categorized LPM recipes from the GitLab repository tree.
 
 A category marker such as --KDE-- is a source layout hint, not a package name.
 """
@@ -13,13 +13,17 @@ _CATEGORY = re.compile(r"^--[A-Za-z0-9][A-Za-z0-9_-]*--$")
 _PACKAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 _PAGE_SIZE = 100
 _MAX_PAGES = 250
-_CACHE_TTL = 300.0
+_CACHE_TTL = 86400.0  # Reuse index for long-running source builds.
 # base URL -> (expiry, {package name: [repository-relative recipe paths]})
 _TREE_CACHE: dict[str, tuple[float, dict[str, list[str]]]] = {}
 
 
 class CategoryLookupError(RuntimeError):
-    """GitLab category enumeration failed, or a package name is ambiguous."""
+    """GitLab recipe index lookup failed."""
+
+
+class CategoryAmbiguityError(CategoryLookupError):
+    """Multiple categorized recipes exist without a flat override."""
 
 
 def valid_package_name(name: str) -> bool:
@@ -47,8 +51,12 @@ def supports_category_discovery(base_url: str) -> bool:
 
 def _choose(package: str, index: dict[str, list[str]]) -> str | None:
     paths = sorted(set(index.get(package, [])))
+    # Prefer the historical flat path without probing a missing URL first.
+    flat = f"{package}/{package}.lpmbuild"
+    if flat in paths:
+        return flat
     if len(paths) > 1:
-        raise CategoryLookupError(
+        raise CategoryAmbiguityError(
             f"package {package!r} occurs in multiple categories: "
             + ", ".join(paths)
             + "; keep one recipe or move the desired recipe to the repository root"
@@ -65,7 +73,7 @@ def cached_category_path(base_url: str, package: str) -> str | None:
 
 
 def discover_category_path(base_url: str, package: str, reader, *, refresh: bool = False) -> str | None:
-    """Find --CATEGORY--/<pkg>/<pkg>.lpmbuild (or --CATEGORY--/<pkg>.lpmbuild).
+    """Find flat or --CATEGORY-- recipes using one cached GitLab tree.
 
     `reader` is LPM's existing urlread callable returning (bytes, final_url).
     Fetch all pages before caching, to avoid partially populated indexes.
@@ -117,12 +125,15 @@ def discover_category_path(base_url: str, package: str, reader, *, refresh: bool
                 _, name, filename = parts
                 if valid_package_name(name) and filename == name + ".lpmbuild":
                     index.setdefault(name, []).append(path)
-            elif len(parts) == 2 and _CATEGORY.fullmatch(parts[0]):
-                filename = parts[1]
-                if filename.endswith(".lpmbuild"):
-                    name = filename[:-len(".lpmbuild")]
-                    if valid_package_name(name):
-                        index.setdefault(name, []).append(path)
+            elif len(parts) == 2:
+                folder, filename = parts
+                if _CATEGORY.fullmatch(folder):
+                    if filename.endswith(".lpmbuild"):
+                        name = filename[:-len(".lpmbuild")]
+                        if valid_package_name(name):
+                            index.setdefault(name, []).append(path)
+                elif valid_package_name(folder) and filename == folder + ".lpmbuild":
+                    index.setdefault(folder, []).append(path)
 
         if len(records) < _PAGE_SIZE:
             break
