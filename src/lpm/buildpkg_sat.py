@@ -158,18 +158,22 @@ def plan_source_build(
 
     # Fail before compiling anything if SAT selected a build-time cycle.
     visiting: Set[str] = set()
+    stack: List[str] = []
     visited: Set[str] = set()
     def visit(name: str) -> None:
         if name in visiting:
+            start = stack.index(name)
             raise ResolutionError(
-                "source build dependency cycle: " + " -> ".join([*visiting, name])
+                "dependency cycle detected: " + " -> ".join([*stack[start:], name])
                 + " (move bootstrap-only edges into STAGE_2_REQUIRES)"
             )
         if name in visited:
             return
         visiting.add(name)
+        stack.append(name)
         for dependency in plan.direct_for(name):
             visit(dependency)
+        stack.pop()
         visiting.remove(name)
         visited.add(name)
     visit(root_name)
