@@ -249,6 +249,7 @@ from .atomic_io import atomic_replace, safe_write
 from .fs_ops import operation_phase, prepare_directory
 from .privileges import privilege_info, privileged_section, privileges_enabled, require_root
 from .resolver import CNF, CDCLSolver
+from .sat_optimizer import minimize_changes
 from .hooks import HookExecutionError, HookFailureMode, HookTransactionManager, _ensure_executable, load_hooks
 from .delta import apply_delta, find_cached_by_sha, file_sha256, zstd_version, version_at_least
 from .lpminstall import (
@@ -1558,6 +1559,18 @@ def encode_resolution(
         terminal,
     )
 
+def _matches_installed_candidate(pkg: PkgMeta, installed: Dict[str, dict]) -> bool:
+    """Same identity needs no install/upgrade transaction."""
+    current = installed.get(pkg.name)
+    if not current or pkg.version != str(current.get("version", "")):
+        return False
+    if current.get("release") and pkg.release != str(current["release"]):
+        return False
+    if current.get("arch") and pkg.arch != str(current["arch"]):
+        return False
+    return True
+
+
 def solve(
     goals: List[str], universe: Universe, *, include_build_requires: bool = False
 ) -> List[PkgMeta]:
@@ -1658,21 +1671,20 @@ def solve(
             raise ResolutionError("; ".join(dict.fromkeys(reasons)))
     var_decay = float(CONF.get("VSIDS_VAR_DECAY", "0.95"))
     cla_decay = float(CONF.get("VSIDS_CLAUSE_DECAY", "0.999"))
-    solver = CDCLSolver(
-        cnf,
-        ptrue,
-        pfalse,
-        bias_map,
-        decay_map,
-        var_decay=var_decay,
-        cla_decay=cla_decay,
-        max_learnts=MAX_LEARNT_CLAUSES,
-    )
-    res = solver.solve([])
     meta_lookup = {
         id(p): p for candidates in universe.candidates_by_name.values()
         for p in candidates
     }
+    change_vars = [
+        var for key, var in var_of.items()
+        if not _matches_installed_candidate(meta_lookup[key], universe.installed)
+    ]
+    res = minimize_changes(
+        cnf, change_vars, prefer_true=ptrue, prefer_false=pfalse,
+        bias=bias_map, decay_map=decay_map,
+        var_decay=var_decay, cla_decay=cla_decay,
+        max_learnts=MAX_LEARNT_CLAUSES,
+    )
     inv: Dict[int, PkgMeta] = {
         vid: meta_lookup[key] for key, vid in var_of.items()
     }
@@ -1708,7 +1720,7 @@ def solve(
     for vid,val in res.assign.items():
         if not val: continue
         p = inv.get(vid)
-        if p is not None:
+        if p is not None and not _matches_installed_candidate(p, universe.installed):
             chosen[p.name] = p
     # Stable dependency-first ordering.  Cycles are legal when the selected
     # packages are otherwise satisfiable, so collapse them naturally by
