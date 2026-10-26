@@ -249,6 +249,7 @@ from .atomic_io import atomic_replace, safe_write
 from .fs_ops import operation_phase, prepare_directory
 from .privileges import privilege_info, privileged_section, privileges_enabled, require_root
 from .resolver import CNF, CDCLSolver
+from .sat_optimizer import minimize_changes
 from .hooks import HookExecutionError, HookFailureMode, HookTransactionManager, _ensure_executable, load_hooks
 from .delta import apply_delta, find_cached_by_sha, file_sha256, zstd_version, version_at_least
 from .lpminstall import (
@@ -1151,11 +1152,17 @@ def build_universe() -> Universe:
         for p in lst:
             add_prov(p.name, p)
             for prov in p.provides:
-                m = re.match(r"^([A-Za-z0-9._+\-]+)\s*(==|=|>=|<=|>|<|~=?)*\s*(.*)?$", prov.strip())
-                if m:
-                    nm, op, ver = m.group(1), (m.group(2) or ""), (m.group(3) or "")
-                    add_prov(nm, p)
-                    if op and ver: add_prov(f"{nm}{'==' if op=='=' else op}{ver}", p)
+                try:
+                    expr = parse_dep_expr(prov)
+                except (ValueError, TypeError):
+                    continue
+                if expr.kind != "atom" or not expr.atom:
+                    continue
+                atom = expr.atom
+                add_prov(atom.name, p)
+                if atom.op and atom.ver:
+                    op = "==" if atom.op == "=" else atom.op
+                    add_prov(f"{atom.name}{op}{atom.ver}", p)
     for tok, lst in providers.items():
         lst.sort(key=lambda p: (p.prio, parse_semver(p.version)), reverse=True)
     return Universe(allpkgs, providers, installed, prefer, holds)
@@ -1182,18 +1189,17 @@ def register_universe_candidate(u: Universe, meta: PkgMeta) -> None:
 
     _add_provider_token(meta.name)
     for prov in meta.provides:
-        prov = (prov or "").strip()
-        if not prov:
+        try:
+            expr = parse_dep_expr(prov)
+        except (ValueError, TypeError):
             continue
-        m = re.match(r"^([A-Za-z0-9._+\-]+)\s*(==|=|>=|<=|>|<|~=?)*\s*(.*)?$", prov)
-        if not m:
+        if expr.kind != "atom" or not expr.atom:
             continue
-        nm, op, ver = m.group(1), (m.group(2) or ""), (m.group(3) or "")
-        if nm:
-            _add_provider_token(nm)
-        if nm and op and ver:
-            norm_op = "==" if op == "=" else op
-            _add_provider_token(f"{nm}{norm_op}{ver}")
+        atom = expr.atom
+        _add_provider_token(atom.name)
+        if atom.op and atom.ver:
+            op = "==" if atom.op == "=" else atom.op
+            _add_provider_token(f"{atom.name}{op}{atom.ver}")
 
 
 def _remove_universe_candidate(u: Universe, meta: PkgMeta) -> None:
@@ -1558,8 +1564,22 @@ def encode_resolution(
         terminal,
     )
 
+def _matches_installed_candidate(pkg: PkgMeta, installed: Dict[str, dict]) -> bool:
+    """Same identity needs no install/upgrade transaction."""
+    current = installed.get(pkg.name)
+    if not current or pkg.version != str(current.get("version", "")):
+        return False
+    if current.get("release") and pkg.release != str(current["release"]):
+        return False
+    if current.get("arch") and pkg.arch != str(current["arch"]):
+        return False
+    return True
+
+
 def solve(
-    goals: List[str], universe: Universe, *, include_build_requires: bool = False
+    goals: List[str], universe: Universe, *,
+    include_build_requires: bool = False,
+    minimize_transaction: bool = True,
 ) -> List[PkgMeta]:
     def _summarize_unsat_packages(packages: List[str]) -> str:
         pkg_set = set(packages)
@@ -1658,21 +1678,28 @@ def solve(
             raise ResolutionError("; ".join(dict.fromkeys(reasons)))
     var_decay = float(CONF.get("VSIDS_VAR_DECAY", "0.95"))
     cla_decay = float(CONF.get("VSIDS_CLAUSE_DECAY", "0.999"))
-    solver = CDCLSolver(
-        cnf,
-        ptrue,
-        pfalse,
-        bias_map,
-        decay_map,
-        var_decay=var_decay,
-        cla_decay=cla_decay,
-        max_learnts=MAX_LEARNT_CLAUSES,
-    )
-    res = solver.solve([])
     meta_lookup = {
         id(p): p for candidates in universe.candidates_by_name.values()
         for p in candidates
     }
+    change_vars = [
+        var for key, var in var_of.items()
+        if not _matches_installed_candidate(meta_lookup[key], universe.installed)
+    ]
+    if minimize_transaction:
+        res = minimize_changes(
+            cnf, change_vars, prefer_true=ptrue, prefer_false=pfalse,
+            bias=bias_map, decay_map=decay_map,
+            var_decay=var_decay, cla_decay=cla_decay,
+            max_learnts=MAX_LEARNT_CLAUSES,
+        )
+    else:
+        # An explicit upgrade is not a request to minimize changes.
+        res = CDCLSolver(
+            cnf, ptrue, pfalse, bias_map, decay_map,
+            var_decay=var_decay, cla_decay=cla_decay,
+            max_learnts=MAX_LEARNT_CLAUSES,
+        ).solve([])
     inv: Dict[int, PkgMeta] = {
         vid: meta_lookup[key] for key, vid in var_of.items()
     }
@@ -1708,7 +1735,7 @@ def solve(
     for vid,val in res.assign.items():
         if not val: continue
         p = inv.get(vid)
-        if p is not None:
+        if p is not None and not _matches_installed_candidate(p, universe.installed):
             chosen[p.name] = p
     # Stable dependency-first ordering.  Cycles are legal when the selected
     # packages are otherwise satisfiable, so collapse them naturally by
@@ -3469,7 +3496,7 @@ def do_upgrade(targets: List[str], root: Path, dry: bool, verify: bool, force: b
         goals += targets
 
     try:
-        plan = solve(goals, u)
+        plan = solve(goals, u, minimize_transaction=False)
     except ResolutionError:
         warn("SAT solver failed to find upgrade set, falling back to GitLab fetch...")
         for dep in targets:
@@ -4501,6 +4528,7 @@ def run_lpmbuild(
     force_rebuild: bool = False,
     fetcher: Optional[Callable[[str, Path], Path]] = None,
     _building_stack: Optional[Tuple[str, ...]] = None,
+    _sat_plan=None,
     executor: Optional[ThreadPoolExecutor] = None,
     cpu_overrides: Optional[CpuOverrides] = None,
     on_built_package: Optional[Callable[[Path, PkgMeta], None]] = None,
@@ -4564,6 +4592,7 @@ def run_lpmbuild(
         python_to_build: List[Tuple[str, str]] = []
 
         capabilities: Set[str] = set()
+        installed_snapshot: Dict[str, dict] = {}
 
         def _canonical_capability(value: str) -> Optional[str]:
             if not isinstance(value, str):
@@ -4585,14 +4614,17 @@ def run_lpmbuild(
                     capabilities.add(cap)
 
         def _refresh_capabilities_from_installed() -> None:
+            nonlocal installed_snapshot
             capabilities.clear()
             if force_rebuild:
+                installed_snapshot = {}
                 return
             conn = db()
             try:
-                installed = db_installed(conn)
+                installed_snapshot = db_installed(conn)
             finally:
                 conn.close()
+            installed = installed_snapshot
             capabilities.update(installed)
             for pkg_name, meta in installed.items():
                 if pkg_name:
@@ -4611,22 +4643,38 @@ def run_lpmbuild(
             arr.get("BUILD_REQUIRES", [])
         )
 
-        for dep in combined_requires:
+        if combined_requires and _sat_plan is None:
+            # One global SAT plan handles versioned dependencies, providers,
+            # conflicts, and alternative sources before any build is launched.
+            from .buildpkg_sat import plan_source_build
             try:
-                e = parse_dep_expr(dep)
-            except Exception:
-                continue
-            parts = flatten_and(e) if e.kind == "and" else [e]
-            for part in parts:
-                if part.kind == "atom":
-                    depname = part.atom.name
-                    key = ("pkg", depname)
-                    if key in seen:
-                        continue
-                    seen.add(key)
+                _sat_plan = plan_source_build(
+                    script_path, scal, arr, installed_snapshot, fetch_fn,
+                    _capture_lpmbuild_metadata, force_rebuild=force_rebuild,
+                    target_arch=arch,
+                )
+            except ResolutionError as exc:
+                die(f"[deps] SAT source planning failed: {exc}")
+            log(f"[deps] SAT planned {len(_sat_plan.selected)} source builds")
 
-                    if depname not in capabilities:
-                        deps_to_build.append(depname)
+        if _sat_plan is not None:
+            deps_to_build.extend(_sat_plan.direct_for(name))
+        else:
+            for dep in combined_requires:
+                try:
+                    e = parse_dep_expr(dep)
+                except Exception:
+                    continue
+                parts = flatten_and(e) if e.kind == "and" else [e]
+                for part in parts:
+                    if part.kind == "atom":
+                        depname = part.atom.name
+                        key = ("pkg", depname)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        if depname not in capabilities:
+                            deps_to_build.append(depname)
 
         def _register_built_dependency_blob(
             blob: Path,
@@ -4656,8 +4704,13 @@ def run_lpmbuild(
             if depname in building_stack_set:
                 cycle = " -> ".join((*building_stack, depname))
                 die(f"dependency cycle detected: {cycle}")
-            tmp = Path(f"/tmp/lpm-dep-{depname}.lpmbuild")
-            fetch_fn(depname, tmp)
+            if _sat_plan is not None and depname in _sat_plan.completed:
+                return None
+            if _sat_plan is not None:
+                tmp = _sat_plan.recipes[depname]
+            else:
+                tmp = Path(f"/tmp/lpm-dep-{depname}.lpmbuild")
+                fetch_fn(depname, tmp)
             built_blob, _, _, split_records = run_lpmbuild(
                 tmp,
                 outdir or script_dir,
@@ -4668,6 +4721,7 @@ def run_lpmbuild(
                 force_rebuild=force_rebuild,
                 fetcher=fetch_fn,
                 _building_stack=building_stack,
+                _sat_plan=_sat_plan,
                 executor=executor,
                 cpu_overrides=overrides,
                 on_built_package=on_built_package,
@@ -4678,10 +4732,26 @@ def run_lpmbuild(
                 _refresh_capabilities_from_installed()
             else:
                 _register_built_dependency_blob(built_blob, splits=split_records)
+            if _sat_plan is not None:
+                # A declined install cannot satisfy subsequent source builds.
+                # Do not compile against an uninstalled planned provider.
+                if prompt_install and depname not in installed_snapshot:
+                    die(
+                        f"[deps] SAT planned dependency {depname!r} was not installed; "
+                        "build aborted to avoid an inconsistent transaction"
+                    )
+                _sat_plan.completed.add(depname)
             return built_blob
 
         if deps_to_build:
-            if prompt_install:
+            if _sat_plan is not None:
+                # Global planning makes serial execution deterministic and
+                # avoids racing shared prerequisites in diamond graphs.
+                total = len(deps_to_build)
+                for idx, dep in enumerate(deps_to_build, start=1):
+                    if dep not in _sat_plan.completed:
+                        _build_dep(dep, idx, total)
+            elif prompt_install:
                 total = len(deps_to_build)
                 with progress_bar(
                     deps_to_build,
@@ -5905,7 +5975,7 @@ def cmd_upgrade(a):
             goals += a.names
 
         try:
-            plan = solve(goals, u)
+            plan = solve(goals, u, minimize_transaction=False)
         except ResolutionError:
             if not allow_fallback:
                 die(
@@ -6788,17 +6858,17 @@ def _installed_provider_map(installed: Mapping[str, dict]) -> Dict[str, Set[str]
     for name, meta in installed.items():
         add(name, name)
         for prov in meta.get("provides", []) or []:
-            prov = (prov or "").strip()
-            if not prov:
+            try:
+                expr = parse_dep_expr(prov)
+            except (ValueError, TypeError):
                 continue
-            m = re.match(r"^([A-Za-z0-9._\-+]+)\s*(==|=|>=|<=|>|<|~=?)*\s*(.*)?$", prov)
-            if not m:
+            if expr.kind != "atom" or not expr.atom:
                 continue
-            nm, op, ver = m.group(1), (m.group(2) or ""), (m.group(3) or "")
-            add(nm, name)
-            if nm and op and ver:
-                norm_op = "==" if op == "=" else op
-                add(f"{nm}{norm_op}{ver}", name)
+            atom = expr.atom
+            add(atom.name, name)
+            if atom.op and atom.ver:
+                op = "==" if atom.op == "=" else atom.op
+                add(f"{atom.name}{op}{atom.ver}", name)
 
     return providers
 
