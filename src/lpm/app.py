@@ -1152,11 +1152,17 @@ def build_universe() -> Universe:
         for p in lst:
             add_prov(p.name, p)
             for prov in p.provides:
-                m = re.match(r"^([A-Za-z0-9._+\-]+)\s*(==|=|>=|<=|>|<|~=?)*\s*(.*)?$", prov.strip())
-                if m:
-                    nm, op, ver = m.group(1), (m.group(2) or ""), (m.group(3) or "")
-                    add_prov(nm, p)
-                    if op and ver: add_prov(f"{nm}{'==' if op=='=' else op}{ver}", p)
+                try:
+                    expr = parse_dep_expr(prov)
+                except (ValueError, TypeError):
+                    continue
+                if expr.kind != "atom" or not expr.atom:
+                    continue
+                atom = expr.atom
+                add_prov(atom.name, p)
+                if atom.op and atom.ver:
+                    op = "==" if atom.op == "=" else atom.op
+                    add_prov(f"{atom.name}{op}{atom.ver}", p)
     for tok, lst in providers.items():
         lst.sort(key=lambda p: (p.prio, parse_semver(p.version)), reverse=True)
     return Universe(allpkgs, providers, installed, prefer, holds)
@@ -1183,18 +1189,17 @@ def register_universe_candidate(u: Universe, meta: PkgMeta) -> None:
 
     _add_provider_token(meta.name)
     for prov in meta.provides:
-        prov = (prov or "").strip()
-        if not prov:
+        try:
+            expr = parse_dep_expr(prov)
+        except (ValueError, TypeError):
             continue
-        m = re.match(r"^([A-Za-z0-9._+\-]+)\s*(==|=|>=|<=|>|<|~=?)*\s*(.*)?$", prov)
-        if not m:
+        if expr.kind != "atom" or not expr.atom:
             continue
-        nm, op, ver = m.group(1), (m.group(2) or ""), (m.group(3) or "")
-        if nm:
-            _add_provider_token(nm)
-        if nm and op and ver:
-            norm_op = "==" if op == "=" else op
-            _add_provider_token(f"{nm}{norm_op}{ver}")
+        atom = expr.atom
+        _add_provider_token(atom.name)
+        if atom.op and atom.ver:
+            op = "==" if atom.op == "=" else atom.op
+            _add_provider_token(f"{atom.name}{op}{atom.ver}")
 
 
 def _remove_universe_candidate(u: Universe, meta: PkgMeta) -> None:
@@ -4577,6 +4582,7 @@ def run_lpmbuild(
         python_to_build: List[Tuple[str, str]] = []
 
         capabilities: Set[str] = set()
+        installed_snapshot: Dict[str, dict] = {}
 
         def _canonical_capability(value: str) -> Optional[str]:
             if not isinstance(value, str):
@@ -4598,14 +4604,17 @@ def run_lpmbuild(
                     capabilities.add(cap)
 
         def _refresh_capabilities_from_installed() -> None:
+            nonlocal installed_snapshot
             capabilities.clear()
             if force_rebuild:
+                installed_snapshot = {}
                 return
             conn = db()
             try:
-                installed = db_installed(conn)
+                installed_snapshot = db_installed(conn)
             finally:
                 conn.close()
+            installed = installed_snapshot
             capabilities.update(installed)
             for pkg_name, meta in installed.items():
                 if pkg_name:
@@ -4628,16 +4637,14 @@ def run_lpmbuild(
             # One global SAT plan handles versioned dependencies, providers,
             # conflicts, and alternative sources before any build is launched.
             from .buildpkg_sat import plan_source_build
-            conn = db()
             try:
-                installed_for_plan = db_installed(conn)
-            finally:
-                conn.close()
-            _sat_plan = plan_source_build(
-                script_path, scal, arr, installed_for_plan, fetch_fn,
-                _capture_lpmbuild_metadata, force_rebuild=force_rebuild,
-                target_arch=arch,
-            )
+                _sat_plan = plan_source_build(
+                    script_path, scal, arr, installed_snapshot, fetch_fn,
+                    _capture_lpmbuild_metadata, force_rebuild=force_rebuild,
+                    target_arch=arch,
+                )
+            except ResolutionError as exc:
+                die(f"[deps] SAT source planning failed: {exc}")
             log(f"[deps] SAT planned {len(_sat_plan.selected)} source builds")
 
         if _sat_plan is not None:
@@ -6834,17 +6841,17 @@ def _installed_provider_map(installed: Mapping[str, dict]) -> Dict[str, Set[str]
     for name, meta in installed.items():
         add(name, name)
         for prov in meta.get("provides", []) or []:
-            prov = (prov or "").strip()
-            if not prov:
+            try:
+                expr = parse_dep_expr(prov)
+            except (ValueError, TypeError):
                 continue
-            m = re.match(r"^([A-Za-z0-9._\-+]+)\s*(==|=|>=|<=|>|<|~=?)*\s*(.*)?$", prov)
-            if not m:
+            if expr.kind != "atom" or not expr.atom:
                 continue
-            nm, op, ver = m.group(1), (m.group(2) or ""), (m.group(3) or "")
-            add(nm, name)
-            if nm and op and ver:
-                norm_op = "==" if op == "=" else op
-                add(f"{nm}{norm_op}{ver}", name)
+            atom = expr.atom
+            add(atom.name, name)
+            if atom.op and atom.ver:
+                op = "==" if atom.op == "=" else atom.op
+                add(f"{atom.name}{op}{atom.ver}", name)
 
     return providers
 
