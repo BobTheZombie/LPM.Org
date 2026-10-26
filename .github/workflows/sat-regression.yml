@@ -5,8 +5,13 @@ on:
     branches: [main]
     paths:
       - "src/lpm/resolver.py"
+      - "src/lpm/sat_optimizer.py"
+      - "src/lpm/buildpkg_sat.py"
       - "src/lpm/app.py"
       - "tests/test_solver.py"
+      - "tests/test_sat_optimizer.py"
+      - "tests/test_buildpkg_sat.py"
+      - "tests/test_run_lpmbuild_dependencies.py"
       - "tests/test_property_cnf.py"
       - "tests/test_heuristics.py"
       - "tests/test_resolver_errors.py"
@@ -15,8 +20,13 @@ on:
   pull_request:
     paths:
       - "src/lpm/resolver.py"
+      - "src/lpm/sat_optimizer.py"
+      - "src/lpm/buildpkg_sat.py"
       - "src/lpm/app.py"
       - "tests/test_solver.py"
+      - "tests/test_sat_optimizer.py"
+      - "tests/test_buildpkg_sat.py"
+      - "tests/test_run_lpmbuild_dependencies.py"
       - "tests/test_property_cnf.py"
       - "tests/test_heuristics.py"
       - "tests/test_resolver_errors.py"
@@ -42,6 +52,9 @@ jobs:
           cd "$RUNNER_TEMP"
           python -m pytest -q \
             "$GITHUB_WORKSPACE/tests/test_solver.py" \
+            "$GITHUB_WORKSPACE/tests/test_sat_optimizer.py" \
+            "$GITHUB_WORKSPACE/tests/test_buildpkg_sat.py" \
+            "$GITHUB_WORKSPACE/tests/test_run_lpmbuild_dependencies.py" \
             "$GITHUB_WORKSPACE/tests/test_property_cnf.py" \
             "$GITHUB_WORKSPACE/tests/test_heuristics.py" \
             "$GITHUB_WORKSPACE/tests/test_resolver_errors.py" \
