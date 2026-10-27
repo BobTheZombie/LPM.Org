@@ -883,6 +883,15 @@ Relative `SOURCE` entries fetched by LPM are resolved from the remote
 recipe's own category directory. Existing non-GitLab repositories retain
 their historic flat-directory fetching behavior.
 
+For large source builds, LPM defaults to a persistent shallow Git checkout of
+GitLab-hosted recipes under `/var/lib/lpm/cache/recipes`. The checkout is
+refreshed at most hourly and reused offline if refreshing fails. Relative
+`SOURCE` URLs still resolve against the configured remote recipe directory.
+Set `LPMBUILD_RECIPE_TRANSPORT=http` to use the legacy GitLab tree API
+instead. HTTP requests respect GitLab's 429 `Retry-After` response and stop
+planning rather than reporting missing SAT providers.
+
+
 The GitLab tree endpoint requires read access to the project; public projects
 work without authentication. This feature does not change binary `index.json`
 repositories, package names, or LPM's dependency solver.
