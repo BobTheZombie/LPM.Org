@@ -873,15 +873,14 @@ name does not become part of the package name: `lpm buildpkg qt6-base`
 and dependencies like `REQUIRES=("qt6-base")` work unchanged. Direct
 `--KDE--/qt6-base.lpmbuild` recipes are also recognized.
 
-For a GitLab `LPMBUILD_REPO` raw URL, LPM first tries the historic flat
-path; when missing, it indexes the GitLab repository tree API and resolves
-categorized recipes by their exact file names. The discovery index is reused
-for five minutes within the LPM process, including recursive dependency builds.
-Flat paths are preferred on first lookup; duplicate package names across
-categories cause an explicit error rather than selecting an arbitrary package.
-Relative `SOURCE` entries fetched by LPM are resolved from the remote
-recipe's own category directory. Existing non-GitLab repositories retain
-their historic flat-directory fetching behavior.
+For a GitLab `LPMBUILD_REPO` raw URL, LPM normally resolves both flat
+and categorized recipes from its locally cached shallow Git checkout. The
+`http` transport instead uses GitLab's repository tree API and caches
+the resulting index in-process for a day, with at most one forced refresh.
+Flat paths take priority; duplicate names across categories cause an explicit
+error rather than selecting an arbitrary package. Relative `SOURCE` entries
+still use the original remote recipe directory. Non-GitLab repositories
+retain their historic flat-directory fetching behavior.
 
 For large source builds, LPM defaults to a persistent shallow Git checkout of
 GitLab-hosted recipes under `/var/lib/lpm/cache/recipes`. The checkout is
