@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from .repo_rate_limit import RecipeRateLimited
 from urllib.parse import quote, urlencode, urlsplit
 
 _CATEGORY = re.compile(r"^--[A-Za-z0-9][A-Za-z0-9_-]*--$")
@@ -16,6 +17,8 @@ _MAX_PAGES = 250
 _CACHE_TTL = 86400.0  # Reuse index for long-running source builds.
 # base URL -> (expiry, {package name: [repository-relative recipe paths]})
 _TREE_CACHE: dict[str, tuple[float, dict[str, list[str]]]] = {}
+# Prevent one forced API refresh for every unavailable dependency.
+_REFRESHED_BASES: set[str] = set()
 
 
 class CategoryLookupError(RuntimeError):
@@ -86,8 +89,11 @@ def discover_category_path(base_url: str, package: str, reader, *, refresh: bool
         return None
 
     cached = _TREE_CACHE.get(base_url)
-    if not refresh and cached is not None and cached[0] > time.monotonic():
-        return _choose(package, cached[1])
+    if cached is not None and cached[0] > time.monotonic():
+        if not refresh or base_url in _REFRESHED_BASES:
+            return _choose(package, cached[1])
+    if refresh:
+        _REFRESHED_BASES.add(base_url)
 
     scheme, host, project, ref, prefix = components
     endpoint = (
@@ -103,6 +109,8 @@ def discover_category_path(base_url: str, package: str, reader, *, refresh: bool
         try:
             payload, _ = reader(url)
             records = json.loads(payload)
+        except RecipeRateLimited:
+            raise
         except Exception as exc:
             raise CategoryLookupError(
                 f"could not enumerate categories in {base_url}: {exc}"
