@@ -15,10 +15,12 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .repo_categories import CategoryAmbiguityError, _gitlab_components, _choose
+from .repo_categories import _gitlab_components, _choose, _CATEGORY, valid_package_name
 
 _LOCK = threading.RLock()
 _REFRESH_SECONDS = 3600.0
+_FAILED_UNTIL: dict[str, float] = {}
+_INDEX_CACHE: dict[str, tuple[float, dict[str, list[str]]]] = {}
 
 
 def _clone_url(scheme: str, host: str, project: str) -> str:
@@ -34,13 +36,14 @@ def _recipe_index(checkout: Path, prefix: str) -> dict[str, list[str]]:
     for path in root.rglob("*.lpmbuild"):
         rel = path.relative_to(root).as_posix()
         parts = rel.split("/")
-        if len(parts) == 2 and parts[1] == parts[0] + ".lpmbuild":
+        if len(parts) == 2 and valid_package_name(parts[0]) and parts[1] == parts[0] + ".lpmbuild":
             index.setdefault(parts[0], []).append(rel)
-        elif len(parts) == 3 and parts[0].startswith("--") and parts[0].endswith("--") and parts[2] == parts[1] + ".lpmbuild":
+        elif len(parts) == 3 and _CATEGORY.fullmatch(parts[0]) and valid_package_name(parts[1]) and parts[2] == parts[1] + ".lpmbuild":
             index.setdefault(parts[1], []).append(rel)
-        elif len(parts) == 2 and parts[0].startswith("--") and parts[0].endswith("--"):
+        elif len(parts) == 2 and _CATEGORY.fullmatch(parts[0]):
             name = parts[1][:-len(".lpmbuild")]
-            index.setdefault(name, []).append(rel)
+            if valid_package_name(name):
+                index.setdefault(name, []).append(rel)
     return index
 
 
@@ -63,6 +66,8 @@ def cached_git_recipe(base_url: str, package: str, cache_dir: Path, *, refresh_s
     root = Path(cache_dir) / key
     marker = root / ".lpm-last-recipe-sync"
     with _LOCK:
+        if time.monotonic() < _FAILED_UNTIL.get(key, 0) and not root.is_dir():
+            return None
         fresh = root.is_dir() and (time.time() - marker.stat().st_mtime < refresh_seconds if marker.exists() else False)
         if not fresh:
             root.parent.mkdir(parents=True, exist_ok=True)
@@ -93,13 +98,22 @@ def cached_git_recipe(base_url: str, package: str, cache_dir: Path, *, refresh_s
                         os.replace(staging / "checkout", root)
                         marker.touch()
                 except (OSError, subprocess.SubprocessError):
+                    _FAILED_UNTIL[key] = time.monotonic() + min(refresh_seconds, 3600)
                     return None
                 finally:
                     shutil.rmtree(staging, ignore_errors=True)
 
         if not root.is_dir():
             return None
-        path = _choose(package, _recipe_index(root, prefix))
+        cache_key = str(root / prefix)
+        generation = marker.stat().st_mtime_ns if marker.exists() else 0
+        cached = _INDEX_CACHE.get(cache_key)
+        if cached is None or cached[0] != generation:
+            index = _recipe_index(root, prefix)
+            _INDEX_CACHE[cache_key] = (generation, index)
+        else:
+            index = cached[1]
+        path = _choose(package, index)
         if path is None:
             return None
         file_path = root / prefix / path if prefix else root / path
