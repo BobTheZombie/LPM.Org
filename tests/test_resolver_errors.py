@@ -186,3 +186,28 @@ def test_unsat_reports_pin_that_blocks_transitive_source_dependency():
     with pytest.raises(ResolutionError) as excinfo:
         solve(["desktop"], universe)
     assert "framework pinned to ==1.0" in str(excinfo.value)
+
+
+def test_unsat_reports_conflicting_transitive_version_requirements():
+    universe = Universe({}, {}, {}, {}, set())
+    register_universe_candidate(
+        universe, PkgMeta(name="plasma6-full", version="6.8.1", requires=["first", "second"])
+    )
+    register_universe_candidate(
+        universe, PkgMeta(name="first", version="1", requires=["qt6-base>=6.12.0"])
+    )
+    register_universe_candidate(
+        universe, PkgMeta(name="second", version="1", requires=["qt6-base<6.12.0"])
+    )
+    register_universe_candidate(
+        universe, PkgMeta(name="qt6-base", version="6.11.2")
+    )
+    register_universe_candidate(
+        universe, PkgMeta(name="qt6-base", version="6.12.0")
+    )
+    with pytest.raises(ResolutionError) as excinfo:
+        solve(["plasma6-full"], universe)
+    msg = str(excinfo.value)
+    assert "possible version mismatches:" in msg
+    assert "first requires qt6-base>=6.12.0" in msg
+    assert "second requires qt6-base<6.12.0" in msg
