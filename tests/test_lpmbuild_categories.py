@@ -23,6 +23,8 @@ BASE = "https://gitlab.com/lpm-org/packages/-/raw/main"
 @pytest.fixture(autouse=True)
 def clear_category_cache():
     _TREE_CACHE.clear()
+    from lpm.repo_categories import _REFRESHED_BASES
+    _REFRESHED_BASES.clear()
     if "lpm.app" in sys.modules:
         sys.modules["lpm.app"]._LPMBUILD_RECIPE_CACHE.clear()
     yield
@@ -127,7 +129,10 @@ def _import_lpm(tmp_path, monkeypatch):
         monkeypatch.setitem(sys.modules, "tqdm", module)
     import importlib
 
-    return importlib.import_module("lpm")
+    module = importlib.import_module("lpm")
+    # Existing HTTP index behavior is tested independently of Git snapshots.
+    monkeypatch.setitem(module.CONF, "LPMBUILD_RECIPE_TRANSPORT", "http")
+    return module
 
 
 def test_remote_fetch_category_relative_source_origin(tmp_path, monkeypatch):

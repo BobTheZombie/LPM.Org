@@ -11,6 +11,11 @@ on:
       - "tests/test_solver.py"
       - "tests/test_sat_optimizer.py"
       - "tests/test_buildpkg_sat.py"
+      - "src/lpm/repo_categories.py"
+      - "src/lpm/repo_git_snapshot.py"
+      - "src/lpm/repo_rate_limit.py"
+      - "tests/test_recipe_transport.py"
+      - "tests/test_lpmbuild_categories.py"
       - "tests/test_run_lpmbuild_dependencies.py"
       - "tests/test_property_cnf.py"
       - "tests/test_heuristics.py"
@@ -54,6 +59,8 @@ jobs:
             "$GITHUB_WORKSPACE/tests/test_solver.py" \
             "$GITHUB_WORKSPACE/tests/test_sat_optimizer.py" \
             "$GITHUB_WORKSPACE/tests/test_buildpkg_sat.py" \
+            "$GITHUB_WORKSPACE/tests/test_lpmbuild_categories.py" \
+            "$GITHUB_WORKSPACE/tests/test_recipe_transport.py" \
             "$GITHUB_WORKSPACE/tests/test_run_lpmbuild_dependencies.py" \
             "$GITHUB_WORKSPACE/tests/test_property_cnf.py" \
             "$GITHUB_WORKSPACE/tests/test_heuristics.py" \

@@ -234,6 +234,8 @@ from installgen import generate_install_script, relativize_symlink_target
 from first_run_ui import FirstRunSetupError, run_first_run_wizard
 import maintainer_mode
 from . import config as _config
+from .repo_git_snapshot import cached_git_recipe
+from .repo_rate_limit import RecipeRateLimited, rate_limited_read, is_http_not_found
 from .repo_categories import (
     CategoryLookupError,
     CategoryAmbiguityError,
@@ -4249,10 +4251,11 @@ _LPMBUILD_RECIPE_CACHE: Dict[str, bytes] = {}
 
 
 def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
-    """Fetch one indexed recipe, preserving flat-path priority.
+    """Fetch one recipe from a Git snapshot or the existing HTTP index.
 
-    The GitLab tree identifies either a flat or categorized recipe before
-    fetching it. Other repositories retain their historical flat lookup.
+    Use a persistent shallow Git checkout by default for GitLab raw repos:
+    hundreds of dependency recipes then require no per-recipe HTTP requests.
+    LPMBUILD_RECIPE_TRANSPORT=http preserves the original lookup behavior.
     """
     if not valid_package_name(pkgname):
         die(f"Invalid lpmbuild package name: {pkgname!r}")
@@ -4261,13 +4264,41 @@ def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
         "LPMBUILD_REPO", "https://gitlab.com/lpm-org/packages/-/raw/main"
     )).rstrip("/")
     reader = _resolve_lpm_attr("urlread", urlread)
+    guarded_reader = lambda url: rate_limited_read(reader, url)
     flat_path = f"{pkgname}/{pkgname}.lpmbuild"
     tried: List[str] = []
     errors: List[str] = []
+    last_fetch_error: Optional[BaseException] = None
     dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
 
+    def save_recipe(data: bytes, path: str) -> Path:
+        url = f"{base_url}/{path}"
+        dst.write_bytes(data)
+        _LPMBUILD_RECIPE_SOURCE_BASES[str(dst.resolve())] = url.rsplit("/", 1)[0] + "/"
+        return dst
+
+    if (supports_category_discovery(base_url)
+            and str(CONF.get("LPMBUILD_RECIPE_TRANSPORT", "git")).lower() != "http"):
+        try:
+            interval = max(60, int(CONF.get("LPMBUILD_RECIPE_REFRESH_SECONDS", "3600")))
+        except (ValueError, TypeError):
+            interval = 3600
+        try:
+            cached_recipe = cached_git_recipe(
+                base_url, pkgname, CACHE_DIR / "recipes", refresh_seconds=interval
+            )
+        except CategoryAmbiguityError as exc:
+            die(f"Failed to fetch lpmbuild for {pkgname}: {exc}")
+        except OSError as exc:
+            errors.append(f"Git recipe snapshot unavailable: {exc}")
+        else:
+            if cached_recipe is not None:
+                data, path = cached_recipe
+                return save_recipe(data, path)
+
     def try_path(path: str) -> bool:
+        nonlocal last_fetch_error
         url = f"{base_url}/{path}"
         if url in tried:
             return False
@@ -4276,36 +4307,41 @@ def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
         if data is None:
             ok(f"Fetching lpmbuild for {pkgname} from {url}")
             try:
-                data, _ = reader(url)
+                data, _ = guarded_reader(url)
+            except RecipeRateLimited:
+                raise  # A 429 is not a missing dependency; abort the source plan.
             except Exception as exc:
+                last_fetch_error = exc
                 errors.append(f"{url}: {exc}")
                 return False
             _LPMBUILD_RECIPE_CACHE[url] = data
-        dst.write_bytes(data)
-        # Preserve origin for remote relative SOURCE and PATCHES entries.
-        _LPMBUILD_RECIPE_SOURCE_BASES[str(dst.resolve())] = url.rsplit("/", 1)[0] + "/"
+        save_recipe(data, path)
         return True
 
     if supports_category_discovery(base_url):
         try:
-            located = discover_category_path(base_url, pkgname, reader)
+            located = discover_category_path(base_url, pkgname, guarded_reader)
             if located is None:
-                # A recipe might have appeared since the index was populated.
-                located = discover_category_path(base_url, pkgname, reader, refresh=True)
+                located = discover_category_path(base_url, pkgname, guarded_reader, refresh=True)
+        except RecipeRateLimited:
+            raise
         except CategoryAmbiguityError as exc:
             die(f"Failed to fetch lpmbuild for {pkgname}: {exc}")
         except CategoryLookupError as exc:
-            # A temporary GitLab API outage should not prevent flat fetching.
+            # Unavailable API: preserve compatibility with flat repositories.
             errors.append(f"GitLab recipe index unavailable: {exc}")
         else:
             if located and try_path(located):
                 return dst
-            if located:
-                # A stale index entry may point at a moved or deleted recipe.
+            # Only a confirmed missing file warrants another tree enumeration.
+            # A 429, 5xx or transport error must never trigger an index storm.
+            if located and last_fetch_error is not None and is_http_not_found(last_fetch_error):
                 try:
                     refreshed = discover_category_path(
-                        base_url, pkgname, reader, refresh=True
+                        base_url, pkgname, guarded_reader, refresh=True
                     )
+                except RecipeRateLimited:
+                    raise
                 except CategoryLookupError as exc:
                     errors.append(f"GitLab recipe index refresh failed: {exc}")
                 else:
@@ -4684,7 +4720,7 @@ def run_lpmbuild(
                     pins=pin_data.get("prefer", {}),
                     holds=pin_data.get("hold", []),
                 )
-            except ResolutionError as exc:
+            except (ResolutionError, RecipeRateLimited) as exc:
                 die(f"[deps] SAT source planning failed: {exc}")
             log(f"[deps] SAT planned {len(_sat_plan.selected)} source builds")
 
@@ -6533,7 +6569,7 @@ def cmd_buildpkg(a):
     fetch_fn = _resolve_lpm_attr("fetch_lpmbuild", fetch_lpmbuild)
     try:
         script_path, script_origin = resolve_buildpkg_recipe(a.script, fetch_fn)
-    except BuildpkgRecipeResolutionError as exc:
+    except (BuildpkgRecipeResolutionError, RecipeRateLimited) as exc:
         die(str(exc))
     if script_origin == "remote":
         ok(f"Resolved remote lpmbuild for {a.script}: {script_path}")
