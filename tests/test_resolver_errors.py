@@ -158,3 +158,31 @@ def test_virtual_provides_use_advertised_version():
     assert [p.name for p in solve(["virtual-abi>=2"], universe)] == ["engine"]
     with pytest.raises(ResolutionError):
         solve(["virtual-abi>=3"], universe)
+
+
+def test_unsat_reports_conflict_with_installed_package():
+    universe = Universe(
+        {}, {}, {"old-audio": {"version": "1.0", "provides": []}}, {}, set()
+    )
+    register_universe_candidate(
+        universe, PkgMeta(name="desktop", version="1.0", requires=["new-audio"])
+    )
+    register_universe_candidate(
+        universe, PkgMeta(name="new-audio", version="2.0", conflicts=["old-audio"])
+    )
+    with pytest.raises(ResolutionError) as excinfo:
+        solve(["desktop"], universe, include_build_requires=True)
+    assert "new-audio ↔ installed old-audio" in str(excinfo.value)
+
+
+def test_unsat_reports_pin_that_blocks_transitive_source_dependency():
+    universe = Universe({}, {}, {}, {"framework": "==1.0"}, set())
+    register_universe_candidate(
+        universe, PkgMeta(name="desktop", version="1.0", requires=["framework>=2"])
+    )
+    register_universe_candidate(
+        universe, PkgMeta(name="framework", version="2.0")
+    )
+    with pytest.raises(ResolutionError) as excinfo:
+        solve(["desktop"], universe)
+    assert "framework pinned to ==1.0" in str(excinfo.value)
