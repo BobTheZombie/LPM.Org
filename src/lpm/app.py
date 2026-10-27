@@ -1610,6 +1610,10 @@ def solve(
     def _summarize_unsat_packages(packages: List[str]) -> str:
         pkg_set = set(packages)
         conflicts: Set[Tuple[str, str]] = set()
+        installed_conflicts: Set[Tuple[str, str]] = set()
+        pin_blockers: Set[str] = set()
+        held_versions: Set[str] = set()
+        installed_providers = _installed_provider_map(universe.installed)
         dep_edges: Dict[str, Set[str]] = {name: set() for name in pkg_set}
 
         for name in pkg_set:
@@ -1630,6 +1634,14 @@ def solve(
                             if provider.name in pkg_set and provider.name != name:
                                 pair = tuple(sorted((name, provider.name)))
                                 conflicts.add(pair)
+                        # Installed packages are retained by default in the
+                        # SAT model. A source package may conflict with one
+                        # even if no matching source candidate is in the core.
+                        for installed_name in _match_dep_expr_against_installed(
+                            part, universe.installed, installed_providers
+                        ):
+                            if installed_name != name:
+                                installed_conflicts.add((name, installed_name))
 
                 # build dependency graph over the unsat packages
                 for req in _iter_requires(candidate, include_build_requires):
@@ -1646,6 +1658,18 @@ def solve(
                         for provider in providers_for(universe, part.atom):
                             if provider.name in pkg_set and provider.name != name:
                                 dep_edges[name].add(provider.name)
+
+        # Pins and holds can exclude an otherwise satisfiable source
+        # candidate without manifesting as an explicit package conflict.
+        for name in pkg_set:
+            candidates = universe.candidates_by_name.get(name, [])
+            pin = universe.pins.get(name)
+            if pin and candidates and not any(satisfies(p.version, pin) for p in candidates):
+                pin_blockers.add(f"{name} pinned to {pin}")
+            if name in universe.holds and name in universe.installed:
+                current = universe.installed[name]
+                if any(not _matches_installed_candidate(p, universe.installed) for p in candidates):
+                    held_versions.add(f"{name} held at {current.get('version', '?')}")
 
         cycle: List[str] = []
         visited: Set[str] = set()
@@ -1676,6 +1700,15 @@ def solve(
         if conflicts:
             pairs = [f"{a} ↔ {b}" for a, b in sorted(conflicts)]
             details.append("conflicts: " + ", ".join(pairs))
+        if installed_conflicts:
+            pairs = [
+                f"{a} ↔ installed {b}" for a, b in sorted(installed_conflicts)
+            ]
+            details.append("possible installed-package conflicts: " + ", ".join(pairs))
+        if pin_blockers:
+            details.append("pins restricting source versions: " + ", ".join(sorted(pin_blockers)))
+        if held_versions:
+            details.append("held installed versions: " + ", ".join(sorted(held_versions)))
         if cycle:
             details.append("dependency cycle: " + " -> ".join(cycle))
         if not details:
