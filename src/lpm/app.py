@@ -1613,6 +1613,8 @@ def solve(
         installed_conflicts: Set[Tuple[str, str]] = set()
         pin_blockers: Set[str] = set()
         held_versions: Set[str] = set()
+        version_blockers: List[str] = []
+        version_requirements: Dict[str, List[Tuple[str, Atom]]] = {}
         installed_providers = _installed_provider_map(universe.installed)
         dep_edges: Dict[str, Set[str]] = {name: set() for name in pkg_set}
 
@@ -1643,7 +1645,9 @@ def solve(
                             if installed_name != name:
                                 installed_conflicts.add((name, installed_name))
 
-                # build dependency graph over the unsat packages
+                # build dependency graph and record hard version constraints.
+                # OR alternatives are not mandatory individually, so do not
+                # report their individual version constraints as conflicts.
                 for req in _iter_requires(candidate, include_build_requires):
                     if not req:
                         continue
@@ -1651,13 +1655,48 @@ def solve(
                         expr = parse_dep_expr(req)
                     except Exception:
                         continue
-                    parts = flatten_and(expr) if expr.kind == "and" else [expr]
+                    parts = (
+                        flatten_and(expr) if expr.kind == "and"
+                        else [expr] if expr.kind == "atom" else []
+                    )
                     for part in parts:
                         if part.kind != "atom" or not part.atom:
                             continue
                         for provider in providers_for(universe, part.atom):
                             if provider.name in pkg_set and provider.name != name:
                                 dep_edges[name].add(provider.name)
+                        if part.atom.op and part.atom.ver:
+                            version_requirements.setdefault(part.atom.name, []).append(
+                                (candidate.name, part.atom)
+                            )
+
+        for capability, constraints in version_requirements.items():
+            if len(constraints) < 2:
+                continue
+            versions: Set[str] = set()
+            for candidate in universe.providers.get(capability, []):
+                version = _version_of_capability(
+                    capability, candidate.name, candidate.version, candidate.provides
+                )
+                if version is not None:
+                    versions.add(version)
+            for installed_name in installed_providers.get(capability, set()):
+                installed = universe.installed[installed_name]
+                version = _version_of_capability(
+                    capability, installed_name, str(installed.get("version", "")),
+                    installed.get("provides", []),
+                )
+                if version is not None:
+                    versions.add(version)
+            if versions and not any(
+                all(satisfies(version, f"{atom.op}{atom.ver}") for _, atom in constraints)
+                for version in versions
+            ):
+                requirements = ", ".join(
+                    f"{origin} requires {capability}{atom.op}{atom.ver}"
+                    for origin, atom in constraints[:5]
+                )
+                version_blockers.append(requirements)
 
         # Pins and holds can exclude an otherwise satisfiable source
         # candidate without manifesting as an explicit package conflict.
@@ -1707,6 +1746,10 @@ def solve(
             details.append("possible installed-package conflicts: " + ", ".join(pairs))
         if pin_blockers:
             details.append("pins restricting source versions: " + ", ".join(sorted(pin_blockers)))
+        if version_blockers:
+            shown = version_blockers[:5]
+            suffix = f" (+{len(version_blockers) - 5} more)" if len(version_blockers) > 5 else ""
+            details.append("possible version mismatches: " + "; ".join(shown) + suffix)
         if held_versions:
             details.append("held installed versions: " + ", ".join(sorted(held_versions)))
         if cycle:
