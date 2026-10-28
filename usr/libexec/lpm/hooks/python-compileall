@@ -15,7 +15,7 @@ PY_EXTENSIONS = {".py", ".pyw"}
 # PySide6 ships Jinja Android deployment templates named __init__.tmpl.py.
 # They are resources and MUST NOT be passed through the Python compiler.
 _TEMPLATE_SUFFIX = ".tmpl.py"
-_TEMPLATE_RX = re.compile(r"\\.tmpl\\.py$")
+_TEMPLATE_RX = re.compile(r"\.tmpl\.py$")
 
 
 def _normalize(path: str) -> str:
