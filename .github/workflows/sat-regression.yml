@@ -8,6 +8,8 @@ on:
       - "src/lpm/sat_optimizer.py"
       - "src/lpm/buildpkg_sat.py"
       - "src/lpm/app.py"
+      - "usr/libexec/lpm/hooks/python-compileall"
+      - "tests/test_python_compileall_hook.py"
       - "tests/test_solver.py"
       - "tests/test_sat_optimizer.py"
       - "tests/test_buildpkg_sat.py"
@@ -65,4 +67,5 @@ jobs:
             "$GITHUB_WORKSPACE/tests/test_property_cnf.py" \
             "$GITHUB_WORKSPACE/tests/test_heuristics.py" \
             "$GITHUB_WORKSPACE/tests/test_resolver_errors.py" \
-            "$GITHUB_WORKSPACE/tests/test_solve_installed_satisfaction.py"
+            "$GITHUB_WORKSPACE/tests/test_solve_installed_satisfaction.py" \
+            "$GITHUB_WORKSPACE/tests/test_python_compileall_hook.py"
