@@ -3,70 +3,92 @@ from __future__ import annotations
 
 import compileall
 import os
+import re
 import sys
 from pathlib import Path
-from typing import Iterable, List, Sequence, Set
+from typing import Iterable, List, Sequence, Set, Tuple
 
 from _targets import collect_targets
 
-PY_EXTENSIONS = {".py", ".pyw", ".pyi"}
+# .pyi files are typing stubs, not executable Python sources.
+PY_EXTENSIONS = {".py", ".pyw"}
+# PySide6 ships Jinja Android deployment templates named __init__.tmpl.py.
+# They are resources and MUST NOT be passed through the Python compiler.
+_TEMPLATE_SUFFIX = ".tmpl.py"
+_TEMPLATE_RX = re.compile(r"\.tmpl\.py$")
 
 
 def _normalize(path: str) -> str:
     return str(path).strip()
 
 
-def _iter_directories(root: Path, targets: Iterable[str]) -> List[Path]:
-    seen: Set[Path] = set()
+def _is_python_source(path: Path) -> bool:
+    return path.suffix.lower() in PY_EXTENSIONS and not path.name.endswith(_TEMPLATE_SUFFIX)
+
+
+def _targets_to_sources(root: Path, targets: Iterable[str]) -> Tuple[List[Path], List[Path]]:
+    """Compile changed Python files only; do not scan unrelated site-packages.
+
+    NeedsTargets delivers the transaction's file list. Compiling the parent
+    directories instead can encounter unrelated broken/templated .py files,
+    and repeats work for every file from the same package.
+    """
+    targets = list(targets)
+    files: List[Path] = []
     directories: List[Path] = []
+    seen_files: Set[Path] = set()
+    seen_dirs: Set[Path] = set()
     for target in targets:
         rel = _normalize(target).lstrip("/")
         if not rel:
             continue
         candidate = root / rel
         if candidate.is_dir():
-            directory = candidate
-        elif candidate.suffix.lower() in PY_EXTENSIONS and candidate.parent.is_dir():
-            directory = candidate.parent
-        else:
-            continue
-        if directory not in seen:
-            seen.add(directory)
-            directories.append(directory)
-    if directories:
-        return directories
-    base = root / "usr/lib"
-    if base.is_dir():
-        for site in sorted(base.glob("python*/site-packages")):
-            if site.is_dir() and site not in seen:
-                seen.add(site)
-                directories.append(site)
-    return directories
+            if candidate not in seen_dirs:
+                directories.append(candidate)
+                seen_dirs.add(candidate)
+        elif candidate.is_file() and _is_python_source(candidate):
+            if candidate not in seen_files:
+                files.append(candidate)
+                seen_files.add(candidate)
+
+    if not targets:
+        # Preserve manual, no-target invocation as a full-cache rebuild.
+        base = root / "usr/lib"
+        if base.is_dir():
+            for site in sorted(base.glob("python*/site-packages")):
+                if site.is_dir() and site not in seen_dirs:
+                    directories.append(site)
+                    seen_dirs.add(site)
+    return files, directories
 
 
-def _compile_directories(paths: Sequence[Path]) -> bool:
+def _compile_sources(files: Sequence[Path], directories: Sequence[Path]) -> bool:
     success = True
-    for directory in paths:
-        for optimize in (0, 1):
-            if not compileall.compile_dir(
-                str(directory),
-                maxlevels=10,
-                force=True,
-                optimize=optimize,
-                quiet=1,
-                workers=0,
-            ):
-                success = False
+    # Python compileall supports optimizing both bytecode levels in one call.
+    for path in files:
+        if not compileall.compile_file(str(path), force=True, optimize=[0, 1], quiet=1):
+            success = False
+    for directory in directories:
+        if not compileall.compile_dir(
+            str(directory),
+            maxlevels=10,
+            force=True,
+            optimize=[0, 1],
+            quiet=1,
+            workers=0,
+            rx=_TEMPLATE_RX,
+        ):
+            success = False
     return success
 
 
 def main(argv: Sequence[str]) -> int:
     root = Path(os.environ.get("LPM_ROOT", "/"))
-    directories = _iter_directories(root, collect_targets(argv))
-    if not directories:
+    files, directories = _targets_to_sources(root, collect_targets(argv))
+    if not files and not directories:
         return 0
-    ok = _compile_directories(directories)
-    return 0 if ok else 1
+    return 0 if _compile_sources(files, directories) else 1
 
 
 if __name__ == "__main__":
