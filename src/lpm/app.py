@@ -5456,7 +5456,12 @@ def run_lpmbuild(
             # .lpmbuild. Do not request GitLab /-/raw/ for every relative SOURCE
             # or PATCHES entry: that defeats Git-backed SAT source planning.
             transport = str(CONF.get("LPMBUILD_RECIPE_TRANSPORT", "git")).strip().lower()
-            if source_ref.startswith(f"{base_repo}/") and transport != "http":
+            if (
+                source_ref.startswith(f"{base_repo}/")
+                and transport != "http"
+                and supports_category_discovery(base_repo)
+                and (urllib.parse.urlsplit(base_repo).hostname or "").lower() == "gitlab.com"
+            ):
                 local_setting = str(CONF.get(
                     "LPMBUILD_RECIPE_LOCAL_PATH", "/var/cache/lpm/git/packages"
                 )).strip()
