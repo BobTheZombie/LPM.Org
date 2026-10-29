@@ -650,3 +650,66 @@ def test_run_lpmbuild_applies_declared_patches_before_prepare(
     out_path.unlink()
     for suffix in ("pkg-foo", "build-foo", "src-foo"):
         shutil.rmtree(Path(f"/tmp/{suffix}"), ignore_errors=True)
+
+
+def test_run_lpmbuild_uses_git_snapshot_for_companion_sources(lpm_module, tmp_path, monkeypatch):
+    lpm = lpm_module
+    source_repo = "https://gitlab.com/lpm-org/packages/-/raw/main"
+    checkout = tmp_path / "snapshot"
+    companion = checkout / "perl" / "detect-old-perl-modules.hook"
+    companion.parent.mkdir(parents=True)
+    companion.write_bytes(b"[Trigger]\nType = Package\n")
+    recipe = tmp_path / "lpm-perl.lpmbuild"
+    recipe.write_text(textwrap.dedent("""
+        NAME=perl
+        VERSION=0.0
+        RELEASE=1
+        ARCH=noarch
+        SOURCE=('renamed.hook::detect-old-perl-modules.hook')
+        prepare() { :; }
+        build() { :; }
+        staging() { :; }
+    """))
+    _stub_build_pipeline(lpm, monkeypatch)
+    monkeypatch.setitem(lpm.CONF, "LPMBUILD_REPO", source_repo)
+    monkeypatch.setitem(lpm.CONF, "LPMBUILD_RECIPE_TRANSPORT", "git")
+    monkeypatch.setitem(lpm.CONF, "LPMBUILD_RECIPE_LOCAL_PATH", str(checkout))
+    monkeypatch.setattr(lpm, "urlread", _fail_urlread)
+    lpm._LPMBUILD_RECIPE_SOURCE_BASES[str(recipe.resolve())] = source_repo + "/perl/"
+    out, _, _, _ = lpm.run_lpmbuild(recipe, outdir=tmp_path,
+                                   prompt_install=False, build_deps=False)
+    assert out.exists()
+    assert Path("/tmp/src-perl/renamed.hook").read_bytes() == companion.read_bytes()
+    out.unlink()
+    for suffix in ("pkg-perl", "build-perl", "src-perl"):
+        shutil.rmtree(Path("/tmp") / suffix, ignore_errors=True)
+
+
+def test_missing_git_snapshot_companion_does_not_use_http(lpm_module, tmp_path, monkeypatch):
+    lpm = lpm_module
+    source_repo = "https://gitlab.com/lpm-org/packages/-/raw/main"
+    recipe = tmp_path / "lpm-missing.lpmbuild"
+    recipe.write_text(textwrap.dedent("""
+        NAME=missing
+        VERSION=0.0
+        RELEASE=1
+        ARCH=noarch
+        SOURCE=('missing.hook')
+        prepare() { :; }
+        build() { :; }
+        staging() { :; }
+    """))
+    _stub_build_pipeline(lpm, monkeypatch)
+    checkout = tmp_path / "snapshot"
+    checkout.mkdir()
+    monkeypatch.setitem(lpm.CONF, "LPMBUILD_REPO", source_repo)
+    monkeypatch.setitem(lpm.CONF, "LPMBUILD_RECIPE_TRANSPORT", "git")
+    monkeypatch.setitem(lpm.CONF, "LPMBUILD_RECIPE_LOCAL_PATH", str(checkout))
+    monkeypatch.setattr(lpm, "urlread", _fail_urlread)
+    lpm._LPMBUILD_RECIPE_SOURCE_BASES[str(recipe.resolve())] = source_repo + "/missing/"
+    with pytest.raises(SystemExit) as exc:
+        lpm.run_lpmbuild(recipe, outdir=tmp_path,
+                         prompt_install=False, build_deps=False)
+    assert exc.value.code == 2
+    for suffix in ("pkg-missing", "build-missing", "src-missing"):
+        shutil.rmtree(Path("/tmp") / suffix, ignore_errors=True)

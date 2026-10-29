@@ -178,3 +178,26 @@ def test_hybrid_mode_explicitly_falls_back_to_gitlab_http(tmp_path, monkeypatch)
     assert app.fetch_lpmbuild("foo", dest) == dest
     assert dest.read_bytes() == b"NAME=foo\nVERSION=1\n"
     assert len(calls) == 2
+
+
+def test_snapshot_reads_relative_asset_without_http(tmp_path):
+    checkout = tmp_path / "packages"
+    asset = checkout / "perl" / "detect-old-perl-modules.hook"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"[Trigger]\nType = Package\n")
+    source = BASE + "/perl/detect-old-perl-modules.hook"
+    assert snapshot.cached_git_source(BASE, source, tmp_path / "cache",
+                                       local_checkout=checkout) == asset.read_bytes()
+    assert snapshot.cached_git_source(BASE, source, tmp_path / "cache") is None
+
+
+def test_snapshot_asset_blocks_traversal_and_symlinks(tmp_path):
+    checkout = tmp_path / "packages"
+    (checkout / "perl").mkdir(parents=True)
+    secret = tmp_path / "outside"
+    secret.write_bytes(b"outside")
+    (checkout / "perl" / "link").symlink_to(secret)
+    kwargs = {"local_checkout": checkout}
+    assert snapshot.cached_git_source(BASE, BASE + "/perl/link", tmp_path, **kwargs) is None
+    assert snapshot.cached_git_source(BASE, BASE + "/perl/%2e%2e/%2e%2e/outside", tmp_path, **kwargs) is None
+    assert snapshot.cached_git_source(BASE, "https://example.com/perl/file", tmp_path, **kwargs) is None

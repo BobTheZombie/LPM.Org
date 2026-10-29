@@ -34,3 +34,14 @@ Transport modes:
 
 Use Git's credential helper or SSH keys to authenticate; don't put passwords
 or access tokens in repository URLs. The SAT solver is unchanged.
+
+
+## Companion files in SOURCE and PATCHES
+
+When a Git snapshot supplies a recipe, relative SOURCE entries and PATCHES
+(for example, \`perl/detect-old-perl-modules.hook\`) are read from that same
+snapshot instead of GitLab's unauthenticated raw HTTP endpoint. Aliased
+sources (\`new-name::original-file\`) retain their requested staged names.
+Missing companion files fail with a clear local-checkout error in \`git\` or
+\`offline\` mode; \`hybrid\` explicitly allows the previous HTTP fallback.
+External upstream tarballs still use the ordinary source download/cache.

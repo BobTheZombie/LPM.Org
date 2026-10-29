@@ -234,7 +234,7 @@ from installgen import generate_install_script, relativize_symlink_target
 from first_run_ui import FirstRunSetupError, run_first_run_wizard
 import maintainer_mode
 from . import config as _config
-from .repo_git_snapshot import cached_git_recipe
+from .repo_git_snapshot import cached_git_recipe, cached_git_source
 from .repo_rate_limit import RecipeRateLimited, rate_limited_read, is_http_not_found
 from .repo_categories import (
     CategoryLookupError,
@@ -5451,6 +5451,37 @@ def run_lpmbuild(
                         prepare_directory(target_path.parent, privileged=False)
                         shutil.copy2(local_candidate, target_path)
                     continue
+
+            # Recipe companion files belong to the same Git checkout as the
+            # .lpmbuild. Do not request GitLab /-/raw/ for every relative SOURCE
+            # or PATCHES entry: that defeats Git-backed SAT source planning.
+            transport = str(CONF.get("LPMBUILD_RECIPE_TRANSPORT", "git")).strip().lower()
+            if source_ref.startswith(f"{base_repo}/") and transport != "http":
+                local_setting = str(CONF.get(
+                    "LPMBUILD_RECIPE_LOCAL_PATH", "/var/cache/lpm/git/packages"
+                )).strip()
+                local_checkout = Path(local_setting).expanduser() if local_setting else None
+                source_data = cached_git_source(
+                    base_repo, source_ref, CACHE_DIR / "recipes",
+                    local_checkout=local_checkout,
+                )
+                if source_data is not None:
+                    source_name = alias or os.path.basename(parsed.path.rstrip("/"))
+                    if not source_name:
+                        die(f"Invalid recipe source filename for {source_ref}")
+                    source_target = srcroot / source_name
+                    prepare_directory(source_target.parent, privileged=False)
+                    if not source_target.exists():
+                        source_target.write_bytes(source_data)
+                    ok(f"Using Git recipe snapshot source: {source_ref}")
+                    continue
+                if transport in {"git", "offline"}:
+                    die(
+                        f"Recipe companion source missing from Git checkout: {source_ref}. "
+                        "Update the repository snapshot or put the file alongside the "
+                        "lpmbuild; set LPMBUILD_RECIPE_TRANSPORT=hybrid only if HTTP "
+                        "fallback is intentionally desired."
+                    )
 
             if _fetch_git_source(source_ref, srcroot, alias=alias):
                 continue

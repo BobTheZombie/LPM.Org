@@ -1,7 +1,7 @@
 """Persistent Git checkout for GitLab-hosted .lpmbuild recipes.
 
 One shallow clone replaces hundreds of raw requests during large SAT builds.
-The snapshot is a managed cache; SOURCE paths still use their original remote URL.
+The snapshot is a managed cache; relative SOURCE assets can also be read locally.
 """
 from __future__ import annotations
 
@@ -140,3 +140,52 @@ def cached_git_recipe(
                 or not file_path.resolve().is_relative_to(root.resolve())):
             return None
         return file_path.read_bytes(), path
+
+
+def cached_git_source(
+    base_url: str,
+    source_url: str,
+    cache_dir: Path,
+    *,
+    local_checkout: Path | None = None,
+) -> bytes | None:
+    """Read a recipe-relative SOURCE/PATCH from an existing Git checkout.
+
+    Never refresh or clone while staging assets: recipes and their companion
+    files must come from the same snapshot, including in offline builds.
+    Returns None when no matching file is present. No HTTP requests are made.
+    """
+    components = _gitlab_components(base_url)
+    if components is None:
+        return None
+    scheme, host, project, ref, prefix = components
+    if scheme != "https" or host.lower() != "gitlab.com":
+        return None
+
+    # Only sources under this exact configured raw-repository root qualify.
+    from urllib.parse import unquote
+    base = urlsplit(base_url.rstrip("/"))
+    source = urlsplit(source_url)
+    if (source.scheme != base.scheme
+            or source.netloc.lower() != base.netloc.lower()
+            or source.query or source.fragment
+            or not source.path.startswith(base.path.rstrip("/") + "/")):
+        return None
+    relative = unquote(source.path[len(base.path.rstrip("/")) + 1:])
+    parts = relative.split("/")
+    if (not parts or any(part in ("", ".", "..") for part in parts)
+            or any("\\" in part or "\x00" in part for part in parts)):
+        return None
+
+    key = hashlib.sha256(base_url.rstrip("/").encode()).hexdigest()[:24]
+    local = Path(local_checkout) if local_checkout is not None else None
+    root = local if local is not None and local.is_dir() else Path(cache_dir) / key
+    file_path = root.joinpath(prefix, *parts) if prefix else root.joinpath(*parts)
+    try:
+        if (not root.is_dir() or file_path.is_symlink()
+                or not file_path.is_file()
+                or not file_path.resolve().is_relative_to(root.resolve())):
+            return None
+        return file_path.read_bytes()
+    except OSError:
+        return None
