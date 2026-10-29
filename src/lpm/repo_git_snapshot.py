@@ -47,7 +47,12 @@ def _recipe_index(checkout: Path, prefix: str) -> dict[str, list[str]]:
     return index
 
 
-def cached_git_recipe(base_url: str, package: str, cache_dir: Path, *, refresh_seconds: float = _REFRESH_SECONDS) -> tuple[bytes, str] | None:
+def cached_git_recipe(
+    base_url: str, package: str, cache_dir: Path, *,
+    refresh_seconds: float = _REFRESH_SECONDS,
+    local_checkout: Path | None = None, offline: bool = False,
+    clone_url: str | None = None,
+) -> tuple[bytes, str] | None:
     """Return (payload, path relative to base_url), or None if not available.
 
     The cache is updated at most once per refresh interval per process, and
@@ -63,13 +68,16 @@ def cached_git_recipe(base_url: str, package: str, cache_dir: Path, *, refresh_s
         return None
 
     key = hashlib.sha256(base_url.rstrip("/").encode()).hexdigest()[:24]
-    root = Path(cache_dir) / key
+    # An operator-managed checkout is read-only from LPM's perspective.
+    local = Path(local_checkout) if local_checkout is not None else None
+    manual = local is not None and local.is_dir()
+    root = local if manual else Path(cache_dir) / key
     marker = root / ".lpm-last-recipe-sync"
     with _LOCK:
-        if time.monotonic() < _FAILED_UNTIL.get(key, 0) and not root.is_dir():
+        if not manual and time.monotonic() < _FAILED_UNTIL.get(key, 0) and not root.is_dir():
             return None
         fresh = root.is_dir() and (time.time() - marker.stat().st_mtime < refresh_seconds if marker.exists() else False)
-        if not fresh:
+        if not (manual or offline or fresh):
             root.parent.mkdir(parents=True, exist_ok=True)
             if (root / ".git").is_dir():
                 try:
@@ -91,7 +99,7 @@ def cached_git_recipe(base_url: str, package: str, cache_dir: Path, *, refresh_s
                 try:
                     subprocess.run(
                         ["git", "clone", "--quiet", "--depth=1", "--single-branch",
-                         "--branch", ref, _clone_url(scheme, host, project), str(staging / "checkout")],
+                         "--branch", ref, clone_url or _clone_url(scheme, host, project), str(staging / "checkout")],
                         check=True, capture_output=True, text=True, timeout=120,
                     )
                     if not root.exists():
@@ -106,7 +114,17 @@ def cached_git_recipe(base_url: str, package: str, cache_dir: Path, *, refresh_s
         if not root.is_dir():
             return None
         cache_key = str(root / prefix)
-        generation = marker.stat().st_mtime_ns if marker.exists() else 0
+        if manual:
+            # Invalidate cached inventory after an operator runs git pull.
+            head_file = root / ".git" / "HEAD"
+            try:
+                head = head_file.read_text(encoding="utf-8").strip()
+                ref_file = root / ".git" / head[5:].strip() if head.startswith("ref: ") else head_file
+                generation = ref_file.stat().st_mtime_ns
+            except OSError:
+                generation = root.stat().st_mtime_ns
+        else:
+            generation = marker.stat().st_mtime_ns if marker.exists() else 0
         cached = _INDEX_CACHE.get(cache_key)
         if cached is None or cached[0] != generation:
             index = _recipe_index(root, prefix)
@@ -117,4 +135,8 @@ def cached_git_recipe(base_url: str, package: str, cache_dir: Path, *, refresh_s
         if path is None:
             return None
         file_path = root / prefix / path if prefix else root / path
+        # Reject symlinks or paths outside the checked-out repository.
+        if (file_path.is_symlink() or not file_path.is_file()
+                or not file_path.resolve().is_relative_to(root.resolve())):
+            return None
         return file_path.read_bytes(), path

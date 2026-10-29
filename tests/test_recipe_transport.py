@@ -113,3 +113,68 @@ def test_index_does_not_wrap_429_as_missing_recipe():
 
     with pytest.raises(limiter.RecipeRateLimited):
         discover_category_path(BASE, "kdoctools6", lambda url: limiter.rate_limited_read(reader, url))
+
+
+def test_operator_managed_checkout_without_network(tmp_path, monkeypatch):
+    local = tmp_path / "packages"
+    recipe = local / "foo" / "foo.lpmbuild"
+    recipe.parent.mkdir(parents=True)
+    recipe.write_bytes(b"NAME=foo\nVERSION=1\n")
+    monkeypatch.setattr(snapshot, "_clone_url", lambda *args: (_ for _ in ()).throw(
+        AssertionError("unexpected Git network operation")))
+    assert snapshot.cached_git_recipe(BASE, "foo", tmp_path / "cache", local_checkout=local) == (
+        b"NAME=foo\nVERSION=1\n", "foo/foo.lpmbuild"
+    )
+
+
+def test_offline_mode_uses_existing_snapshot(tmp_path, monkeypatch):
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    _git("init", "-b", "main", remote)
+    _git("-C", remote, "config", "user.name", "LPM tests")
+    _git("-C", remote, "config", "user.email", "lpm-tests@example.invalid")
+    recipe = remote / "foo" / "foo.lpmbuild"
+    recipe.parent.mkdir()
+    recipe.write_bytes(b"NAME=foo\nVERSION=1\n")
+    _git("-C", remote, "add", ".")
+    _git("-C", remote, "commit", "-m", "first")
+    monkeypatch.setattr(snapshot, "_clone_url", lambda *args: str(remote))
+    cache = tmp_path / "cache"
+    first = snapshot.cached_git_recipe(BASE, "foo", cache)
+    assert first is not None
+    assert snapshot.cached_git_recipe(BASE, "foo", cache, offline=True, refresh_seconds=0) == first
+    assert snapshot.cached_git_recipe(BASE, "foo", tmp_path / "empty", offline=True) is None
+
+
+def test_git_only_transport_never_falls_back_to_gitlab_http(tmp_path, monkeypatch):
+    from lpm import app
+    monkeypatch.setitem(app.CONF, "LPMBUILD_REPO", BASE)
+    monkeypatch.setitem(app.CONF, "LPMBUILD_RECIPE_TRANSPORT", "git")
+    monkeypatch.setitem(app.CONF, "LPMBUILD_RECIPE_LOCAL_PATH", str(tmp_path / "missing"))
+    monkeypatch.setattr(app, "cached_git_recipe", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "rate_limited_read", lambda *args: (_ for _ in ()).throw(
+        AssertionError("Git transport called GitLab HTTP")))
+    with pytest.raises(SystemExit) as exc:
+        app.fetch_lpmbuild("missing", tmp_path / "missing.lpmbuild")
+    assert exc.value.code == 2
+
+
+def test_hybrid_mode_explicitly_falls_back_to_gitlab_http(tmp_path, monkeypatch):
+    from lpm import app, repo_categories
+    repo_categories._TREE_CACHE.clear()
+    repo_categories._REFRESHED_BASES.clear()
+    monkeypatch.setitem(app.CONF, "LPMBUILD_REPO", BASE)
+    monkeypatch.setitem(app.CONF, "LPMBUILD_RECIPE_TRANSPORT", "hybrid")
+    monkeypatch.setitem(app.CONF, "LPMBUILD_RECIPE_LOCAL_PATH", str(tmp_path / "missing"))
+    monkeypatch.setattr(app, "cached_git_recipe", lambda *args, **kwargs: None)
+    calls = []
+    def fake_reader(reader, url):
+        calls.append(url)
+        if "/repository/tree?" in url:
+            return b'[{"type":"blob","path":"foo/foo.lpmbuild"}]', url
+        return b"NAME=foo\nVERSION=1\n", url
+    monkeypatch.setattr(app, "rate_limited_read", fake_reader)
+    dest = tmp_path / "foo.lpmbuild"
+    assert app.fetch_lpmbuild("foo", dest) == dest
+    assert dest.read_bytes() == b"NAME=foo\nVERSION=1\n"
+    assert len(calls) == 2

@@ -4329,9 +4329,9 @@ _LPMBUILD_RECIPE_CACHE: Dict[str, bytes] = {}
 def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
     """Fetch one recipe from a Git snapshot or the existing HTTP index.
 
-    Use a persistent shallow Git checkout by default for GitLab raw repos:
-    hundreds of dependency recipes then require no per-recipe HTTP requests.
-    LPMBUILD_RECIPE_TRANSPORT=http preserves the original lookup behavior.
+    Git is the default; Git mode must not fall through to HTTP when a
+    checkout is unavailable. Set hybrid for explicit HTTP fallback, http for
+    legacy API/raw access, or offline to avoid the network entirely.
     """
     if not valid_package_name(pkgname):
         die(f"Invalid lpmbuild package name: {pkgname!r}")
@@ -4341,6 +4341,9 @@ def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
     )).rstrip("/")
     reader = _resolve_lpm_attr("urlread", urlread)
     guarded_reader = lambda url: rate_limited_read(reader, url)
+    transport = str(CONF.get("LPMBUILD_RECIPE_TRANSPORT", "git")).strip().lower()
+    if transport not in {"git", "hybrid", "http", "offline"}:
+        die(f"Invalid LPMBUILD_RECIPE_TRANSPORT: {transport!r}")
     flat_path = f"{pkgname}/{pkgname}.lpmbuild"
     tried: List[str] = []
     errors: List[str] = []
@@ -4354,24 +4357,43 @@ def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
         _LPMBUILD_RECIPE_SOURCE_BASES[str(dst.resolve())] = url.rsplit("/", 1)[0] + "/"
         return dst
 
-    if (supports_category_discovery(base_url)
-            and str(CONF.get("LPMBUILD_RECIPE_TRANSPORT", "git")).lower() != "http"):
+    if supports_category_discovery(base_url) and transport != "http":
         try:
             interval = max(60, int(CONF.get("LPMBUILD_RECIPE_REFRESH_SECONDS", "3600")))
         except (ValueError, TypeError):
             interval = 3600
+        local_setting = str(CONF.get(
+            "LPMBUILD_RECIPE_LOCAL_PATH", "/var/cache/lpm/git/packages"
+        )).strip()
+        local_checkout = Path(local_setting).expanduser() if local_setting else None
+        if local_checkout is not None and not local_checkout.is_dir():
+            local_checkout = None
         try:
             cached_recipe = cached_git_recipe(
-                base_url, pkgname, CACHE_DIR / "recipes", refresh_seconds=interval
+                base_url, pkgname, CACHE_DIR / "recipes",
+                refresh_seconds=interval,
+                local_checkout=local_checkout,
+                offline=transport == "offline",
+                clone_url=str(CONF.get("LPMBUILD_RECIPE_GIT_URL", "")).strip() or None,
             )
         except CategoryAmbiguityError as exc:
             die(f"Failed to fetch lpmbuild for {pkgname}: {exc}")
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             errors.append(f"Git recipe snapshot unavailable: {exc}")
         else:
             if cached_recipe is not None:
                 data, path = cached_recipe
                 return save_recipe(data, path)
+        # Never hammer GitLab's API/raw endpoints after a failed Git clone.
+        if transport in {"git", "offline"}:
+            detail = "; ".join(errors) if errors else "recipe missing from local/cached Git snapshot"
+            die(
+                f"Failed to fetch lpmbuild for {pkgname}: {detail}. "
+                "Check the Git checkout or cache, or explicitly set "
+                "LPMBUILD_RECIPE_TRANSPORT=hybrid for HTTP fallback."
+            )
+    elif transport == "offline":
+        die("Offline recipe transport requires a GitLab /-/raw/<ref> repository.")
 
     def try_path(path: str) -> bool:
         nonlocal last_fetch_error
