@@ -201,3 +201,57 @@ def test_snapshot_asset_blocks_traversal_and_symlinks(tmp_path):
     assert snapshot.cached_git_source(BASE, BASE + "/perl/link", tmp_path, **kwargs) is None
     assert snapshot.cached_git_source(BASE, BASE + "/perl/%2e%2e/%2e%2e/outside", tmp_path, **kwargs) is None
     assert snapshot.cached_git_source(BASE, "https://example.com/perl/file", tmp_path, **kwargs) is None
+
+
+def test_operator_checkout_auto_refreshes_once_per_process(tmp_path):
+    snapshot._SYNCED_CHECKOUTS.clear()
+    remote = tmp_path / "origin"
+    remote.mkdir()
+    _git("init", "-b", "main", remote)
+    _git("-C", remote, "config", "user.name", "LPM tests")
+    _git("-C", remote, "config", "user.email", "lpm-tests@example.invalid")
+    recipe = remote / "foo" / "foo.lpmbuild"
+    recipe.parent.mkdir()
+    recipe.write_bytes(b"NAME=foo\nVERSION=1\n")
+    _git("-C", remote, "add", ".")
+    _git("-C", remote, "commit", "-m", "initial")
+    checkout = tmp_path / "checkout"
+    _git("clone", "-b", "main", remote, checkout)
+    cache = tmp_path / "cache"
+    expected = (b"NAME=foo\nVERSION=1\n", "foo/foo.lpmbuild")
+    assert snapshot.cached_git_recipe(BASE, "foo", cache, local_checkout=checkout,
+                                      refresh_on_first_use=True) == expected
+    recipe.write_bytes(b"NAME=foo\nVERSION=2\n")
+    _git("-C", remote, "commit", "-am", "update")
+    assert snapshot.cached_git_recipe(BASE, "foo", cache, local_checkout=checkout,
+                                      refresh_on_first_use=True) == expected
+    snapshot._SYNCED_CHECKOUTS.clear()  # Next invocation.
+    assert snapshot.cached_git_recipe(BASE, "foo", cache, local_checkout=checkout,
+                                      refresh_on_first_use=True) == (
+        b"NAME=foo\nVERSION=2\n", "foo/foo.lpmbuild")
+
+
+def test_operator_checkout_auto_refresh_preserves_local_edits(tmp_path):
+    snapshot._SYNCED_CHECKOUTS.clear()
+    remote = tmp_path / "origin"
+    remote.mkdir()
+    _git("init", "-b", "main", remote)
+    _git("-C", remote, "config", "user.name", "LPM tests")
+    _git("-C", remote, "config", "user.email", "lpm-tests@example.invalid")
+    recipe = remote / "foo" / "foo.lpmbuild"
+    recipe.parent.mkdir()
+    recipe.write_bytes(b"NAME=foo\nVERSION=1\n")
+    _git("-C", remote, "add", ".")
+    _git("-C", remote, "commit", "-m", "initial")
+    checkout = tmp_path / "checkout"
+    _git("clone", "-b", "main", remote, checkout)
+    local_recipe = checkout / "foo" / "foo.lpmbuild"
+    local_recipe.write_bytes(b"NAME=foo\nVERSION=local\n")
+    recipe.write_bytes(b"NAME=foo\nVERSION=2\n")
+    _git("-C", remote, "commit", "-am", "update")
+    with pytest.warns(UserWarning, match="local changes"):
+        observed = snapshot.cached_git_recipe(BASE, "foo", tmp_path / "cache",
+                                              local_checkout=checkout,
+                                              refresh_on_first_use=True)
+    assert observed[0] == b"NAME=foo\nVERSION=local\n"
+    assert local_recipe.read_bytes() == observed[0]
