@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import warnings
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -21,6 +22,33 @@ _LOCK = threading.RLock()
 _REFRESH_SECONDS = 3600.0
 _FAILED_UNTIL: dict[str, float] = {}
 _INDEX_CACHE: dict[str, tuple[float, dict[str, list[str]]]] = {}
+_SYNCED_CHECKOUTS: set[str] = set()
+
+
+def _sync_operator_checkout(root: Path, ref: str) -> None:
+    """Fast-forward a local checkout without destroying local modifications."""
+    if not (root / ".git").exists():
+        warnings.warn(f"[recipes] {root} is not a Git repository; using local files")
+        return
+    try:
+        status = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+            check=True, capture_output=True, text=True, timeout=20,
+        )
+        if status.stdout.strip():
+            warnings.warn(f"[recipes] {root} contains local changes; automatic pull skipped")
+            return
+        sync = subprocess.run(
+            ["git", "-C", str(root), "pull", "--ff-only", "origin", ref],
+            capture_output=True, text=True, timeout=120, check=False,
+        )
+        if sync.returncode:
+            warnings.warn(
+                f"[recipes] Git refresh failed; using existing checkout: "
+                f"{sync.stderr.strip() or sync.stdout.strip()}"
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        warnings.warn(f"[recipes] Git refresh unavailable; using existing checkout: {exc}")
 
 
 def _clone_url(scheme: str, host: str, project: str) -> str:
@@ -51,7 +79,7 @@ def cached_git_recipe(
     base_url: str, package: str, cache_dir: Path, *,
     refresh_seconds: float = _REFRESH_SECONDS,
     local_checkout: Path | None = None, offline: bool = False,
-    clone_url: str | None = None,
+    clone_url: str | None = None, refresh_on_first_use: bool = False,
 ) -> tuple[bytes, str] | None:
     """Return (payload, path relative to base_url), or None if not available.
 
@@ -74,9 +102,18 @@ def cached_git_recipe(
     root = local if manual else Path(cache_dir) / key
     marker = root / ".lpm-last-recipe-sync"
     with _LOCK:
+        # Check for fresh GitLab recipes once per LPM invocation.
+        first_check = refresh_on_first_use and key not in _SYNCED_CHECKOUTS
+        if refresh_on_first_use:
+            _SYNCED_CHECKOUTS.add(key)
+        if manual and first_check and not offline:
+            _sync_operator_checkout(root, ref)
         if not manual and time.monotonic() < _FAILED_UNTIL.get(key, 0) and not root.is_dir():
             return None
         fresh = root.is_dir() and (time.time() - marker.stat().st_mtime < refresh_seconds if marker.exists() else False)
+        if refresh_on_first_use:
+            # The first managed snapshot access bypasses the one-hour TTL.
+            fresh = not first_check and root.is_dir()
         if not (manual or offline or fresh):
             root.parent.mkdir(parents=True, exist_ok=True)
             if (root / ".git").is_dir():

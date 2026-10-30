@@ -308,6 +308,19 @@ def resumable_build(function):
         identity = recipe_identity(script, metadata, options['_build_stage'], options['cpu_overrides'])
         session = BuildSession(app._current_state_dir(), identity, resume=resume, restart=options['restart'],
                                workspace=os.environ.get('LPM_BUILD_WORKDIR') or app.CONF.get('LPM_BUILD_WORKDIR'))
+        # A modified recipe invalidates ONLY its own saved checkpoint.
+        # Explicit --resume remains strict to protect existing build objects.
+        if not resume and not options['restart'] and session.path.is_file():
+            try:
+                previous = json.loads(session.path.read_text())
+            except (ValueError, OSError):
+                previous = None  # Leave unreadable checkpoint safety to BuildSession.
+            if isinstance(previous, dict) and isinstance(previous.get('identity'), dict):
+                old_hash = previous['identity'].get('recipe_hash')
+                if old_hash and old_hash != identity['recipe_hash']:
+                    app.log(f"[buildpkg] Updated recipe for {name}: restarting this package only")
+                    options['restart'] = True
+                    session.restart = True
         if options['_resume_available'] and session.path.is_file() and not options['restart']:
             previous = json.loads(session.path.read_text())
             if previous.get('identity') == identity:

@@ -4375,6 +4375,8 @@ def fetch_lpmbuild(pkgname: str, dst: Path) -> Path:
                 local_checkout=local_checkout,
                 offline=transport == "offline",
                 clone_url=str(CONF.get("LPMBUILD_RECIPE_GIT_URL", "")).strip() or None,
+                refresh_on_first_use=str(CONF.get("LPMBUILD_RECIPE_AUTO_REFRESH", "true")).strip().lower()
+                    in {"1", "yes", "true", "on"},
             )
         except CategoryAmbiguityError as exc:
             die(f"Failed to fetch lpmbuild for {pkgname}: {exc}")
@@ -4876,6 +4878,20 @@ def run_lpmbuild(
             else:
                 tmp = Path(f"/tmp/lpm-dep-{depname}.lpmbuild")
                 fetch_fn(depname, tmp)
+            # Resume unchanged dependencies only; a changed GitLab recipe
+            # should rebuild its own package without clearing all checkpoints.
+            dependency_state_path = _current_state_dir() / "builds" / depname / "state.json"
+            resume_dependency = bool(resume and dependency_state_path.is_file())
+            if resume_dependency:
+                try:
+                    previous_identity = json.loads(dependency_state_path.read_text()).get("identity", {})
+                    resume_dependency = (
+                        previous_identity.get("recipe_hash")
+                        == hashlib.sha256(Path(tmp).read_bytes()).hexdigest()
+                    )
+                except (OSError, ValueError, AttributeError):
+                    # Let BuildSession reject an unreadable checkpoint explicitly.
+                    resume_dependency = True
             built_blob, _, _, split_records = run_lpmbuild(
                 tmp,
                 outdir or script_dir,
@@ -4891,7 +4907,7 @@ def run_lpmbuild(
                 cpu_overrides=overrides,
                 on_built_package=on_built_package,
                 _defer_stage2=True,
-                resume=resume and (_current_state_dir() / "builds" / depname / "state.json").is_file(),
+                resume=resume_dependency,
             )
             if prompt_install:
                 _refresh_capabilities_from_installed()
