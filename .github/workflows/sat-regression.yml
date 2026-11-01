@@ -19,6 +19,7 @@ on:
       - "tests/test_recipe_transport.py"
       - "tests/test_lpmbuild_categories.py"
       - "tests/test_run_lpmbuild_dependencies.py"
+      - "tests/test_buildpkg_python_pip.py"
       - "tests/test_run_lpmbuild_sources.py"
       - "tests/test_property_cnf.py"
       - "tests/test_heuristics.py"
@@ -35,6 +36,7 @@ on:
       - "tests/test_sat_optimizer.py"
       - "tests/test_buildpkg_sat.py"
       - "tests/test_run_lpmbuild_dependencies.py"
+      - "tests/test_buildpkg_python_pip.py"
       - "tests/test_property_cnf.py"
       - "tests/test_heuristics.py"
       - "tests/test_resolver_errors.py"
@@ -65,6 +67,7 @@ jobs:
             "$GITHUB_WORKSPACE/tests/test_lpmbuild_categories.py" \
             "$GITHUB_WORKSPACE/tests/test_recipe_transport.py" \
             "$GITHUB_WORKSPACE/tests/test_run_lpmbuild_dependencies.py" \
+            "$GITHUB_WORKSPACE/tests/test_buildpkg_python_pip.py" \
             "$GITHUB_WORKSPACE/tests/test_run_lpmbuild_sources.py" \
             "$GITHUB_WORKSPACE/tests/test_property_cnf.py" \
             "$GITHUB_WORKSPACE/tests/test_heuristics.py" \
