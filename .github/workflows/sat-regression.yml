@@ -51,7 +51,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install dependencies
-        run: python -m pip install -e . pytest hypothesis packaging
+        run: python -m pip install -e . pytest hypothesis packaging zstandard
       - name: Run SAT and package-resolution regression tests
         env:
           PYTHONPATH: ${{ github.workspace }}/src
