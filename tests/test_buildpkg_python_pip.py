@@ -164,7 +164,7 @@ def test_cmd_buildpkg_python_pip_generates_metadata(monkeypatch, tmp_path):
 
 
 def test_python_builder_uses_pinned_venv_and_stages_wheel(monkeypatch, tmp_path):
-    metadata = "Name: html5lib\\nVersion: 1.1\\n"
+    metadata = "Name: html5lib\nVersion: 1.1\n"
     commands = []
     _prepare_fake_pip(monkeypatch, metadata, calls=commands)
     monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *args, **kwargs: None)
