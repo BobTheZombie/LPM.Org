@@ -40,7 +40,7 @@ if "tqdm" not in sys.modules:
 import lpm
 
 
-def _prepare_fake_pip(monkeypatch, metadata_text, *, create_native=False):
+def _prepare_fake_pip(monkeypatch, metadata_text, *, create_native=False, calls=None):
     original_run = subprocess.run
     python_ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
 
@@ -56,9 +56,10 @@ def _prepare_fake_pip(monkeypatch, metadata_text, *, create_native=False):
     canonical_pkg = dist_name.lower().replace("-", "_")
 
     def _handle_install(cmd):
-        sdist_arg = next((arg for arg in cmd if str(arg).endswith((".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".zip"))), None)
-        assert sdist_arg, "pip install should receive local sdist path"
-        assert Path(sdist_arg).name == sdist_name
+        wheel_arg = next((arg for arg in cmd if str(arg).endswith(".whl")), None)
+        assert wheel_arg, "staging pip must install the prebuilt wheel"
+        assert Path(wheel_arg).exists()
+        assert "--no-index" in cmd
         root_idx = cmd.index("--root")
         root = Path(cmd[root_idx + 1])
         site = root / "usr" / "lib" / python_ver / "site-packages"
@@ -81,20 +82,32 @@ def _prepare_fake_pip(monkeypatch, metadata_text, *, create_native=False):
         return subprocess.CompletedProcess(cmd, 0)
 
     def fake_run(cmd, *args, **kwargs):
-        if (
-            isinstance(cmd, (list, tuple))
-            and len(cmd) >= 4
-            and cmd[1] == "-m"
-            and cmd[2] == "pip"
-        ):
-            if cmd[3] == "download":
-                dest_idx = cmd.index("--dest")
-                dest = Path(cmd[dest_idx + 1])
-                dest.mkdir(parents=True, exist_ok=True)
-                (dest / sdist_name).write_bytes(b"sdist")
+        if calls is not None:
+            calls.append((list(cmd), dict(kwargs)))
+        if isinstance(cmd, (list, tuple)) and len(cmd) >= 4:
+            if cmd[1:3] == ["-m", "venv"]:
+                python = Path(cmd[3]) / "bin" / "python"
+                python.parent.mkdir(parents=True, exist_ok=True)
+                python.write_text("#!/bin/sh\nexit 0\n")
+                python.chmod(0o755)
                 return subprocess.CompletedProcess(cmd, 0)
-            if cmd[3] == "install":
-                return _handle_install(cmd)
+            if cmd[1:3] == ["-m", "pip"]:
+                if cmd[3] == "download":
+                    dest_idx = cmd.index("--dest")
+                    dest = Path(cmd[dest_idx + 1])
+                    dest.mkdir(parents=True, exist_ok=True)
+                    (dest / sdist_name).write_bytes(b"sdist")
+                    return subprocess.CompletedProcess(cmd, 0)
+                if cmd[3] == "wheel":
+                    wheel_dir = Path(cmd[cmd.index("--wheel-dir") + 1])
+                    wheel_dir.mkdir(parents=True, exist_ok=True)
+                    (wheel_dir / f"{dist_name}-{dist_version}-py3-none-any.whl").write_bytes(b"wheel")
+                    return subprocess.CompletedProcess(cmd, 0)
+                if cmd[3] == "install":
+                    if "setuptools==80.10.2" in cmd:
+                        assert "wheel" in cmd
+                        return subprocess.CompletedProcess(cmd, 0)
+                    return _handle_install(cmd)
         return original_run(cmd, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -148,6 +161,43 @@ def test_cmd_buildpkg_python_pip_generates_metadata(monkeypatch, tmp_path):
     assert "python>=3.8" in meta.requires
     assert "python-requests>=2" in meta.requires
     assert "pypi(demo)" in meta.provides
+
+
+def test_python_builder_uses_pinned_venv_and_stages_wheel(monkeypatch, tmp_path):
+    metadata = "Name: html5lib\\nVersion: 1.1\\n"
+    commands = []
+    _prepare_fake_pip(monkeypatch, metadata, calls=commands)
+    monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *args, **kwargs: None)
+
+    args = SimpleNamespace(
+        script=None, python_pip="html5lib==1.1", outdir=tmp_path,
+        no_deps=True, install_default=None, force_rebuild=False,
+    )
+    lpm.cmd_buildpkg(args)
+
+    commands_only = [cmd for cmd, _ in commands]
+    assert any(cmd[1:3] == ["-m", "venv"] for cmd in commands_only)
+    assert any(cmd[3] == "install" and "setuptools==80.10.2" in cmd
+               for cmd in commands_only if len(cmd) > 3)
+    sources = [cmd for cmd in commands_only if len(cmd) > 3 and cmd[3] == "download"]
+    wheels = [cmd for cmd in commands_only if len(cmd) > 3 and cmd[3] == "wheel"]
+    assert len(sources) == len(wheels) == 1
+    assert "--no-binary" in sources[0]
+    assert "--no-build-isolation" in sources[0]
+    assert "--no-build-isolation" in wheels[0]
+
+    staging = [cmd for cmd in commands_only
+               if len(cmd) > 3 and cmd[3] == "install" and "--root" in cmd]
+    assert len(staging) == 1
+    assert staging[0][0] == lpm._detect_python_interpreter()
+    assert "--no-index" in staging[0]
+    assert "--no-deps" in staging[0]
+    assert (tmp_path / "python-html5lib-1.1-1.noarch.zst").exists()
+
+    # Build constraints cover isolated PEP 517 fallback environments too.
+    pip_envs = [kw["env"] for cmd, kw in commands
+                if len(cmd) > 3 and cmd[1:3] == ["-m", "pip"]]
+    assert all("PIP_CONSTRAINT" in e for e in pip_envs)
 
 
 def test_cmd_buildpkg_python_pip_respects_no_deps(monkeypatch, tmp_path):
