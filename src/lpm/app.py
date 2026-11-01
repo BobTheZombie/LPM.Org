@@ -2628,6 +2628,34 @@ def _run_python_source_build_step(cmd: List[str], env: Dict[str, str]) -> None:
         subprocess.run(cmd, check=True, env=env)
 
 
+def _select_universal_python_wheel(wheel_dir: Path, spec: str) -> Path:
+    """Accept only an index-selected pure Python wheel matching the requirement.
+
+    Native wheels must continue to be compiled from source by LPM so the
+    architecture and CPU build policy is not silently bypassed.
+    """
+    from packaging.utils import parse_wheel_filename
+
+    requested = Requirement(spec)
+    wheels = sorted(wheel_dir.glob("*.whl"))
+    if len(wheels) != 1:
+        raise RuntimeError(
+            f"pip build: expected one universal wheel for {spec}, found {len(wheels)}"
+        )
+
+    wheel = wheels[0]
+    name, version, _build, tags = parse_wheel_filename(wheel.name)
+    if canonicalize_name(name) != canonicalize_name(requested.name):
+        raise RuntimeError(f"pip build: wrong distribution in wheel: {wheel.name}")
+    if requested.specifier and version not in requested.specifier:
+        raise RuntimeError(f"pip build: version outside requirement: {wheel.name}")
+    if not tags or any(tag.abi != "none" or tag.platform != "any" for tag in tags):
+        raise RuntimeError(
+            f"pip build: refusing non-universal/binary wheel fallback: {wheel.name}"
+        )
+    return wheel
+
+
 def build_python_package_from_pip(
     spec: str,
     outdir: Path,
@@ -2773,7 +2801,27 @@ def build_python_package_from_pip(
                     )
             except subprocess.CalledProcessError as exc:
                 last_error = exc
-                continue
+                # Legacy sdists may fail even with pinned setuptools on modern
+                # Python (e.g. html5lib 1.1 uses removed Python 3.14 ast.Str).
+                # Recover only from an official, pure Python wheel selected by
+                # pip's resolver. Do not silently use prebuilt native wheels.
+                warn(
+                    f"[pip] source build failed for {attempt_spec}; "
+                    "checking for a universal Python wheel"
+                )
+                fallback_cmd = [
+                    build_python, "-m", "pip", "download", attempt_spec,
+                    "--no-deps", "--only-binary=:all:",
+                    "--dest", str(wheel_dir), "--progress-bar", "off",
+                    "--disable-pip-version-check",
+                ]
+                try:
+                    subprocess.run(fallback_cmd, check=True, env=env)
+                    wheels = [_select_universal_python_wheel(wheel_dir, attempt_spec)]
+                    log(f"[pip] using verified universal wheel: {wheels[0].name}")
+                except (subprocess.CalledProcessError, ValueError, RuntimeError) as fallback_error:
+                    warn(f"[pip] no safe universal wheel fallback: {fallback_error}")
+                    continue
 
             # Install the already-built wheel with the system interpreter,
             # not the ephemeral venv, to avoid /tmp shebangs in entry points.
