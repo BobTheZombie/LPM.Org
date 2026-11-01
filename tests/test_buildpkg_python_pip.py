@@ -40,7 +40,10 @@ if "tqdm" not in sys.modules:
 import lpm
 
 
-def _prepare_fake_pip(monkeypatch, metadata_text, *, create_native=False, calls=None):
+def _prepare_fake_pip(
+    monkeypatch, metadata_text, *, create_native=False, calls=None,
+    fail_sdist=False, fallback_wheel_tag="py2.py3-none-any",
+):
     original_run = subprocess.run
     python_ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
 
@@ -96,6 +99,12 @@ def _prepare_fake_pip(monkeypatch, metadata_text, *, create_native=False, calls=
                     dest_idx = cmd.index("--dest")
                     dest = Path(cmd[dest_idx + 1])
                     dest.mkdir(parents=True, exist_ok=True)
+                    if "--only-binary=:all:" in cmd:
+                        wheel = dest / f"{dist_name}-{dist_version}-{fallback_wheel_tag}.whl"
+                        wheel.write_bytes(b"universal-wheel")
+                        return subprocess.CompletedProcess(cmd, 0)
+                    if fail_sdist:
+                        raise subprocess.CalledProcessError(1, cmd)
                     (dest / sdist_name).write_bytes(b"sdist")
                     return subprocess.CompletedProcess(cmd, 0)
                 if cmd[3] == "wheel":
@@ -198,6 +207,46 @@ def test_python_builder_uses_pinned_venv_and_stages_wheel(monkeypatch, tmp_path)
     pip_envs = [kw["env"] for cmd, kw in commands
                 if len(cmd) > 3 and cmd[1:3] == ["-m", "pip"]]
     assert all("PIP_CONSTRAINT" in e for e in pip_envs)
+
+
+def test_legacy_sdist_falls_back_to_universal_wheel(monkeypatch, tmp_path):
+    """html5lib 1.1 source setup.py fails on Python 3.14 ast.Str."""
+    metadata = "Name: html5lib\nVersion: 1.1\n"
+    calls = []
+    _prepare_fake_pip(monkeypatch, metadata, calls=calls, fail_sdist=True)
+    monkeypatch.setattr(lpm, "prompt_install_pkg", lambda *a, **k: None)
+
+    lpm.cmd_buildpkg(SimpleNamespace(
+        script=None, python_pip="html5lib==1.1", outdir=tmp_path,
+        no_deps=True, install_default=None, force_rebuild=False,
+    ))
+
+    downloads = [cmd for cmd, _kw in calls
+                 if len(cmd) > 3 and cmd[1:4] == ["-m", "pip", "download"]]
+    assert len(downloads) == 3  # sdist first, isolated retry, then wheel
+    assert "--no-binary" in downloads[0]
+    assert "--only-binary=:all:" in downloads[-1]
+    installs = [cmd for cmd, _kw in calls
+                if len(cmd) > 3 and cmd[1:4] == ["-m", "pip", "install"]
+                and "--root" in cmd]
+    assert len(installs) == 1
+    assert "--no-index" in installs[0]
+    assert "html5lib-1.1-py2.py3-none-any.whl" in installs[0][4]
+    assert (tmp_path / "python-html5lib-1.1-1.noarch.zst").exists()
+
+
+def test_legacy_sdist_refuses_native_wheel_fallback(monkeypatch, tmp_path):
+    """Never bypass source compilation for a native extension."""
+    metadata = "Name: demo\nVersion: 1.2\n"
+    calls = []
+    _prepare_fake_pip(
+        monkeypatch, metadata, calls=calls, fail_sdist=True,
+        fallback_wheel_tag="cp312-cp312-manylinux_2_17_x86_64",
+    )
+    with pytest.raises(subprocess.CalledProcessError):
+        lpm.build_python_package_from_pip("demo==1.2", tmp_path, include_deps=False)
+    assert not list(tmp_path.glob("*.zst"))
+    assert any("--only-binary=:all:" in cmd for cmd, _ in calls)
 
 
 def test_cmd_buildpkg_python_pip_respects_no_deps(monkeypatch, tmp_path):
