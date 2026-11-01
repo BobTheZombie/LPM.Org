@@ -2584,6 +2584,50 @@ def _select_downloaded_sdist(download_dir: Path) -> Path:
     return candidates[0]
 
 
+
+# Pin setuptools to a release that retains pkg_resources for legacy sdists.
+# The build toolchain lives in a disposable venv, not in the installed OS.
+_LPM_PIP_BUILD_SETUPTOOLS = "setuptools==80.10.2"
+
+
+def _create_python_build_venv(interpreter: str, venv_dir: Path, env: Dict[str, str]) -> str:
+    """Create a temporary, isolated Python source-build environment."""
+    log(f"[pip] creating dedicated build environment: {venv_dir}")
+    try:
+        subprocess.run([interpreter, "-m", "venv", str(venv_dir)], check=True, env=env)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(
+            "pip build: could not create a Python virtual environment; "
+            "install Python venv/ensurepip support"
+        ) from exc
+
+    build_python = venv_dir / "bin" / "python"
+    if not build_python.is_file():
+        raise RuntimeError(f"pip build: virtualenv Python missing: {build_python}")
+
+    log(f"[pip] bootstrapping {_LPM_PIP_BUILD_SETUPTOOLS} and wheel")
+    subprocess.run(
+        [
+            str(build_python), "-m", "pip", "install",
+            "--disable-pip-version-check", "--no-input", "--prefer-binary",
+            _LPM_PIP_BUILD_SETUPTOOLS, "wheel",
+        ],
+        check=True, env=env,
+    )
+    return str(build_python)
+
+
+def _run_python_source_build_step(cmd: List[str], env: Dict[str, str]) -> None:
+    """Use the venv build backend, falling back to a constrained PEP 517 build."""
+    try:
+        subprocess.run([*cmd, "--no-build-isolation"], check=True, env=env)
+    except subprocess.CalledProcessError:
+        # Non-setuptools backends (e.g. hatchling) may need an isolated
+        # build environment to obtain their own backend requirements.
+        warn("[pip] retrying with an isolated, setuptools-constrained build backend")
+        subprocess.run(cmd, check=True, env=env)
+
+
 def build_python_package_from_pip(
     spec: str,
     outdir: Path,
@@ -2598,6 +2642,7 @@ def build_python_package_from_pip(
     with tempfile.TemporaryDirectory(prefix="lpm-pip-") as tmp:
         stagedir = Path(tmp) / "root"
         download_dir = Path(tmp) / "download"
+        wheel_dir = Path(tmp) / "wheel"
 
         try:
             requirement = Requirement(spec)
@@ -2642,6 +2687,9 @@ def build_python_package_from_pip(
             if download_dir.exists():
                 shutil.rmtree(download_dir)
             download_dir.mkdir(parents=True, exist_ok=True)
+            if wheel_dir.exists():
+                shutil.rmtree(wheel_dir)
+            wheel_dir.mkdir(parents=True, exist_ok=True)
 
         interpreter = _detect_python_interpreter()
         if not interpreter:
@@ -2688,53 +2736,55 @@ def build_python_package_from_pip(
             env.pop("LPM_CPU_MARCH", None)
             env.pop("LPM_CPU_MTUNE", None)
 
+        # Pip's nested PEP 517 environments must honor the same setuptools
+        # pin; otherwise html5lib 1.1 imports a removed pkg_resources module.
+        constraints = Path(tmp) / "build-constraints.txt"
+        constraints.write_text(_LPM_PIP_BUILD_SETUPTOOLS + "\n", encoding="utf-8")
+        env["PIP_CONSTRAINT"] = str(constraints)
+        build_python = _create_python_build_venv(interpreter, Path(tmp) / "venv", env)
+
         last_error: Optional[Exception] = None
 
         for attempt_spec in attempt_specs:
             _prepare_dirs()
             download_cmd = [
-                interpreter,
-                "-m",
-                "pip",
-                "download",
-                attempt_spec,
-                "--no-deps",
-                "--no-binary",
-                ":all:",
-                "--dest",
-                str(download_dir),
-                "--progress-bar",
-                "off",
-                "--disable-pip-version-check",
+                build_python, "-m", "pip", "download", attempt_spec,
+                "--no-deps", "--no-binary", ":all:",
+                "--dest", str(download_dir),
+                "--progress-bar", "off", "--disable-pip-version-check",
             ]
             log(f"[pip] downloading {attempt_spec} source distribution")
             try:
-                subprocess.run(download_cmd, check=True, env=env)
+                _run_python_source_build_step(download_cmd, env)
+                sdist_path = _select_downloaded_sdist(download_dir)
+
+                wheel_cmd = [
+                    build_python, "-m", "pip", "wheel", str(sdist_path),
+                    "--no-deps", "--wheel-dir", str(wheel_dir),
+                    "--progress-bar", "off", "--disable-pip-version-check",
+                ]
+                log(f"[pip] building wheel from source: {sdist_path.name}")
+                _run_python_source_build_step(wheel_cmd, env)
+                wheels = sorted(wheel_dir.glob("*.whl"))
+                if len(wheels) != 1:
+                    raise RuntimeError(
+                        f"pip build: expected one wheel for {attempt_spec}, "
+                        f"found {len(wheels)}"
+                    )
             except subprocess.CalledProcessError as exc:
                 last_error = exc
                 continue
 
-            sdist_path = _select_downloaded_sdist(download_dir)
-
+            # Install the already-built wheel with the system interpreter,
+            # not the ephemeral venv, to avoid /tmp shebangs in entry points.
             pip_cmd = [
-                interpreter,
-                "-m",
-                "pip",
-                "install",
-                str(sdist_path),
-                "--no-deps",
-                "--prefix",
-                "/usr",
-                "--root",
-                str(stagedir),
-                "--no-compile",
-                "--disable-pip-version-check",
-                "--no-warn-script-location",
-                "--progress-bar",
-                "off",
-                "--ignore-installed",
+                interpreter, "-m", "pip", "install", str(wheels[0]),
+                "--no-index", "--no-deps", "--prefix", "/usr",
+                "--root", str(stagedir), "--no-compile",
+                "--disable-pip-version-check", "--no-warn-script-location",
+                "--progress-bar", "off", "--ignore-installed",
             ]
-            log(f"[pip] building from sdist {sdist_path.name} into staging root {stagedir}")
+            log(f"[pip] staging {wheels[0].name} into {stagedir}")
             try:
                 subprocess.run(pip_cmd, check=True, env=env)
             except subprocess.CalledProcessError as exc:
