@@ -2656,111 +2656,6 @@ def _select_universal_python_wheel(wheel_dir: Path, spec: str) -> Path:
     return wheel
 
 
-class _ArchiveProgressReader:
-    """Count archive bytes *as they are read*, including during decompression.
-
-    Tar's stream mode reads incrementally, so progress starts immediately
-    instead of waiting for a complete getmembers() scan.  Counting the input
-    bytes gives an exact, inexpensive total for gzip/xz/bzip2/zstd archives.
-    """
-
-    def __init__(self, source: BinaryIO, progress: Any):
-        self.source = source
-        self.progress = progress
-
-    def read(self, size: int = -1) -> bytes:
-        data = self.source.read(size)
-        if data:
-            self.progress.update(len(data))
-        return data
-
-    def readinto(self, buffer: Any) -> int:
-        count = self.source.readinto(buffer)
-        if count:
-            self.progress.update(count)
-        return count
-
-    def __getattr__(self, attr: str) -> Any:
-        return getattr(self.source, attr)
-
-
-def _extract_lpmbuild_archive(archive: Path, destination: Path) -> None:
-    """Extract a single buildpkg source archive with live byte progress.
-
-    Strip the leading source root, matching the prior extraction semantics.
-    Use tarfile's data filter; never retry a rejected archive with unfiltered
-    GNU tar.  lz4/lzo archives remain supported through external tar.
-    """
-    archive = Path(archive)
-    destination = Path(destination)
-    suffix = archive.name.lower()
-
-    if suffix.endswith((".tar.lz4", ".tar.lzo")):
-        log(f"[extract] using external tar for {archive.name}")
-        try:
-            subprocess.run(
-                ["tar", "--strip-components=1", "-xaf", str(archive),
-                 "-C", str(destination)],
-                check=True,
-            )
-        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
-            die(f"Could not extract {archive}: {exc}")
-        return
-
-    archive_bytes = archive.stat().st_size
-    extracted_count = 0
-
-    def strip_root(name: str) -> Optional[str]:
-        # Do not normalize '..' here: the tarfile 'data' filter must reject
-        # attempted traversal instead of accepting silently sanitized paths.
-        parts = [part for part in name.split("/") if part and part != "."]
-        return "/".join(parts[1:]) if len(parts) > 1 else None
-
-    try:
-        with archive.open("rb") as source:
-            with progress_bar(
-                None, desc=f"Extracting {archive.name}", total=archive_bytes,
-                unit="B", unit_scale=True, unit_divisor=1024,
-                mininterval=0.15,
-            ) as progress:
-                monitored = _ArchiveProgressReader(source, progress)
-                with contextlib.ExitStack() as stack:
-                    if suffix.endswith(".tar.zst"):
-                        decompressed = stack.enter_context(
-                            zstd.ZstdDecompressor().stream_reader(monitored)
-                        )
-                        tf = stack.enter_context(
-                            tarfile.open(fileobj=decompressed, mode="r|")
-                        )
-                    else:
-                        tf = stack.enter_context(
-                            tarfile.open(fileobj=monitored, mode="r|*")
-                        )
-
-                    for member in tf:
-                        new_name = strip_root(member.name)
-                        if new_name is None:
-                            continue
-                        # Hard links in source archives normally carry the
-                        # unstripped archive root too; rewrite that name.
-                        if member.islnk():
-                            new_link = strip_root(member.linkname)
-                            if new_link is not None:
-                                member.linkname = new_link
-                        member.name = new_name
-                        tf.extract(member, path=str(destination), filter="data")
-                        extracted_count += 1
-
-                # A tar reader may stop before consuming trailing padding.
-                # The actual extraction has now completed successfully.
-                if progress.n < archive_bytes:
-                    progress.update(archive_bytes - progress.n)
-    except (OSError, EOFError, tarfile.TarError, zstd.ZstdError) as exc:
-        die(f"Could not extract {archive}: {exc}")
-
-    ok(f"Extracted {extracted_count} entries from {archive.name}")
-
-
 def build_python_package_from_pip(
     spec: str,
     outdir: Path,
@@ -5763,7 +5658,62 @@ def run_lpmbuild(
             target_dir = srcroot / f"{name}-{version}"
             prepare_directory(target_dir, privileged=False)
 
-            _extract_lpmbuild_archive(archive_path, target_dir)
+            def _extract_with_tarfile(path: Path, dest: Path) -> None:
+                def _strip_member(name: str) -> Optional[str]:
+                    parts = [part for part in name.split("/") if part and part != "."]
+                    if len(parts) <= 1:
+                        return None
+                    return "/".join(parts[1:])
+
+                fileobj: Optional[io.BytesIO] = None
+                tf: Optional[tarfile.TarFile] = None
+                try:
+                    lowered_name = path.name.lower()
+                    if lowered_name.endswith(".tar.zst"):
+                        data = zstd.ZstdDecompressor().decompress(path.read_bytes())
+                        fileobj = io.BytesIO(data)
+                        tf = tarfile.open(fileobj=fileobj, mode="r:")
+                    else:
+                        tf = tarfile.open(path)
+
+                    members = []
+                    for member in tf.getmembers():
+                        stripped = _strip_member(member.name)
+                        if stripped is None:
+                            continue
+                        member.name = stripped
+                        members.append(member)
+
+                    for member in progress_bar(
+                        members,
+                        desc=f"Extracting {path.name}",
+                        unit="file",
+                        total=len(members),
+                    ):
+                        tf.extract(member, path=str(dest), filter="data")
+                finally:
+                    if tf is not None:
+                        tf.close()
+                    if fileobj is not None:
+                        fileobj.close()
+
+            try:
+                _extract_with_tarfile(archive_path, target_dir)
+            except Exception:
+                try:
+                    subprocess.run(
+                        [
+                            "tar",
+                            "--strip-components=1",
+                            "-xaf",
+                            str(archive_path),
+                            "-C",
+                            str(target_dir),
+                        ],
+                        check=True,
+                    )
+                except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+                    die(f"Could not extract {archive_path}: {exc}")
 
         patch_target = srcroot
         extracted_target = srcroot / f"{name}-{version}"
