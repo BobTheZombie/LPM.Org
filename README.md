@@ -921,3 +921,23 @@ If a path containing a slash (such as `./missing.lpmbuild`) is missing,
 LPM reports a missing local file rather than silently downloading another
 package. Use the bare package name to request remote resolution. Passing
 `--no-deps` disables dependency builds, not fetching the target recipe.
+
+### Noninteractive build-and-install
+
+Use `-y`, `--yes`, or `--noconfirm` to build and install packages without
+interactive install confirmations:
+
+```sh
+lpm buildpkg plasma6-full --yes
+lpm rebuild plasma-workspace --noconfirm
+lpm rebuild-stage2 --yes
+```
+
+The flag covers built packages, source and Python dependencies, split packages,
+and deferred stage-2 builds. It does not bypass signature checks, dependency
+resolution, or protected-package rules, and does not imply `--force` or
+`--no-verify`. The direct `install`, `installpkg`, and `upgrade` commands
+were already noninteractive and accept the aliases for CLI consistency.
+`--install-default y` remains an interactive prompt with Yes highlighted;
+`--yes` actually skips that prompt. Explicit `--install-default n` cannot
+be combined with `--yes`.
