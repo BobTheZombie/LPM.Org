@@ -18,6 +18,7 @@ License: MIT
 from __future__ import annotations
 import argparse, contextlib, dataclasses, errno, fnmatch, hashlib, io, json, os, re, shlex, shutil, sqlite3, stat, subprocess, sys, tarfile, tempfile, time, urllib.parse
 import importlib.util
+import threading
 from datetime import datetime, timezone
 from email.parser import Parser
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -4582,19 +4583,15 @@ def build_from_gitlab(pkgname: str) -> Path:
     return cache_pkg
 
 
-def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str] = None) -> None:
-    """Prompt the user to install a built package.
+# Dependency builders can prompt concurrently; serialize terminal reads.
+_INSTALL_PROMPT_LOCK = threading.Lock()
 
-    Parameters
-    ----------
-    blob : Path
-        Path to the built package file.
-    kind : str
-        Human readable kind of object (package/dependency).
-    default : Optional[str]
-        Default answer if the user just presses Enter. If ``None`` the
-        configuration value ``INSTALL_PROMPT_DEFAULT`` is used. Accepts
-        ``"y"`` or ``"n"``.
+
+def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str] = None) -> bool:
+    """Install when confirmed; Enter selects the capitalized default.
+
+    The command-line default overrides the live configuration. EOF never
+    counts as confirmation, even if the displayed default is Yes.
     """
     try:
         reader = _resolve_lpm_attr("read_package_meta", read_package_meta)
@@ -4603,15 +4600,29 @@ def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str]
     except Exception:
         desc = blob.name
 
-    if default is None:
-        default = INSTALL_PROMPT_DEFAULT
-    default = "y" if str(default).lower() in {"y", "yes"} else "n"
-    choices = "[Y/n]" if default == "y" else "[y/N]"
-    resp = input(f"{CYAN}[PROMPT]{RESET} Install {kind} {desc}? {choices} ").strip().lower()
-    if not resp:
-        resp = default
-    if resp in {"y", "yes"}:
-        _resolve_lpm_attr("installpkg", installpkg)(blob, explicit=(kind != "dependency"))
+    selected = _config.INSTALL_PROMPT_DEFAULT if default is None else default
+    default_answer = "y" if str(selected).strip().lower() in {"y", "yes"} else "n"
+    choices = "[Y/n]" if default_answer == "y" else "[y/N]"
+    question = f"{CYAN}[PROMPT]{RESET} Install {kind} {desc}? {choices} "
+
+    with _INSTALL_PROMPT_LOCK:
+        while True:
+            try:
+                response = input(question).strip().lower()
+            except EOFError:
+                warn(f"Install confirmation reached EOF; skipping {desc}")
+                return False
+
+            response = response or default_answer
+            if response in {"y", "yes"}:
+                _resolve_lpm_attr("installpkg", installpkg)(
+                    blob, explicit=(kind != "dependency")
+                )
+                return True
+            if response in {"n", "no"}:
+                log(f"[skip] Installation declined for {desc}")
+                return False
+            warn("Please answer y/n or press Enter for the shown default")
 
 
 @dataclass

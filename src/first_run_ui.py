@@ -269,7 +269,7 @@ def _build_fields() -> tuple[tuple[ConfigField, ...], tuple[ConfigField, ...]]:
             key="INSTALL_PROMPT_DEFAULT",
             prompt="Default answer for install prompts (y/n)",
             parser=_parse_install_default,
-            default=(config.INSTALL_PROMPT_DEFAULT or "n"),
+            default=(config.INSTALL_PROMPT_DEFAULT or "y"),
         ),
         ConfigField(
             key="ALLOW_LPMBUILD_FALLBACK",

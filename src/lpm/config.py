@@ -62,7 +62,7 @@ ARCH = ""
 OPT_LEVEL = "-O2"
 MAX_SNAPSHOTS = 10
 MAX_LEARNT_CLAUSES = 200
-INSTALL_PROMPT_DEFAULT = "n"
+INSTALL_PROMPT_DEFAULT = "y"
 ALLOW_LPMBUILD_FALLBACK = False
 ENABLE_CPU_OPTIMIZATIONS = True
 MARCH = "generic"
@@ -244,7 +244,7 @@ def _apply_conf(conf: Mapping[str, str]) -> None:
 
     ZSTD_MIN_VERSION = CONF.get("ZSTD_MIN_VERSION", "1.5.5").strip() or "1.5.5"
 
-    INSTALL_PROMPT_DEFAULT = CONF.get("INSTALL_PROMPT_DEFAULT", "n").lower()
+    INSTALL_PROMPT_DEFAULT = CONF.get("INSTALL_PROMPT_DEFAULT", "y").strip().lower()
     if INSTALL_PROMPT_DEFAULT not in ("y", "n"):
         INSTALL_PROMPT_DEFAULT = "n"
 
