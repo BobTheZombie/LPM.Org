@@ -4587,11 +4587,17 @@ def build_from_gitlab(pkgname: str) -> Path:
 _INSTALL_PROMPT_LOCK = threading.Lock()
 
 
-def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str] = None) -> bool:
-    """Install when confirmed; Enter selects the capitalized default.
+def prompt_install_pkg(
+    blob: Path,
+    kind: str = "package",
+    default: Optional[str] = None,
+    *,
+    assume_yes: bool = False,
+) -> bool:
+    """Accept explicit --yes without reading stdin; otherwise confirm normally.
 
-    The command-line default overrides the live configuration. EOF never
-    counts as confirmation, even if the displayed default is Yes.
+    --yes does not bypass installpkg verification, protected-package policy,
+    or installation errors.
     """
     try:
         reader = _resolve_lpm_attr("read_package_meta", read_package_meta)
@@ -4606,6 +4612,12 @@ def prompt_install_pkg(blob: Path, kind: str = "package", default: Optional[str]
     question = f"{CYAN}[PROMPT]{RESET} Install {kind} {desc}? {choices} "
 
     with _INSTALL_PROMPT_LOCK:
+        if assume_yes:
+            log(f"[install] --yes: installing {kind} {desc} without prompting")
+            _resolve_lpm_attr("installpkg", installpkg)(
+                blob, explicit=(kind != "dependency")
+            )
+            return True
         while True:
             try:
                 response = input(question).strip().lower()
@@ -4792,6 +4804,7 @@ def run_lpmbuild(
     *,
     prompt_install: bool = True,
     prompt_default: Optional[str] = None,
+    assume_yes: bool = False,
     is_dep: bool = False,
     build_deps: bool = True,
     force_rebuild: bool = False,
@@ -5006,6 +5019,7 @@ def run_lpmbuild(
                 outdir or script_dir,
                 prompt_install=prompt_install,
                 prompt_default=prompt_default,
+                **({"assume_yes": True} if assume_yes else {}),
                 is_dep=True,
                 build_deps=True,
                 force_rebuild=force_rebuild,
@@ -5148,7 +5162,8 @@ def run_lpmbuild(
                 include_deps=True,
             )
             if prompt_install:
-                prompt_install_pkg(out, kind="dependency", default=prompt_default)
+                prompt_install_pkg(out, kind="dependency", default=prompt_default,
+                                   **({"assume_yes": True} if assume_yes else {}))
                 _refresh_capabilities_from_installed()
             else:
                 _register_python_capabilities_from_meta(meta, canonical_name)
@@ -5987,11 +6002,13 @@ def run_lpmbuild(
 
     if prompt_install:
         _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(
-            out, kind="dependency" if is_dep else "package", default=prompt_default
+            out, kind="dependency" if is_dep else "package", default=prompt_default,
+            **({"assume_yes": True} if assume_yes else {})
         )
         for split_path, _split_meta in split_records:
             _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(
-                split_path, kind="split package", default=prompt_default
+                split_path, kind="split package", default=prompt_default,
+                **({"assume_yes": True} if assume_yes else {})
             )
     if stage2_requires and _build_stage == 1 and prompt_install and build_deps:
         from .stage2 import enqueue
@@ -6000,13 +6017,14 @@ def run_lpmbuild(
     if prompt_install and build_deps and not _defer_stage2 and _build_stage == 1:
         final_result = _run_stage2_queue(prompt_default=prompt_default,
                                         fetcher=fetch_fn,
-                                        on_built_package=on_built_package)
+                                        on_built_package=on_built_package,
+                                        **({"assume_yes": True} if assume_yes else {}))
         if name in final_result:
             return final_result[name]
     return out, duration, phase_count, split_records
 
 
-def _run_stage2_queue(*, prompt_default=None, fetcher=None, on_built_package=None, plan_only=False):
+def _run_stage2_queue(*, prompt_default=None, fetcher=None, on_built_package=None, plan_only=False, assume_yes=False):
     from .stage2 import drain
 
     def installed():
@@ -6019,6 +6037,7 @@ def _run_stage2_queue(*, prompt_default=None, fetcher=None, on_built_package=Non
     def build(script, outdir, stage, overrides):
         return run_lpmbuild(
             script, outdir, prompt_default=prompt_default, fetcher=fetcher,
+            **({"assume_yes": True} if assume_yes else {}),
             cpu_overrides=CpuOverrides(**overrides) if overrides else None,
             on_built_package=on_built_package, _build_stage=stage,
             _defer_stage2=True, _resume_available=True,
@@ -6030,6 +6049,7 @@ def _run_stage2_queue(*, prompt_default=None, fetcher=None, on_built_package=Non
 
 
 def cmd_rebuild_stage2(a):
+    _reject_conflicting_install_flags(a)
     # Recovery for queues discarded by older schedulers: use explicit recipes,
     # preserving existing bootstrap installations and checking exact identities.
     for script in getattr(a, "recipe", None) or []:
@@ -6051,7 +6071,8 @@ def cmd_rebuild_stage2(a):
             die(f"Recovery requires the matching package installed first: {meta.name}")
         enqueue(_current_state_dir(), script, a.outdir or Path.cwd(), meta,
                 dependencies, final_dependencies=strict)
-    result = _run_stage2_queue(prompt_default=a.install_default, plan_only=a.plan)
+    result = _run_stage2_queue(prompt_default=a.install_default, plan_only=a.plan,
+                               **({"assume_yes": True} if getattr(a, "assume_yes", False) else {}))
     if a.plan:
         print(json.dumps(result, indent=2))
 
@@ -6582,7 +6603,13 @@ def cmd_pins(a):
             write_json(PIN_FILE, pins)
         ok("Updated preferences")
 
+def _reject_conflicting_install_flags(a):
+    if getattr(a, "assume_yes", False) and getattr(a, "install_default", None) == "n":
+        die("--yes/--noconfirm conflicts with --install-default n")
+
+
 def cmd_build(a):
+    _reject_conflicting_install_flags(a)
     stagedir=Path(a.stagedir)
     meta = PkgMeta(
         name=a.name, version=a.version, release=a.release, arch=a.arch,
@@ -6592,7 +6619,10 @@ def cmd_build(a):
     )
     out = Path(a.output or f"{meta.name}-{meta.version}-{meta.release}.{meta.arch}{EXT}")
     _resolve_lpm_attr("build_package", build_package)(stagedir, meta, out, sign=(not a.no_sign))
-    _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(out, default=a.install_default)
+    _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(
+        out, default=a.install_default,
+        **({"assume_yes": True} if getattr(a, "assume_yes", False) else {})
+    )
 
 def cmd_splitpkg(a):
     stagedir = Path(a.stagedir)
@@ -6787,6 +6817,8 @@ def cmd_splitpkg(a):
     ok(f"Built split package {out}")
 
 def cmd_buildpkg(a):
+    _reject_conflicting_install_flags(a)
+
     def _get_buildpkg_worker_count() -> int:
         value = CONF.get("BUILDPKG_WORKERS")
         if value is not None:
@@ -6817,7 +6849,10 @@ def cmd_buildpkg(a):
                 cpu_overrides=cpu_override,
             )
             out, meta, duration = future.result()
-        _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(out, default=a.install_default)
+        _resolve_lpm_attr("prompt_install_pkg", prompt_install_pkg)(
+            out, default=a.install_default,
+            **({"assume_yes": True} if getattr(a, "assume_yes", False) else {})
+        )
         print_build_summary(meta, out, duration, len(meta.requires), 1)
         ok(f"Built {out}")
         return
@@ -6852,6 +6887,7 @@ def cmd_buildpkg(a):
             build_deps=not a.no_deps,
             force_rebuild=a.force_rebuild,
             prompt_default=a.install_default,
+            **({"assume_yes": True} if getattr(a, "assume_yes", False) else {}),
             executor=executor if worker_count > 1 else None,
             cpu_overrides=cpu_override,
             **build_control,
@@ -7002,6 +7038,7 @@ def _order_rebuild_targets(
 
 
 def cmd_rebuild(a):
+    _reject_conflicting_install_flags(a)
     conn = db()
     rows = list(
         conn.execute(
@@ -7088,6 +7125,7 @@ def cmd_rebuild(a):
             build_deps=not a.no_deps,
             force_rebuild=a.force_rebuild,
             prompt_default=a.install_default,
+            **({"assume_yes": True} if getattr(a, "assume_yes", False) else {}),
         )
     ok(f"Rebuilt packages ({total}): {', '.join(topo)}")
 
@@ -8215,6 +8253,13 @@ def build_parser()->argparse.ArgumentParser:
         help="filesystem root used when generating system configuration files",
     )
     sub=p.add_subparsers(dest="cmd")
+
+    def add_assume_yes_flag(parser):
+        parser.add_argument(
+            "-y", "--yes", "--noconfirm", dest="assume_yes", action="store_true",
+            help="install without interactive confirmation; normal safety checks still apply",
+        )
+
     sub.add_parser("kmake", add_help=False, help="Configure, resume, validate and stage kernel builds (kmake --help)")
 
     sp=sub.add_parser("setup", help="Run the interactive configuration wizard"); sp.set_defaults(func=cmd_setup)
@@ -8228,6 +8273,7 @@ def build_parser()->argparse.ArgumentParser:
     sp=sub.add_parser("info", help="Show package info"); sp.add_argument("names", nargs="+"); sp.set_defaults(func=cmd_info)
 
     sp=sub.add_parser("install", help="Install repository packages or signed .lpminstall descriptors")
+    add_assume_yes_flag(sp)  # Repository installs already run noninteractively.
     sp.add_argument("names", nargs="+", help="package expressions or local .lpminstall files")
     sp.add_argument("--root")
     sp.add_argument("--dry-run", action="store_true")
@@ -8270,6 +8316,7 @@ def build_parser()->argparse.ArgumentParser:
 
     def add_upgrade_subparser(name: str, help_text: str):
         sp = sub.add_parser(name, help=help_text)
+        add_assume_yes_flag(sp)  # Repository upgrades already run noninteractively.
         sp.add_argument("names", nargs="*")
         sp.add_argument("--root")
         sp.add_argument("--dry-run", action="store_true")
@@ -8312,6 +8359,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.set_defaults(func=cmd_pins)
 
     sp=sub.add_parser("build", help=f"Build a {EXT} package from a staged root (DESTDIR)")
+    add_assume_yes_flag(sp)
     sp.add_argument("stagedir", help="directory with staged files")
     sp.add_argument("--name", required=True)
     sp.add_argument("--version", required=True)
@@ -8354,6 +8402,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.set_defaults(func=cmd_splitpkg)
 
     sp=sub.add_parser("rebuild-stage2", help="resume pending deferred stage 2 builds")
+    add_assume_yes_flag(sp)
     sp.add_argument("--recipe", action="append", type=Path, help="restore a lost deferred job from an installed package recipe (repeatable)")
     sp.add_argument("--outdir", type=Path, help="output directory for restored stage 2 jobs")
     sp.add_argument("--plan", action="store_true", help="resolve and print the stage 2 dependency graph without building")
@@ -8361,6 +8410,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.set_defaults(func=cmd_rebuild_stage2)
 
     sp=sub.add_parser("buildpkg", help=f"Build a {EXT} package from a local .lpmbuild or remote package name")
+    add_assume_yes_flag(sp)
     sp.add_argument(
         "script", nargs="?",
         help="local .lpmbuild file path, or package name resolved from local trees and LPMBUILD_REPO",
@@ -8387,6 +8437,7 @@ def build_parser()->argparse.ArgumentParser:
     sp.set_defaults(func=cmd_buildpkg)
 
     sp=sub.add_parser("rebuild", help="Rebuild an installed package and all installed reverse dependencies")
+    add_assume_yes_flag(sp)
     sp.add_argument("name", help="installed package name to rebuild from")
     sp.add_argument("--outdir", default=Path.cwd(), type=Path)
     sp.add_argument("--no-deps", action="store_true", help="do not fetch or build dependencies")
@@ -8438,6 +8489,7 @@ def build_parser()->argparse.ArgumentParser:
         sp.set_defaults(func=cmd_generate_lpmspec)
 
     sp=sub.add_parser("installpkg", help=f"Install from local {EXT} file(s)")
+    add_assume_yes_flag(sp)  # File installs already run noninteractively.
     sp.add_argument("files", nargs="+", help=f"{EXT} package file(s) to install")
     sp.add_argument("--root")
     sp.add_argument("--dry-run", action="store_true")
