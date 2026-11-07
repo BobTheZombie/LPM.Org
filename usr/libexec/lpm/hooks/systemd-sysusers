@@ -1,16 +1,37 @@
 #!/usr/bin/env python3
+"""Provision declared system accounts and groups after LPM transactions.
+
+Uses the sysusers.d declarations in the target root. Does not create
+interactive users or grant sudo privileges.
+"""
+from __future__ import annotations
+
 import os
 import shutil
 import subprocess
+import sys
+from pathlib import Path
 
 
-def main() -> None:
+def main() -> int:
+    root = Path(os.environ.get("LPM_ROOT") or "/")
+    if not root.is_dir():
+        print(f"[lpm] Invalid target root for systemd-sysusers: {root}", file=sys.stderr)
+        return 1
+
     tool = shutil.which("systemd-sysusers")
     if not tool:
-        return
-    root = os.environ.get("LPM_ROOT", "/")
-    subprocess.run([tool, "--root", root], check=False)
+        # During bootstrap systemd-sysusers may not yet be installed.
+        # Report the deferred action instead of silently doing nothing.
+        print("[lpm] systemd-sysusers unavailable; account provisioning deferred", file=sys.stderr)
+        return 0
+
+    result = subprocess.run([tool, "--root", str(root)], check=False)
+    if result.returncode:
+        print(f"[lpm] systemd-sysusers failed for {root}: exit {result.returncode}",
+              file=sys.stderr)
+    return result.returncode
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
