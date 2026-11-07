@@ -11,3 +11,4 @@ When = PostTransaction
 Depends = systemd-sysusers
 Exec = /usr/libexec/lpm/hooks/user-groups
 NeedsTargets = false
+AbortOnFail = false
