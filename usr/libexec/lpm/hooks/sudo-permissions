@@ -55,11 +55,16 @@ def main() -> None:
         # Nothing to do if sudo is not installed in the target root.
         return
 
+    if not sudo_path.is_file() or sudo_path.is_symlink():
+        print(f"[lpm] Refusing to modify non-regular sudo binary: {sudo_path}", file=sys.stderr)
+        return
+
     changed_mode = changed_owner = False
 
     try:
-        changed_mode = _ensure_mode(sudo_path)
+        # chown clears setuid on Linux. Restore mode AFTER ownership.
         changed_owner = _ensure_owner(sudo_path)
+        changed_mode = _ensure_mode(sudo_path)
     except PermissionError as exc:
         print(f"[lpm] Unable to adjust sudo permissions: {exc}", file=sys.stderr)
         return
