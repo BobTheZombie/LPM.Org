@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""Opt-in post-transaction group enrollment for existing local login users.
+
+Rules live in /etc/lpm/user-groups.d/*.conf under LPM_ROOT:
+    username group [group ...]
+
+No user, group, sudoers rule, or password is ever created by this hook.
+systemd-sysusers handles service accounts and system groups separately.
+"""
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\$?$")
+
+
+def _entries(path: Path, field_count: int) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
+    if not path.is_file():
+        return result
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if not raw or raw.startswith("#"):
+            continue
+        fields = raw.split(":")
+        if len(fields) >= field_count and fields[0]:
+            result[fields[0]] = fields
+    return result
+
+
+def main() -> int:
+    root = Path(os.environ.get("LPM_ROOT") or "/").resolve()
+    config_dir = root / "etc/lpm/user-groups.d"
+    if not config_dir.is_dir():
+        return 0
+    configs = sorted(config_dir.glob("*.conf"))
+    if not configs:
+        return 0
+
+    passwd = _entries(root / "etc/passwd", 7)
+    groups = _entries(root / "etc/group", 4)
+    if not passwd or not groups:
+        print(f"[lpm] Missing local passwd/group database under {root}", file=sys.stderr)
+        return 1
+
+    usermod = shutil.which("usermod")
+    if not usermod:
+        print("[lpm] usermod not found; unable to apply user group configuration", file=sys.stderr)
+        return 1
+
+    errors = 0
+    already = set()
+    for config in configs:
+        if config.is_symlink() or not config.is_file():
+            print(f"[lpm] Ignoring unsafe group configuration: {config}", file=sys.stderr)
+            errors += 1
+            continue
+        info = config.stat()
+        if info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            print(f"[lpm] Group configuration must be root-owned and non-writable by groups/others: {config}", file=sys.stderr)
+            errors += 1
+            continue
+        for line_no, raw in enumerate(config.read_text(encoding="utf-8").splitlines(), 1):
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            fields = line.split()
+            if len(fields) < 2 or any(not NAME.fullmatch(value) for value in fields):
+                print(f"[lpm] Invalid entry at {config}:{line_no}", file=sys.stderr)
+                errors += 1
+                continue
+            username, *desired_groups = fields
+            entry = passwd.get(username)
+            if entry is None:
+                print(f"[lpm] User {username!r} not found in target; skipping enrollment", file=sys.stderr)
+                continue
+            try:
+                uid = int(entry[2])
+                primary_gid = int(entry[3])
+            except ValueError:
+                print(f"[lpm] Invalid local user ID for {username}", file=sys.stderr)
+                errors += 1
+                continue
+            if uid < 1000:
+                print(f"[lpm] Refusing to modify system account {username}", file=sys.stderr)
+                errors += 1
+                continue
+            for group_name in desired_groups:
+                if (username, group_name) in already:
+                    continue
+                already.add((username, group_name))
+                group = groups.get(group_name)
+                if group is None:
+                    print(f"[lpm] Group {group_name!r} not found; skipping {username}", file=sys.stderr)
+                    continue
+                if int(group[2]) == primary_gid or username in group[3].split(","):
+                    continue
+                cmd = [usermod, "--root", str(root), "--append", "--groups", group_name, username]
+                result = subprocess.run(cmd, check=False)
+                if result.returncode:
+                    print(f"[lpm] Failed to add {username} to {group_name} (exit {result.returncode})", file=sys.stderr)
+                    errors += 1
+                else:
+                    # Reflect the change so following rules cannot repeat it.
+                    group[3] = ",".join(filter(None, (group[3], username)))
+                    print(f"[lpm] Added existing user {username} to group {group_name}")
+    return 1 if errors else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
