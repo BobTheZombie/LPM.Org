@@ -1,0 +1,13 @@
+# Apply only administrator-defined group memberships for existing login users.
+# Depends on sysusers so service groups are created before enrollment.
+[Trigger]
+Type = Package
+Operation = Install
+Operation = Upgrade
+Target = *
+
+[Action]
+When = PostTransaction
+Depends = systemd-sysusers
+Exec = /usr/libexec/lpm/hooks/user-groups
+NeedsTargets = false
