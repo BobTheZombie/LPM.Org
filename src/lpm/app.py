@@ -6198,6 +6198,28 @@ def cmd_install(a):
         root = Path(a.root or DEFAULT_ROOT)
         noverify = a.no_verify or os.environ.get("LPM_NO_VERIFY") == "1"
         u = build_universe()
+        official_artifacts = {}
+        if not getattr(a, "no_official_binaries", False):
+            try:
+                from . import gitlab_binary_install as binary_transport
+                metadata_cache = _current_cache_dir() / "gitlab-official"
+                for payload, artifact in binary_transport.discover(
+                    metadata_cache,
+                    verify_descriptor=verify_signature,
+                    load_descriptor=load_descriptor,
+                    verify=(not noverify),
+                ):
+                    candidate = PkgMeta.from_dict(
+                        payload, repo_name="aurora-official", prio=50,
+                    )
+                    if not arch_compatible(candidate.arch, ARCH):
+                        continue
+                    register_universe_candidate(u, candidate)
+                    official_artifacts[
+                        (candidate.name, candidate.version, candidate.release, candidate.arch)
+                    ] = artifact
+            except Exception as exc:
+                warn(f"official GitLab binary repository unavailable: {exc}")
         goals: List[str] = []
         explicit_names: Set[str] = set()
         for requested in a.names:
@@ -6229,6 +6251,19 @@ def cmd_install(a):
             log(f"  - {p.name}-{p.version}")
         if a.dry_run:
             return
+        for selected in plan:
+            artifact = official_artifacts.get(
+                (selected.name, selected.version, selected.release, selected.arch)
+            ) if selected.repo == "aurora-official" else None
+            if artifact is not None:
+                try:
+                    binary_transport.materialize(artifact, verify=(not noverify))
+                    if not noverify:
+                        verify_signature(
+                            artifact.archive, Path(str(artifact.archive) + ".sig")
+                        )
+                except Exception as exc:
+                    die(f"Cannot download or verify {selected.name} from GitLab: {exc}")
         allow_fallback = ALLOW_LPMBUILD_FALLBACK if a.allow_fallback is None else a.allow_fallback
 
         snapshot_id = None
@@ -8278,6 +8313,8 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--root")
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--no-verify", action="store_true", help="skip signature verification (DANGEROUS)")
+    sp.add_argument("--no-official-binaries", action="store_true",
+                    help="skip querying the official GitLab LFS binary repository")
     sp.add_argument(
         "--force",
         action="store_true",
