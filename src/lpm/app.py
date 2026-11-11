@@ -6075,13 +6075,10 @@ def cmd_rebuild_stage2(a):
         print(json.dumps(result, indent=2))
 
 # =========================== CLI commands =====================================
-_PRIVILEGED_COMMANDS = {"install", "installpkg", "remove", "removepkg", "upgrade", "upgradepkg", "rollback", "bootstrap-chroot", "installroot", "buildchroot"}
+_PRIVILEGED_COMMANDS = {"install", "installpkg", "remove", "removepkg", "upgrade", "upgradepkg", "rollback"}
 _STATE_COMMANDS = {
     "autoremove",
-    "bootstrap",
-    "bootstrap-chroot",
     "build",
-    "buildchroot",
     "buildpkg",
     "rebuild-stage2",
     "clean",
