@@ -1,7 +1,4 @@
 from pathlib import Path
-from types import SimpleNamespace
-
-from lpm.bootstrap import BootstrapConfig, load_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,10 +21,3 @@ def test_lpm_tmpfiles_limits_build_account_to_build_tree() -> None:
     assert "d /var/lib/lpm/snapshots 0770 root lpm" in config
 
 
-def test_bootstrap_defaults_to_lpm_build_account(tmp_path: Path) -> None:
-    direct = BootstrapConfig(target=tmp_path / "root")
-    loaded = load_config(
-        SimpleNamespace(target=str(tmp_path / "other"), config=None)
-    )
-    assert direct.lfs_user == "lpm-build"
-    assert loaded.lfs_user == "lpm-build"
