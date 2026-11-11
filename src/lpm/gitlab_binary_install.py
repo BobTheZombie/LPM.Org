@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
+import urllib.error
 import os
 import re
 import tempfile
@@ -122,7 +124,27 @@ def _descriptor_to_candidate(data: Mapping, descriptor_remote: str, cache: Path)
 def discover(cache: Path) -> list[tuple[dict, BinaryArtifact]]:
     """Read the aggregated catalog once; it is untrusted until selected descriptors are signed."""
     index_path = cache / "packages" / "index.json"
-    _stream(_file_url("packages/index.json"), index_path, max_size=16 * 1024 * 1024)
+    # A throttled refresh must not discard previously validated catalog bytes.
+    # Use a recent cache only on HTTP 429; never hide malformed/404 responses.
+    try:
+        _stream(_file_url("packages/index.json"), index_path, max_size=16 * 1024 * 1024)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 429:
+            raise
+        max_age = 24 * 60 * 60
+        age = time.time() - index_path.stat().st_mtime if index_path.is_file() else float("inf")
+        if age > max_age:
+            retry = exc.headers.get("Retry-After", "unspecified")
+            raise RuntimeError(
+                f"GitLab rate limited the repository index (HTTP 429; Retry-After: {retry}). "
+                "No usable cached index is available. Avoid rapid retries."
+            ) from exc
+        import warnings
+        warnings.warn(
+            f"GitLab HTTP 429: using cached Aurora binary index ({int(age)} seconds old)",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     data = json.loads(index_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or data.get("format") != "lpm-binary-index" or data.get("version") != 1:
         raise ValueError("unsupported GitLab binary index")
