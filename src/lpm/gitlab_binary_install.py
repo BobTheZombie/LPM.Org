@@ -32,6 +32,7 @@ class BinaryArtifact:
     archive_remote: str
     expected_sha256: str
     expected_size: int
+    descriptor_sha256: str
 
 
 def _headers() -> dict[str, str]:
@@ -113,7 +114,7 @@ def _descriptor_to_candidate(data: Mapping, descriptor_remote: str, cache: Path)
     })
     artifact = BinaryArtifact(
         package["name"], cache / descriptor_remote, cache / archive_remote,
-        descriptor_remote, archive_remote, package["sha256"], size,
+        descriptor_remote, archive_remote, package["sha256"], size, "",
     )
     return item, artifact
 
@@ -137,7 +138,12 @@ def discover(cache: Path) -> list[tuple[dict, BinaryArtifact]]:
             raise ValueError("invalid descriptor path in index")
         # Validate paths before joining them under the cache.
         _file_url(path)
-        entries.append(_descriptor_to_candidate(entry.get("data", {}), path, cache))
+        checksum = entry.get("descriptor_sha256", "")
+        if not isinstance(checksum, str) or not HEX_SHA.fullmatch(checksum):
+            raise ValueError(f"missing descriptor SHA-256: {path}")
+        candidate, artifact = _descriptor_to_candidate(entry.get("data", {}), path, cache)
+        from dataclasses import replace
+        entries.append((candidate, replace(artifact, descriptor_sha256=checksum)))
     return entries
 
 
@@ -154,14 +160,14 @@ def materialize(
     _stream(_file_url(artifact.descriptor_remote), desc, max_size=4 * 1024 * 1024)
     _stream(_file_url(artifact.descriptor_remote + ".sig"), sig, max_size=256 * 1024)
     verify_descriptor(desc, sig)
-    actual, _ = _descriptor_to_candidate(load_descriptor(desc), artifact.descriptor_remote,
-                                         artifact.archive.parents[len(Path(artifact.archive_remote).parts)-1])
-    # Reject an index that has been tampered with; the signed descriptor is authoritative.
-    if any(actual[key] != value for key, value in [
+    if _digest(desc) != artifact.descriptor_sha256:
+        raise RuntimeError(f"index and signed descriptor disagree: {artifact.name}")
+    signed_package = load_descriptor(desc)["package"]
+    if any(signed_package[key] != expected for key, expected in (
         ("name", artifact.name), ("sha256", artifact.expected_sha256),
         ("size", artifact.expected_size),
-    ]):
-        raise RuntimeError(f"index disagrees with signed descriptor for {artifact.name}")
+    )):
+        raise RuntimeError(f"signed descriptor mismatch: {artifact.name}")
 
     archive = artifact.archive
     if archive.exists() and (archive.stat().st_size != artifact.expected_size or
