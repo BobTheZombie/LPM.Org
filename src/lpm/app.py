@@ -6199,6 +6199,7 @@ def cmd_install(a):
         noverify = a.no_verify or os.environ.get("LPM_NO_VERIFY") == "1"
         u = build_universe()
         official_artifacts = {}
+        official_error = None
         if not getattr(a, "no_official_binaries", False):
             try:
                 from . import gitlab_binary_install as binary_transport
@@ -6214,6 +6215,7 @@ def cmd_install(a):
                         (candidate.name, candidate.version, candidate.release, candidate.arch)
                     ] = artifact
             except Exception as exc:
+                official_error = exc
                 warn(f"official GitLab binary repository unavailable: {exc}")
         goals: List[str] = []
         explicit_names: Set[str] = set()
@@ -6240,6 +6242,8 @@ def cmd_install(a):
         try:
             plan = solve(goals, u)
         except ResolutionError as e:
+            if official_error is not None:
+                die(f"dependency resolution incomplete: official GitLab binary repository unavailable: {official_error}; solver: {e}")
             die(f"dependency resolution failed: {e}")
         log("[plan] install order:")
         for p in plan:
