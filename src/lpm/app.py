@@ -6203,12 +6203,7 @@ def cmd_install(a):
             try:
                 from . import gitlab_binary_install as binary_transport
                 metadata_cache = _current_cache_dir() / "gitlab-official"
-                for payload, artifact in binary_transport.discover(
-                    metadata_cache,
-                    verify_descriptor=verify_signature,
-                    load_descriptor=load_descriptor,
-                    verify=(not noverify),
-                ):
+                for payload, artifact in binary_transport.discover(metadata_cache):
                     candidate = PkgMeta.from_dict(
                         payload, repo_name="aurora-official", prio=50,
                     )
@@ -6257,11 +6252,12 @@ def cmd_install(a):
             ) if selected.repo == "aurora-official" else None
             if artifact is not None:
                 try:
-                    binary_transport.materialize(artifact, verify=(not noverify))
-                    if not noverify:
-                        verify_signature(
-                            artifact.archive, Path(str(artifact.archive) + ".sig")
-                        )
+                    binary_transport.materialize(
+                        artifact,
+                        verify_descriptor=verify_signature,
+                        load_descriptor=load_descriptor,
+                        verify_package=verify_signature,
+                    )
                 except Exception as exc:
                     die(f"Cannot download or verify {selected.name} from GitLab: {exc}")
         allow_fallback = ALLOW_LPMBUILD_FALLBACK if a.allow_fallback is None else a.allow_fallback
