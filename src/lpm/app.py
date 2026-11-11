@@ -264,8 +264,6 @@ from .lpminstall import (
     sign_file,
     write_descriptor,
 )
-from . import bootstrap
-from . import chroot_helpers
 
 # =========================== Protected packages ===============================
 PROTECTED_FILE = Path("/etc/lpm/protected.json")
@@ -8254,26 +8252,6 @@ def _run_sysconfig(root: Path) -> None:
 
 
 
-def cmd_bootstrap(args)->int:
-    return bootstrap.run_bootstrap(args)
-
-
-def cmd_bootstrap_chroot(args) -> int:
-    return chroot_helpers.run_bootstrap_chroot(args)
-
-
-def cmd_installroot(args) -> int:
-    return chroot_helpers.run_installroot(args)
-
-
-def cmd_buildgen(args) -> int:
-    return chroot_helpers.run_buildgen(args)
-
-
-def cmd_buildchroot(args) -> int:
-    return chroot_helpers.run_buildchroot(args)
-
-
 def build_parser()->argparse.ArgumentParser:
     p=argparse.ArgumentParser(prog="lpm", description="Linux Package Manager with SAT solver, signatures, and .lpmbuild")
     p.add_argument(
@@ -8541,100 +8519,6 @@ def build_parser()->argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--force", action="store_true", help="override protected package list")
     sp.set_defaults(func=cmd_fileremove)
-
-    sp=sub.add_parser("bootstrap", help="Bootstrap a new target system")
-    sp.add_argument("--target")
-    sp.add_argument("--architecture", choices=["x86_64", "x86_64-v2"], default=None)
-    sp.add_argument("--initramfs-tool", choices=["mkinitcpio", "dracut"], default=None)
-    sp.add_argument("--hostname")
-    sp.add_argument("--timezone")
-    sp.add_argument("--locale")
-    sp.add_argument("--keymap")
-    sp.add_argument("--bootloader")
-    sp.add_argument("--kernel")
-    sp.add_argument("--config")
-    sp.add_argument("--resume", action="store_true", default=None)
-    sp.add_argument("--dry-run", action="store_true", default=None)
-    sp.add_argument("--verbose", action="store_true", default=None)
-    sp.add_argument("--force", action="store_true", default=None)
-    sp.add_argument("--efi-dir")
-    sp.add_argument("--boot-device")
-    sp.add_argument("--chroot-only", action="store_true", default=None, help="build a non-bootable chroot without a root device, initramfs, or bootloader")
-    sp.add_argument("--network")
-    sp.add_argument("--plan-file", help="JSON package-order manifest")
-    sp.add_argument("--lpmbuild-root", help="build and install all local .lpmbuild recipes")
-    sp.add_argument("--source-output", help="directory for source-built package artifacts")
-    sp.add_argument("--prepare-lfs-book", dest="book_enabled", action="store_true", default=None, help="cache a pinned LFS book and extract jhalfs build commands")
-    sp.add_argument("--book-version", help="pinned LFS systemd book version (default: 13.1-systemd)")
-    sp.add_argument("--book-url", help="override URL for the rendered LFS no-chunks HTML book")
-    sp.add_argument("--book-sha256", help="required SHA-256 for the downloaded LFS book")
-    sp.add_argument("--book-cache", help="persistent LFS book cache directory")
-    sp.add_argument("--book-offline", action="store_true", default=None, help="require a valid cached book; never download")
-    sp.add_argument("--book-refresh", action="store_true", default=None, help="refresh the pinned book and support files")
-    sp.add_argument("--execute-lfs-phases", dest="lfs_execute", action="store_true", default=None, help="execute the generated LFS phase plan (explicit opt-in)")
-    sp.add_argument("--lfs-phase", dest="lfs_phases", action="append", default=None, help="LFS phase to execute; repeatable (default: all phases)")
-    sp.add_argument("--lfs-user", help="unprivileged user for chapters 5 and 6 (default: lpm-build)")
-    sp.add_argument("--lfs-allow-manual", action="store_true", default=None, help="also execute boundary-sensitive sections normally left manual")
-    sp.add_argument("--lfs-only", action="store_true", default=None, help="stop after LFS phased execution; do not resolve or install lpmbuild packages")
-    sp.add_argument("--lpm-ready", action="store_true", default=None, help="install and execute LPM inside the chroot, then stop at the LPM-ready milestone")
-    sp.add_argument("--include-packages", help="comma-separated source packages to include")
-    sp.add_argument("--exclude-packages", help="comma-separated source packages to exclude")
-    sp.add_argument("--partition-plan", help="validated JSON disk layout")
-    sp.add_argument(
-        "--partition-confirm",
-        action="store_true",
-        default=None,
-        help="confirm destructive partition-table and filesystem creation",
-    )
-    sp.set_defaults(func=cmd_bootstrap)
-
-    sp=sub.add_parser("bootstrap-chroot", help="Bootstrap a chroot target root")
-    sp.add_argument("--root", required=True, help="target root path")
-    sp.add_argument("--package", dest="packages", action="append", default=[], help="package name (repeatable)")
-    sp.add_argument("--manifest", help="path to package manifest input")
-    sp.add_argument("--cache-dir", default=CACHE_DIR, help="package cache directory")
-    sp.add_argument("--dry-run", action="store_true")
-    sp.add_argument("--verbose", action="store_true")
-    sp.set_defaults(func=cmd_bootstrap_chroot)
-
-    sp=sub.add_parser("installroot", help="Install packages into a target root")
-    sp.add_argument("--root", required=True, help="target root path")
-    sp.add_argument("--package", dest="packages", action="append", default=[], help="package name (repeatable)")
-    sp.add_argument("--manifest", help="path to package manifest input")
-    sp.add_argument("--cache-dir", default=CACHE_DIR, help="package cache directory")
-    sp.add_argument("--dry-run", action="store_true")
-    sp.add_argument("--mount-api", action="store_true", help="mount /proc,/sys,/dev in target root during install")
-    sp.add_argument("--verbose", action="store_true")
-    sp.set_defaults(func=cmd_installroot)
-
-    sp=sub.add_parser("buildgen", help="Generate build artifacts for chroot builds")
-    sp.add_argument("--root", required=True, help="target root path")
-    sp.add_argument("--source", required=True, help="path to .lpmbuild source")
-    sp.add_argument("--output-dir", default=str(Path.cwd()), help="output directory")
-    sp.add_argument("--dry-run", action="store_true")
-    sp.add_argument("--verbose", action="store_true")
-    sp.set_defaults(func=cmd_buildgen)
-
-    sp=sub.add_parser("buildchroot", help="Build package(s) within a target chroot")
-    sp.add_argument("--root", required=True, help="target root path")
-    sp.add_argument("--source", required=True, help="path to .lpmbuild source")
-    sp.add_argument("--cache-dir", default=CACHE_DIR, help="package cache directory")
-    sp.add_argument("--output-dir", default=str(Path.cwd()), help="output directory")
-    sp.add_argument(
-        "--stage0",
-        action="store_true",
-        help="force a host-built stage-0 seed even when the target already contains LPM",
-    )
-    sp.add_argument(
-        "--stage0-package",
-        dest="stage0_packages",
-        action="append",
-        default=[],
-        help="package to seed during stage-0 (repeatable; dependency closure is automatic)",
-    )
-    sp.add_argument("--dry-run", action="store_true")
-    sp.add_argument("--verbose", action="store_true")
-    sp.set_defaults(func=cmd_buildchroot)
 
     sp = sub.add_parser("protected", help="Show or edit protected package list")
     sp.add_argument("action", choices=["list", "add", "remove"])
