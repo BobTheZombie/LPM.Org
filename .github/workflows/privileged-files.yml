@@ -1,0 +1,31 @@
+name: Signed privileged file modes
+
+on:
+  push:
+    paths:
+      - "src/lpm/privileged_files.py"
+      - "src/lpm/app.py"
+      - "tests/test_privileged_files.py"
+      - ".github/workflows/privileged-files.yml"
+  pull_request:
+    paths:
+      - "src/lpm/privileged_files.py"
+      - "src/lpm/app.py"
+      - "tests/test_privileged_files.py"
+      - ".github/workflows/privileged-files.yml"
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python dependencies
+        run: python -m pip install -e . pytest zstandard packaging
+      - name: Run privileged file and installer tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: python -m pytest -q tests/test_privileged_files.py tests/test_installpkg_symlink.py
