@@ -44,7 +44,7 @@ This command family does not mutate the native LPM package database.
 After installing rebuilt packages and restarting Discover:
 
 1. `flatpak remotes --system` should list `flathub`.
-2. `find /usr/lib -type f \\( -name 'flatpak-backend.so' -o -name 'packagekit-backend.so' \\)`
+2. `find /usr/lib -type f \( -name 'flatpak-backend.so' -o -name 'packagekit-backend.so' \)`
    should find **both** Discover plugins.
 3. Open Discover and search for an app published on Flathub.
    Choose its Flathub source, then install and uninstall it.
