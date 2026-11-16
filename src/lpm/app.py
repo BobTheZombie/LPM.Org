@@ -8264,6 +8264,10 @@ def build_parser()->argparse.ArgumentParser:
     )
     sub=p.add_subparsers(dest="cmd")
 
+    # Flatpak is deliberately separate from native LPM/PackageKit transactions.
+    from .flatpak_cli import add_flatpak_parser
+    add_flatpak_parser(sub)
+
     def add_assume_yes_flag(parser):
         parser.add_argument(
             "-y", "--yes", "--noconfirm", dest="assume_yes", action="store_true",
@@ -8542,7 +8546,7 @@ def main(argv=None):
         parser.error("a subcommand is required")
     conf_file = _resolve_lpm_attr("CONF_FILE", CONF_FILE)
     try:
-        if cmd != "setup" and not conf_file.exists():
+        if cmd not in {"setup", "flatpak"} and not conf_file.exists():
             with operation_phase(privileged=True):
                 _resolve_lpm_attr("run_first_run_wizard", run_first_run_wizard)()
                 _resolve_lpm_attr("initialize_state", initialize_state)()
