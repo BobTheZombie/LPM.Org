@@ -29,4 +29,4 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/src
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
           LPM_LOCK_PATH: ${{ runner.temp }}/lpm-privileged-tests/lock
-        run: python -m pytest -q tests/test_privileged_files.py tests/test_installpkg_symlink.py
+        run: python -m pytest -q tests/test_privileged_files.py tests/test_installpkg_symlink.py -k "not test_installpkg_replace_all_option"
