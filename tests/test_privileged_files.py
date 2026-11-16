@@ -115,6 +115,7 @@ def test_installer_rejects_unverified_privileged_package(tmp_path, monkeypatch):
     # Verify the real installer entry point rejects a crafted privileged
     # manifest before any payload can be installed.
     import dataclasses
+    monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "lpm-state"))
     from lpm import app as lpm
 
     stage, binary, manifest = make_stage(tmp_path)
@@ -133,7 +134,6 @@ def test_installer_rejects_unverified_privileged_package(tmp_path, monkeypatch):
 
     root = tmp_path / "root"
     root.mkdir()
-    monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "lpm-state"))
     with pytest.raises(SystemExit):
         lpm.installpkg(package, root=root, verify=False)
     assert not (root / "usr/bin/fusermount3").exists()
