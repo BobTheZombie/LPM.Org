@@ -137,3 +137,54 @@ def test_installer_rejects_unverified_privileged_package(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         lpm.installpkg(package, root=root, verify=False)
     assert not (root / "usr/bin/fusermount3").exists()
+
+
+def test_root_install_signed_fuse3_restores_setuid(tmp_path, monkeypatch):
+    """Full signed package path under root, including filtered tar extraction."""
+    import dataclasses
+    import os
+    import subprocess
+    from lpm import app as lpm
+
+    if os.geteuid() != 0:
+        pytest.skip("requires an isolated root-owned installation directory")
+
+    stage, binary, manifest = make_stage(tmp_path)
+    annotate_privileged_files(stage, "fuse3", manifest)
+    meta = lpm.PkgMeta(name="fuse3", version="3.18.3", release="2", arch="any")
+    (stage / ".lpm-meta.json").write_text(json.dumps(dataclasses.asdict(meta)))
+    (stage / ".lpm-manifest.json").write_text(json.dumps(manifest))
+
+    package = tmp_path / "fuse3-signed.zst"
+    with package.open("wb") as target:
+        with lpm.zstd.ZstdCompressor().stream_writer(target, closefd=False) as compressed:
+            with tarfile.open(fileobj=compressed, mode="w|") as tf:
+                for file in stage.rglob("*"):
+                    if file.is_file():
+                        tf.add(file, arcname=file.relative_to(stage).as_posix())
+
+    trust = tmp_path / "keys"
+    trust.mkdir()
+    private = tmp_path / "private.pem"
+    public = trust / "test.pem"
+    subprocess.run([
+        "openssl", "genpkey", "-algorithm", "RSA",
+        "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(private)
+    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run([
+        "openssl", "pkey", "-in", str(private),
+        "-pubout", "-out", str(public)
+    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run([
+        "openssl", "dgst", "-sha256", "-sign", str(private),
+        "-out", str(package) + ".sig", str(package)
+    ], check=True)
+    monkeypatch.setattr(lpm, "TRUST_DIR", trust)
+
+    root = tmp_path / "root"
+    root.mkdir()
+    lpm.installpkg(package, root=root, verify=True)
+    final = root / "usr/bin/fusermount3"
+    assert final.read_bytes() == binary.read_bytes()
+    assert stat.S_IMODE(final.stat().st_mode) == 0o4755
+    assert (final.stat().st_uid, final.stat().st_gid) == (0, 0)
