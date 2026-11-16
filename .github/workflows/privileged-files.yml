@@ -30,3 +30,13 @@ jobs:
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
           LPM_LOCK_PATH: ${{ runner.temp }}/lpm-privileged-tests/lock
         run: python -m pytest -q tests/test_privileged_files.py tests/test_installpkg_symlink.py -k "not test_installpkg_replace_all_option"
+      - name: Install signed FUSE package as root in an isolated test root
+        shell: bash
+        run: |
+          sudo env \
+            PYTHONPATH="$GITHUB_WORKSPACE/src" \
+            PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+            LPM_STATE_DIR="$RUNNER_TEMP/lpm-fuse-root-state" \
+            LPM_LOCK_PATH="$RUNNER_TEMP/lpm-fuse-root-state/lock" \
+            "$(command -v python)" -m pytest -q \
+            tests/test_privileged_files.py::test_root_install_signed_fuse3_restores_setuid
