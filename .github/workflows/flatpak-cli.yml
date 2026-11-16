@@ -1,0 +1,31 @@
+name: Flathub CLI regression
+
+on:
+  push:
+    paths:
+      - "src/lpm/flatpak_cli.py"
+      - "src/lpm/app.py"
+      - "tests/test_flatpak_cli.py"
+      - ".github/workflows/flatpak-cli.yml"
+  pull_request:
+    paths:
+      - "src/lpm/flatpak_cli.py"
+      - "src/lpm/app.py"
+      - "tests/test_flatpak_cli.py"
+      - ".github/workflows/flatpak-cli.yml"
+
+jobs:
+  flatpak-cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -e . pytest packaging zstandard
+      - name: Verify isolated Flatpak CLI behavior
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: python -m pytest -q tests/test_flatpak_cli.py
