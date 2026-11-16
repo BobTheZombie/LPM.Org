@@ -1,0 +1,42 @@
+name: Signed privileged file modes
+
+on:
+  push:
+    paths:
+      - "src/lpm/privileged_files.py"
+      - "src/lpm/app.py"
+      - "tests/test_privileged_files.py"
+      - ".github/workflows/privileged-files.yml"
+  pull_request:
+    paths:
+      - "src/lpm/privileged_files.py"
+      - "src/lpm/app.py"
+      - "tests/test_privileged_files.py"
+      - ".github/workflows/privileged-files.yml"
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python dependencies
+        run: python -m pip install -e . pytest zstandard packaging
+      - name: Run privileged file and installer tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+          LPM_LOCK_PATH: ${{ runner.temp }}/lpm-privileged-tests/lock
+        run: python -m pytest -q tests/test_privileged_files.py tests/test_installpkg_symlink.py -k "not test_installpkg_replace_all_option"
+      - name: Install signed FUSE package as root in an isolated test root
+        shell: bash
+        run: |
+          sudo env \
+            PYTHONPATH="$GITHUB_WORKSPACE/src" \
+            PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+            LPM_STATE_DIR="$RUNNER_TEMP/lpm-fuse-root-state" \
+            LPM_LOCK_PATH="$RUNNER_TEMP/lpm-fuse-root-state/lock" \
+            "$(command -v python)" -m pytest -q \
+            tests/test_privileged_files.py::test_root_install_signed_fuse3_restores_setuid
