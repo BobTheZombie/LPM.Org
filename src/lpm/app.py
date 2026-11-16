@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from .parallel import ordered_map
 from .accelerators import configure as configure_accelerators
 from .build_state import resumable_build, BuildStateError
+from .privileged_files import annotate_privileged_files, validate_privileged_files
 from .python_deps import aliases as python_aliases, satisfied as python_dependency_satisfied
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -2988,6 +2989,9 @@ def build_package(stagedir: Path, meta: PkgMeta, out: Path, sign=True):
 
     # Collect manifest including exported symbols
     mani = collect_manifest(stagedir)
+    # Preserve privileged bits only for allowlisted binaries in signed packages.
+    # The extraction filter remains Python's safe 'data' filter.
+    annotate_privileged_files(stagedir, meta.name, mani)
     meta.symbols = sorted({s for e in mani for s in e.get("symbols", [])})
 
     # Write metadata + manifest *into stagedir*
@@ -7556,6 +7560,14 @@ def installpkg(
             if not arch_compatible(meta.arch, ARCH):
                 die(f"Incompatible architecture: {meta.arch} (host: {ARCH})")
 
+            # Never accept unsigned or unexpected privileged modes even when
+            # --no-verify was requested. Only trusted signed fuse3 can restore
+            # root-owned setuid permissions for /usr/bin/fusermount3.
+            try:
+                validate_privileged_files(meta.name, mani, verified=verify)
+            except ValueError as exc:
+                die(f"Rejected privileged file declaration: {exc}")
+
             # --- Step 3b: Protected package guard ---
             if meta.name in PROTECTED and not force:
                 warn(f"{meta.name} is protected (from {PROTECTED_FILE}) and cannot be installed/upgraded without --force")
@@ -7787,16 +7799,27 @@ def installpkg(
                                 shutil.move(str(src), str(tmp_dest))
                                 tmp_dest.rename(dest)
 
-                            if "mode" in e:
-                                dest.chmod(e["mode"])
-
+                            # chown clears setuid/setgid on Linux: perform
+                            # ownership changes BEFORE restoring validated
+                            # manifest permissions. Do not follow symlinks.
                             if "uid" in e and "gid" in e:
+                                if dest.is_symlink():
+                                    raise RuntimeError(
+                                        f"cannot chown symlink manifest payload {e['path']}"
+                                    )
                                 try:
-                                    os.chown(dest, e["uid"], e["gid"])
+                                    os.chown(dest, int(e["uid"]), int(e["gid"]))
                                 except PermissionError as exc:
                                     raise RuntimeError(
                                         f"cannot set ownership for manifest payload {e['path']}"
                                     ) from exc
+
+                            if "mode" in e:
+                                if dest.is_symlink() or not dest.is_file():
+                                    raise RuntimeError(
+                                        f"cannot chmod non-regular manifest payload {e['path']}"
+                                    )
+                                dest.chmod(stat.S_IMODE(int(e["mode"])))
 
                         # Handle install scripts
                         install_script_rel = None
