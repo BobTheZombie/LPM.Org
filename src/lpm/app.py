@@ -8624,6 +8624,9 @@ def main(argv=None):
         return 0
     if cmd is None:
         parser.error("a subcommand is required")
+    # Flatpak-only inventory does not require a configured native LPM database.
+    if cmd == "list" and getattr(args, "flatpak_only", False):
+        return args.func(args)
     conf_file = _resolve_lpm_attr("CONF_FILE", CONF_FILE)
     try:
         if cmd not in {"setup", "flatpak"} and not conf_file.exists():
