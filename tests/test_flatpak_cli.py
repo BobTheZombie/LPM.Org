@@ -90,3 +90,101 @@ def test_search_no_extra_remote_or_shell():
          patch.object(flatpak_cli.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
         args.func(args)
     run.assert_called_once_with(["/usr/bin/flatpak", "search", "firefox web"], check=False)
+
+
+
+def test_inventory_reads_system_and_user_flatpaks_without_lpm_db():
+    output = (
+        "Application ID\tVersion\tArch\tOrigin\tInstallation\n"
+        "org.mozilla.firefox\t140.0\tx86_64\tflathub\tsystem\n"
+        "org.kde.krita\t5.2\tx86_64\tflathub\tuser\n"
+    )
+    with patch.object(flatpak_cli.shutil, "which", return_value="/usr/bin/flatpak"), \
+         patch.object(flatpak_cli.subprocess, "run",
+                      return_value=SimpleNamespace(returncode=0, stdout=output, stderr="")) as run:
+        assert flatpak_cli.list_installed_flatpaks() == [
+            ("org.kde.krita", "5.2", "x86_64", "flathub", "user"),
+            ("org.mozilla.firefox", "140.0", "x86_64", "flathub", "system"),
+        ]
+    run.assert_called_once_with(
+        ["/usr/bin/flatpak", "list", "--app",
+         "--columns=application:full,version:full,arch:full,origin:full,installation:full"],
+        check=False, stdout=flatpak_cli.subprocess.PIPE,
+        stderr=flatpak_cli.subprocess.PIPE, text=True, timeout=30,
+    )
+
+
+def test_inventory_absent_flatpak_is_optional():
+    with patch.object(flatpak_cli.shutil, "which", return_value=None):
+        assert flatpak_cli.list_installed_flatpaks() is None
+
+
+def test_inventory_nonzero_error_is_not_a_false_empty_list():
+    with patch.object(flatpak_cli.shutil, "which", return_value="/usr/bin/flatpak"), \
+         patch.object(flatpak_cli.subprocess, "run", return_value=SimpleNamespace(
+             returncode=1, stdout="", stderr="Flatpak installation unavailable\n")):
+        with pytest.raises(RuntimeError, match="Flatpak installation unavailable"):
+            flatpak_cli.list_installed_flatpaks()
+
+
+def test_inventory_rejects_unexpected_output():
+    with patch.object(flatpak_cli.shutil, "which", return_value="/usr/bin/flatpak"), \
+         patch.object(flatpak_cli.subprocess, "run", return_value=SimpleNamespace(
+             returncode=0, stdout="badly formatted row\n", stderr="")):
+        with pytest.raises(RuntimeError, match="Unexpected Flatpak list output"):
+            flatpak_cli.list_installed_flatpaks()
+
+
+def test_lpm_list_combines_native_and_flatpak_inventory(capsys):
+    native = SimpleNamespace(
+        execute=lambda *_: [("lpm", "1.0", "1", "x86_64", 0, 1)],
+        close=lambda: None,
+    )
+    with patch.object(app, "db", return_value=native), \
+         patch.object(flatpak_cli, "list_installed_flatpaks", return_value=[
+             ("org.kde.krita", "5.2", "x86_64", "flathub", "user")
+         ]):
+        args = app.build_parser().parse_args(["list"])
+        args.func(args)
+    output = capsys.readouterr().out
+    assert "Installed native packages: 1 total" in output
+    assert "lpm" in output
+    assert "Flatpak applications: 1 total" in output
+    assert "flatpak:org.kde.krita" in output
+    assert "user" in output
+    assert "flathub" in output
+
+
+def test_lpm_list_flatpak_only_does_not_access_native_db(capsys):
+    with patch.object(app, "db", side_effect=AssertionError("native DB accessed")), \
+         patch.object(flatpak_cli, "list_installed_flatpaks", return_value=[
+             ("org.mozilla.firefox", "140.0", "x86_64", "flathub", "system")
+         ]):
+        args = app.build_parser().parse_args(["list", "--flatpak"])
+        args.func(args)
+    output = capsys.readouterr().out
+    assert "Flatpak applications: 1 total" in output
+    assert "Installed native packages" not in output
+
+
+def test_lpm_list_native_only_does_not_query_flatpak(capsys):
+    native = SimpleNamespace(execute=lambda *_: [], close=lambda: None)
+    with patch.object(app, "db", return_value=native), \
+         patch.object(flatpak_cli, "list_installed_flatpaks",
+                      side_effect=AssertionError("Flatpak called")):
+        args = app.build_parser().parse_args(["list", "--native"])
+        args.func(args)
+    assert "No native packages installed." in capsys.readouterr().out
+
+
+def test_lpm_list_flatpak_only_reports_missing_flatpak():
+    with patch.object(app, "db", side_effect=AssertionError("native DB accessed")), \
+         patch.object(flatpak_cli, "list_installed_flatpaks", return_value=None):
+        args = app.build_parser().parse_args(["list", "--flatpak"])
+        with pytest.raises(SystemExit, match="Flatpak is not installed"):
+            args.func(args)
+
+
+def test_lpm_list_disallows_conflicting_filters():
+    with pytest.raises(SystemExit):
+        app.build_parser().parse_args(["list", "--native", "--flatpak"])
