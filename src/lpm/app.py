@@ -8357,7 +8357,10 @@ def build_parser()->argparse.ArgumentParser:
 
     sp=sub.add_parser("clean", help="Remove cached blobs"); sp.set_defaults(func=cmd_clean_cache)
 
-    sp=sub.add_parser("search", help="Search packages"); sp.add_argument("patterns", nargs="*"); sp.set_defaults(func=cmd_search)
+    sp=sub.add_parser("search", help="Search native packages or Flathub")
+    sp.add_argument("--flatpak", action="store_true", help="search Flathub instead of native packages")
+    sp.add_argument("patterns", nargs="*")
+    sp.set_defaults(func=cmd_search)
     sp=sub.add_parser("info", help="Show package info"); sp.add_argument("names", nargs="+"); sp.set_defaults(func=cmd_info)
 
     sp=sub.add_parser("install", help="Install repository packages or signed .lpminstall descriptors")
@@ -8392,7 +8395,8 @@ def build_parser()->argparse.ArgumentParser:
     )
     sp.set_defaults(func=cmd_install, allow_fallback=None)
 
-    sp=sub.add_parser("remove", help="Remove packages")
+    sp=sub.add_parser("remove", help="Remove native packages or explicit flatpak: IDs")
+    add_assume_yes_flag(sp)
     sp.add_argument("names", nargs="+")
     sp.add_argument("--root")
     sp.add_argument("--dry-run", action="store_true")
@@ -8434,6 +8438,16 @@ def build_parser()->argparse.ArgumentParser:
 
     add_upgrade_subparser("upgrade", "Upgrade packages (targets or all)")
     add_upgrade_subparser("upgradepkg", "Alias for upgrade; upgrade packages (targets or all)")
+
+    sp = sub.add_parser("update", help="Update Flatpak apps (--flatpak); use upgrade for native packages")
+    sp.add_argument("--flatpak", action="store_true", required=True,
+                    help="explicitly update Flatpak apps and runtimes")
+    sp.add_argument("-y", "--yes", dest="assume_yes", action="store_true")
+    scope = sp.add_mutually_exclusive_group()
+    scope.add_argument("--user", dest="flatpak_scope", action="store_const", const="user")
+    scope.add_argument("--system", dest="flatpak_scope", action="store_const", const="system")
+    sp.set_defaults(flatpak_scope="system")
+    sp.add_argument("apps", nargs="*", help="optional Flatpak application IDs")
 
     sp = sub.add_parser("list", help="List native packages and Flatpak applications")
     display = sp.add_mutually_exclusive_group()
@@ -8609,6 +8623,52 @@ def build_parser()->argparse.ArgumentParser:
 
     return p
 
+def _dispatch_flatpak_alias(args, parser):
+    """Route explicitly chosen Flatpak operations before native state/root setup.
+
+    None means this is a native LPM operation. Mixed native/Flatpak requests
+    are rejected to avoid partial cross-store transactions.
+    """
+    from .flatpak_cli import cmd_flatpak
+
+    if args.cmd in ("install", "remove"):
+        names = args.names
+        flatpak_names = [name.startswith("flatpak:") for name in names]
+        if not any(flatpak_names):
+            return None
+        if not all(flatpak_names):
+            parser.error("Do not mix native and Flatpak packages in one transaction")
+        if (getattr(args, "root", None) or getattr(args, "dry_run", False) or
+                getattr(args, "force", False) or getattr(args, "no_verify", False) or
+                getattr(args, "no_official_binaries", False) or
+                getattr(args, "no_delta", False) or
+                getattr(args, "allow_fallback", None) is not None):
+            parser.error("Native transaction options cannot be used with Flatpak refs")
+        return cmd_flatpak(argparse.Namespace(
+            flatpak_action=args.cmd,
+            flatpak_scope="system",
+            yes=getattr(args, "assume_yes", False),
+            apps=[name[len("flatpak:"):] for name in names],
+        ))
+
+    if args.cmd == "search" and getattr(args, "flatpak", False):
+        if not args.patterns:
+            parser.error("Flatpak search needs at least one search term")
+        return cmd_flatpak(argparse.Namespace(
+            flatpak_action="search", terms=args.patterns,
+        ))
+
+    if args.cmd == "update":
+        return cmd_flatpak(argparse.Namespace(
+            flatpak_action="update",
+            flatpak_scope=args.flatpak_scope,
+            yes=args.assume_yes,
+            apps=args.apps,
+        ))
+
+    return None
+
+
 def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments and arguments[0] == "kmake":
@@ -8624,6 +8684,9 @@ def main(argv=None):
         return 0
     if cmd is None:
         parser.error("a subcommand is required")
+    flatpak_result = _dispatch_flatpak_alias(args, parser)
+    if flatpak_result is not None:
+        return flatpak_result
     # Flatpak-only inventory does not require a configured native LPM database.
     if cmd == "list" and getattr(args, "flatpak_only", False):
         return args.func(args)
