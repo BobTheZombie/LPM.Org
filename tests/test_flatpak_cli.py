@@ -188,3 +188,74 @@ def test_lpm_list_flatpak_only_reports_missing_flatpak():
 def test_lpm_list_disallows_conflicting_filters():
     with pytest.raises(SystemExit):
         app.build_parser().parse_args(["list", "--native", "--flatpak"])
+
+
+
+def test_native_style_flatpak_install_routed_before_native_state():
+    with patch.object(app, "_resolve_lpm_attr",
+                      side_effect=AssertionError("native state initialized")), \
+         patch.object(flatpak_cli.shutil, "which", return_value="/usr/bin/flatpak"), \
+         patch.object(flatpak_cli.subprocess, "run",
+                      return_value=SimpleNamespace(returncode=0)) as run:
+        assert app.main(["install", "--yes", "flatpak:org.mozilla.firefox"]) == 0
+    run.assert_called_once_with(
+        ["/usr/bin/flatpak", "install", "--system", "--assumeyes",
+         "flathub", "org.mozilla.firefox"],
+        check=False,
+    )
+
+
+def test_native_style_flatpak_remove_is_not_native_removal():
+    with patch.object(app, "_resolve_lpm_attr",
+                      side_effect=AssertionError("native state initialized")), \
+         patch.object(flatpak_cli.shutil, "which", return_value="/usr/bin/flatpak"), \
+         patch.object(flatpak_cli.subprocess, "run",
+                      return_value=SimpleNamespace(returncode=0)) as run:
+        assert app.main(["remove", "--yes", "flatpak:org.kde.krita"]) == 0
+    run.assert_called_once_with(
+        ["/usr/bin/flatpak", "uninstall", "--system", "--assumeyes", "org.kde.krita"],
+        check=False,
+    )
+
+
+def test_native_style_flatpak_search_routes_to_flatpak():
+    with patch.object(app, "_resolve_lpm_attr",
+                      side_effect=AssertionError("native state initialized")), \
+         patch.object(flatpak_cli.shutil, "which", return_value="/usr/bin/flatpak"), \
+         patch.object(flatpak_cli.subprocess, "run",
+                      return_value=SimpleNamespace(returncode=0)) as run:
+        assert app.main(["search", "--flatpak", "web", "browser"]) == 0
+    run.assert_called_once_with(["/usr/bin/flatpak", "search", "web browser"], check=False)
+
+
+def test_update_flatpak_alias_supports_user_scope():
+    with patch.object(app, "_resolve_lpm_attr",
+                      side_effect=AssertionError("native state initialized")), \
+         patch.object(flatpak_cli.shutil, "which", return_value="/usr/bin/flatpak"), \
+         patch.object(flatpak_cli.subprocess, "run",
+                      return_value=SimpleNamespace(returncode=0)) as run:
+        assert app.main(["update", "--flatpak", "--user", "--yes"]) == 0
+    run.assert_called_once_with(
+        ["/usr/bin/flatpak", "update", "--user", "--assumeyes"],
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("args", [
+    ["install", "nano", "flatpak:org.mozilla.firefox"],
+    ["remove", "nano", "flatpak:org.mozilla.firefox"],
+    ["install", "flatpak:org.mozilla.firefox", "--root", "/mnt"],
+    ["remove", "flatpak:org.mozilla.firefox", "--dry-run"],
+    ["update"],
+    ["search", "--flatpak"],
+])
+def test_flatpak_alias_rejects_mixed_or_ambiguous_operations(args):
+    with pytest.raises(SystemExit):
+        app.main(args)
+
+
+def test_flatpak_only_main_skips_native_first_run():
+    with patch.object(app, "_resolve_lpm_attr",
+                      side_effect=AssertionError("native state initialized")), \
+         patch.object(flatpak_cli, "list_installed_flatpaks", return_value=[]):
+        assert app.main(["list", "--flatpak"]) is None
