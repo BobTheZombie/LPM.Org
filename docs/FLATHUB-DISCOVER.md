@@ -56,6 +56,27 @@ This command family does not mutate the native LPM package database.
 To use the explicit PackageKit bridge, run `pkcon resolve flatpak:org.mozilla.firefox`.
 Discover itself uses its dedicated Flatpak backend to prevent duplicate entries.
 
+## Short native-style Flatpak commands
+
+The `flatpak:` prefix explicitly routes operations to Flatpak, not LPM's
+SAT solver or the native installed-package database:
+
+```sh
+lpm search --flatpak firefox
+lpm install flatpak:org.mozilla.firefox
+lpm remove flatpak:org.mozilla.firefox
+lpm update --flatpak
+lpm update --flatpak --user
+```
+
+The install/remove shorthand targets the system installation and accepts
+`--yes` for noninteractive confirmation. To use per-user installation,
+run `lpm flatpak install --user APP_ID` or
+`lpm flatpak remove --user APP_ID`. Mixed native + Flatpak
+install/remove transactions and native-only transaction flags such as
+`--root` are deliberately rejected. For native updates keep using
+`lpm upgrade`; the `lpm update --flatpak` shorthand only updates Flatpak.
+
 ## Verify in Discover
 
 After installing rebuilt packages and restarting Discover:
