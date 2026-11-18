@@ -6462,51 +6462,102 @@ def _format_install_time(ts: Optional[int]) -> str:
         return "unknown"
 
 
-def cmd_list_installed(_):
-    conn = db()
-    rows = list(
-        conn.execute(
-            "SELECT name,version,release,arch,install_time,explicit FROM installed ORDER BY name"
-        )
-    )
-    conn.close()
+def cmd_list_installed(args):
+    """Display native packages and Flatpak applications without merging databases."""
+    native_only = getattr(args, "native_only", False)
+    flatpak_only = getattr(args, "flatpak_only", False)
 
-    if not rows:
-        print("No packages installed.")
+    if not flatpak_only:
+        conn = db()
+        try:
+            rows = list(conn.execute(
+                "SELECT name,version,release,arch,install_time,explicit FROM installed ORDER BY name"
+            ))
+        finally:
+            conn.close()
+
+        if not rows:
+            print("No native packages installed.")
+        else:
+            table_rows = []
+            explicit_count = 0
+            for name, version, release, arch, installed_ts, explicit in rows:
+                if explicit:
+                    explicit_count += 1
+                table_rows.append((
+                    name,
+                    f"{version}-{release}",
+                    arch,
+                    _format_install_time(installed_ts),
+                    "explicit" if explicit else "dependency",
+                ))
+
+            headers = ("Name", "Version", "Arch", "Installed", "Origin")
+            widths = [
+                max(len(header), *(len(row[idx]) for row in table_rows))
+                for idx, header in enumerate(headers)
+            ]
+
+            def fmt_row(row):
+                return "  ".join(
+                    col.ljust(width) for col, width in zip(row, widths)
+                )
+
+            print(f"Installed native packages: {len(rows)} total")
+            print(fmt_row(headers))
+            print("  ".join("-" * width for width in widths))
+            for row in table_rows:
+                print(fmt_row(row))
+
+            print()
+            print(f"Explicit: {explicit_count}    Dependencies: {len(rows) - explicit_count}")
+
+    if native_only:
         return
 
-    table_rows = []
-    explicit_count = 0
-    for name, version, release, arch, installed_ts, explicit in rows:
-        if explicit:
-            explicit_count += 1
-        table_rows.append(
-            (
-                name,
-                f"{version}-{release}",
-                arch,
-                _format_install_time(installed_ts),
-                "explicit" if explicit else "dependency",
-            )
-        )
+    from .flatpak_cli import list_installed_flatpaks
+    try:
+        applications = list_installed_flatpaks()
+    except RuntimeError as exc:
+        if flatpak_only:
+            raise SystemExit(str(exc)) from exc
+        warn(f"Flatpak inventory unavailable: {exc}")
+        return
 
-    headers = ("Name", "Version", "Arch", "Installed", "Origin")
+    if applications is None:
+        if flatpak_only:
+            raise SystemExit("Flatpak is not installed. Run: lpm install flatpak flatpak-flathub")
+        return
+
+    if not flatpak_only:
+        print()
+
+    if not applications:
+        print("No Flatpak applications installed.")
+        return
+
+    flatpak_rows = [
+        (f"flatpak:{app_id}", version or "unknown", arch or "-",
+         installation or "-", origin or "-")
+        for app_id, version, arch, origin, installation in applications
+    ]
+    headers = ("Name", "Version", "Arch", "Installation", "Remote")
     widths = [
-        max(len(header), *(len(row[idx]) for row in table_rows)) for idx, header in enumerate(headers)
+        max(len(header), *(len(row[index]) for row in flatpak_rows))
+        for index, header in enumerate(headers)
     ]
 
-    def fmt_row(row):
-        return "  ".join(col.ljust(width) for col, width in zip(row, widths))
+    def fmt_flatpak(row):
+        return "  ".join(
+            value.ljust(width) for value, width in zip(row, widths)
+        )
 
-    print(f"Installed packages: {len(rows)} total")
-    print(fmt_row(headers))
-    print("  ".join("-" * w for w in widths))
-    for row in table_rows:
-        print(fmt_row(row))
+    print(f"Flatpak applications: {len(flatpak_rows)} total")
+    print(fmt_flatpak(headers))
+    print("  ".join("-" * width for width in widths))
+    for row in flatpak_rows:
+        print(fmt_flatpak(row))
 
-    deps = len(rows) - explicit_count
-    print()
-    print(f"Explicit: {explicit_count}    Dependencies: {deps}")
 
 def cmd_snapshots(a):
     if a.delete:
@@ -8384,7 +8435,13 @@ def build_parser()->argparse.ArgumentParser:
     add_upgrade_subparser("upgrade", "Upgrade packages (targets or all)")
     add_upgrade_subparser("upgradepkg", "Alias for upgrade; upgrade packages (targets or all)")
 
-    sp=sub.add_parser("list", help="List installed packages"); sp.set_defaults(func=cmd_list_installed)
+    sp = sub.add_parser("list", help="List native packages and Flatpak applications")
+    display = sp.add_mutually_exclusive_group()
+    display.add_argument("--native", dest="native_only", action="store_true",
+                         help="show only native LPM packages")
+    display.add_argument("--flatpak", dest="flatpak_only", action="store_true",
+                         help="show only Flatpak applications (all installations)")
+    sp.set_defaults(func=cmd_list_installed)
     sp=sub.add_parser("files", help="List files installed by package"); sp.add_argument("name"); sp.set_defaults(func=cmd_files)
     sp=sub.add_parser("snapshots", help="List snapshots"); sp.add_argument("--delete", type=int, nargs="*", help="snapshot IDs to delete"); sp.add_argument("--prune", action="store_true", help="prune old snapshots"); sp.set_defaults(func=cmd_snapshots)
     sp=sub.add_parser("rollback", help="Restore from snapshot"); sp.add_argument("snapshot_id", nargs="?", type=int, help="snapshot ID (default latest)"); sp.set_defaults(func=cmd_rollback)
