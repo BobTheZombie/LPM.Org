@@ -76,6 +76,47 @@ def _validate_apps(apps) -> None:
             raise SystemExit(f"Invalid Flatpak application ID: {app!r}")
 
 
+
+def list_installed_flatpaks() -> list[tuple[str, str, str, str, str]] | None:
+    """Read apps from every Flatpak installation (system and current user).
+
+    This is intentionally read-only. Installation and remote ownership remain
+    with Flatpak, and the native LPM SQLite database is never modified.
+    Returns None when the Flatpak executable is absent.
+    """
+    executable = shutil.which("flatpak")
+    if executable is None:
+        return None
+
+    try:
+        completed = subprocess.run(
+            [executable, "list", "--app",
+             "--columns=application:full,version:full,arch:full,origin:full,installation:full"],
+            check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"Could not list installed Flatpaks: {exc}") from exc
+
+    if completed.returncode:
+        detail = (completed.stderr or "").strip().splitlines()
+        message = detail[-1] if detail else f"exit status {completed.returncode}"
+        raise RuntimeError(f"Could not list installed Flatpaks: {message}")
+
+    applications = []
+    for line in completed.stdout.splitlines():
+        if not line.strip():
+            continue
+        columns = [field.strip() for field in line.split("\t")]
+        # Flatpak may print a header depending on its output mode/version.
+        if columns[0].lower() in ("application", "application id"):
+            continue
+        if len(columns) != 5 or not _APP_ID.fullmatch(columns[0]):
+            raise RuntimeError("Unexpected Flatpak list output; refusing partial inventory")
+        applications.append(tuple(columns))
+
+    return sorted(applications, key=lambda app: (app[0].lower(), app[4], app[3]))
+
 def cmd_flatpak(args) -> int:
     """Execute a constrained Flatpak command with no shell or LPM DB mutations."""
     executable = shutil.which("flatpak")
