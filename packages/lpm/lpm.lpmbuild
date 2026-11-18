@@ -3,7 +3,7 @@
 
 NAME="lpm"
 VERSION="1.0.1"
-RELEASE="3"
+RELEASE="4"
 ARCH="${ARCH:-x86_64}"
 
 SUMMARY="Linux Package Manager with SAT solving, hooks, deltas, and lpmbuild support"

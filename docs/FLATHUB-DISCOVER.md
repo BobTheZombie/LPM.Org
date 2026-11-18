@@ -21,6 +21,20 @@ idempotent and retains existing remotes.
 
 ## LPM command-line frontend
 
+Installed Flatpak applications also appear in the regular native inventory command:
+
+```sh
+lpm list                   # Native LPM packages + all visible Flatpak apps
+lpm list --native          # Native LPM SQLite inventory only
+lpm list --flatpak         # Flatpak apps only (current user + system installs)
+```
+
+Flatpak rows have a `flatpak:` prefix and show their installation
+(`user`, `system`, or a named installation) and origin remote. The combined
+listing is read-only and does not insert Flatpaks into LPM's SQLite database.
+Use `lpm list` as the desktop user to include user-installed Flatpaks;
+running it with `sudo` would instead inspect root's per-user installation.
+
 ```sh
 lpm flatpak remotes
 lpm flatpak search firefox
@@ -38,6 +52,30 @@ Add `--user` after an action to use a per-user installation, for example
 or remove to skip normal Flatpak confirmation prompts. Flatpak retains its own
 signature verification, sandbox permissions, application lifecycle and updates.
 This command family does not mutate the native LPM package database.
+
+To use the explicit PackageKit bridge, run `pkcon resolve flatpak:org.mozilla.firefox`.
+Discover itself uses its dedicated Flatpak backend to prevent duplicate entries.
+
+## Short native-style Flatpak commands
+
+The `flatpak:` prefix explicitly routes operations to Flatpak, not LPM's
+SAT solver or the native installed-package database:
+
+```sh
+lpm search --flatpak firefox
+lpm install flatpak:org.mozilla.firefox
+lpm remove flatpak:org.mozilla.firefox
+lpm update --flatpak
+lpm update --flatpak --user
+```
+
+The install/remove shorthand targets the system installation and accepts
+`--yes` for noninteractive confirmation. To use per-user installation,
+run `lpm flatpak install --user APP_ID` or
+`lpm flatpak remove --user APP_ID`. Mixed native + Flatpak
+install/remove transactions and native-only transaction flags such as
+`--root` are deliberately rejected. For native updates keep using
+`lpm upgrade`; the `lpm update --flatpak` shorthand only updates Flatpak.
 
 ## Verify in Discover
 
