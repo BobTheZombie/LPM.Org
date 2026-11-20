@@ -1,0 +1,28 @@
+name: Bash prompt and sysconfig regression
+
+on:
+  push:
+    paths:
+      - "src/lpm/sysconfig.py"
+      - "tests/test_sysconfig_helper.py"
+      - ".github/workflows/bash-prompt-regression.yml"
+  pull_request:
+    paths:
+      - "src/lpm/sysconfig.py"
+      - "tests/test_sysconfig_helper.py"
+      - ".github/workflows/bash-prompt-regression.yml"
+
+jobs:
+  bash-prompt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test runner
+        run: python -m pip install pytest
+      - name: Verify Bash prompt templates and legacy recovery
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: python -m pytest -q tests/test_sysconfig_helper.py

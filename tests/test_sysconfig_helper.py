@@ -104,3 +104,52 @@ def test_generate_locales_reports_success(monkeypatch, tmp_path: Path) -> None:
     assert result.action == "created"
     assert result.message == "locale archive generated"
 
+
+
+
+def test_generated_bashrc_uses_literal_single_backslashes(tmp_path: Path) -> None:
+    """Prevent escaped PS1 syntax from appearing literally in Konsole."""
+    apply_system_configuration(tmp_path, _locale_generator=_stub_locale_generator)
+    skel = (tmp_path / "etc/skel/.bashrc").read_text(encoding="utf-8")
+    system = (tmp_path / "etc/bash.bashrc").read_text(encoding="utf-8")
+
+    expected = r"PS1='\[\e[1;35m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '"
+    assert expected in skel
+    assert expected in system
+    assert r"PS1='\\[" not in skel
+    assert "set -o errexit" not in skel
+    assert "set -o noclobber" not in skel
+    assert "set -o pipefail" not in skel
+
+
+def test_generated_bashrc_repairs_legacy_prompt_and_preserves_custom(
+    tmp_path: Path,
+) -> None:
+    import os
+    import shutil
+    import subprocess
+
+    if not shutil.which("bash"):
+        import pytest
+        pytest.skip("bash executable unavailable")
+
+    apply_system_configuration(tmp_path, _locale_generator=_stub_locale_generator)
+    bashrc = tmp_path / "etc/bash.bashrc"
+    script = r'''
+        PS1="\\\\[\\\\e[1;35m\\\\]\\\\u@\\\\h"
+        source "$1"
+        [[ "$PS1" == "\[\e[1;35m\]"* ]] || exit 21
+        [[ "$PS1" != *"\\\\["* ]] || exit 22
+        PS1="user custom > "
+        __lpm_repair_prompt
+        [[ "$PS1" == "user custom > " ]] || exit 23
+    '''
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-ic", script, "_", str(bashrc)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "TERM": "xterm-256color"},
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
