@@ -136,10 +136,10 @@ def test_generated_bashrc_repairs_legacy_prompt_and_preserves_custom(
     apply_system_configuration(tmp_path, _locale_generator=_stub_locale_generator)
     bashrc = tmp_path / "etc/bash.bashrc"
     script = r'''
-        PS1="\\[\\e[1;35m\\]\\u@\\h"
+        PS1="\\\\[\\\\e[1;35m\\\\]\\\\u@\\\\h"
         source "$1"
         [[ "$PS1" == "\[\e[1;35m\]"* ]] || exit 21
-        [[ "$PS1" != *"\\["* ]] || exit 22
+        [[ "$PS1" != *"\\\\["* ]] || exit 22
         PS1="user custom > "
         __lpm_repair_prompt
         [[ "$PS1" == "user custom > " ]] || exit 23
