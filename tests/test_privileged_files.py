@@ -229,9 +229,15 @@ def test_root_install_signed_dbus_helper_restores_target_group(tmp_path, monkeyp
     (root / "etc/passwd").write_text("root:x:0:0:root:/root:/bin/sh\ndbus:x:81:81::/var/lib/dbus:/usr/bin/nologin\n")
     lpm.installpkg(package, root=root, verify=True, force=True)
     final = root / "usr/libexec/dbus-daemon-launch-helper"
-    assert final.read_bytes() == binary.read_bytes()
-    assert stat.S_IMODE(final.stat().st_mode) == 0o4750
-    assert (final.stat().st_uid, final.stat().st_gid) == (0, 81)
+    from lpm.privileges import privileged_section
+    # 04750 intentionally prevents unprivileged reads of the installed
+    # root-owned helper. Verify its contents under LPM's privilege guard.
+    with privileged_section():
+        installed_bytes = final.read_bytes()
+        final_stat = final.stat()
+    assert installed_bytes == binary.read_bytes()
+    assert stat.S_IMODE(final_stat.st_mode) == 0o4750
+    assert (final_stat.st_uid, final_stat.st_gid) == (0, 81)
 
 
 def test_allowlisted_fuse3_manifest_is_root_owned_and_exact_mode(tmp_path):
