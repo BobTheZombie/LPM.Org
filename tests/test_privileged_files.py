@@ -181,7 +181,12 @@ def test_root_install_signed_dbus_helper_restores_target_group(tmp_path, monkeyp
     import subprocess
     from lpm import app as lpm
 
-    if os.geteuid() != 0:
+    from lpm.privileges import privilege_info, privileges_enabled
+    # Importing lpm.app deliberately lowers the effective UID under sudo.
+    # The root installer regains privileges inside its protected operations.
+    if os.geteuid() != 0 and not (
+        privileges_enabled() and privilege_info().privileged_uid == 0
+    ):
         pytest.skip("requires an isolated root-owned installation directory")
 
     monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "lpm-dbus-state"))
@@ -344,7 +349,12 @@ def test_root_install_signed_fuse3_restores_setuid(tmp_path, monkeypatch):
     import subprocess
     from lpm import app as lpm
 
-    if os.geteuid() != 0:
+    from lpm.privileges import privilege_info, privileges_enabled
+    # Importing lpm.app deliberately lowers the effective UID under sudo.
+    # The root installer regains privileges inside its protected operations.
+    if os.geteuid() != 0 and not (
+        privileges_enabled() and privilege_info().privileged_uid == 0
+    ):
         pytest.skip("requires an isolated root-owned installation directory")
 
     stage, binary, manifest = make_stage(tmp_path)
