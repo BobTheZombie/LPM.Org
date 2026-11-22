@@ -16,6 +16,11 @@ from typing import Any, Iterable, MutableMapping
 # fusermount3 is the setuid helper for unprivileged FUSE mounts.
 PRIVILEGED_FILES = {
     ("fuse3", "/usr/bin/fusermount3"): 0o4755,
+    ("dbus", "/usr/libexec/dbus-daemon-launch-helper"): 0o4750,
+}
+# Group membership is resolved in the *target root*, never from the build host.
+PRIVILEGED_GROUPS = {
+    ("dbus", "/usr/libexec/dbus-daemon-launch-helper"): "dbus",
 }
 _PRIVILEGE_BITS = stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX
 _SHA256 = re.compile(r"[0-9a-fA-F]{64}\Z")
@@ -36,8 +41,8 @@ def annotate_privileged_files(
     """Record setuid metadata only for the allowlisted staged binary.
 
     A missing setuid bit is a packaging error for an allowlisted file.
-    Ownership is recorded as root:root for the final installation; the
-    staging tree itself can be owned by an unprivileged builder.
+    The installer sets root ownership and resolves any named target group.
+    The staging tree itself can be owned by an unprivileged builder.
     """
     stage = Path(stagedir)
     seen: set[str] = set()
@@ -68,7 +73,7 @@ def annotate_privileged_files(
             )
         if not _SHA256.fullmatch(str(entry.get("sha256", ""))):
             raise ValueError(f"{raw_path}: missing SHA-256 file digest")
-        entry.update(mode=expected, uid=0, gid=0)
+        entry.update(mode=expected, uid=0, gid=PRIVILEGED_GROUPS.get((package_name, raw_path), 0))
 
     # Don't silently produce a broken FUSE helper when it is present in the
     # manifest but cannot be staged with the required mode.
@@ -76,6 +81,39 @@ def annotate_privileged_files(
         if name == package_name and any(e.get("path") == path for e in manifest):
             if path not in seen:
                 raise ValueError(f"{name}: missing privileged mode for {path}")
+
+
+
+def resolve_privileged_gid(root: Path, package_name: str, raw_path: str, gid: object) -> int:
+    """Resolve permitted group ownership against target root /etc/group."""
+    expected = PRIVILEGED_GROUPS.get((package_name, raw_path))
+    if expected is None:
+        if type(gid) is not int or gid != 0:
+            raise ValueError(f"{raw_path}: privileged group must be root")
+        return 0
+    if gid != expected:
+        raise ValueError(f"{raw_path}: privileged group must be {expected}")
+    group_file = Path(root) / "etc/group"
+    try:
+        lines = group_file.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ValueError(f"{raw_path}: missing target group database {group_file}") from exc
+    found = []
+    for line in lines:
+        fields = line.split(":")
+        if len(fields) >= 4 and fields[0] == expected:
+            if not fields[2].isascii() or not fields[2].isdecimal():
+                raise ValueError(f"{raw_path}: invalid {expected} group ID")
+            group_id = int(fields[2])
+            if not 0 < group_id < 2**32:
+                raise ValueError(f"{raw_path}: invalid {expected} group ID")
+            found.append(group_id)
+    if len(found) != 1:
+        raise ValueError(
+            f"{raw_path}: expected one {expected} entry in {group_file}; "
+            "create the system group before installing"
+        )
+    return found[0]
 
 
 def validate_privileged_files(
@@ -87,13 +125,17 @@ def validate_privileged_files(
         raw_path = entry.get("path")
         raw_mode = entry.get("mode")
         if raw_mode is None:
-            # An allowlisted file that lost the declaration must not be
-            # silently installed without the expected security metadata.
+            # Do not allow signed or unsigned manifests to smuggle ownership
+            # changes without an allowlisted privileged mode.
+            if "uid" in entry or "gid" in entry:
+                raise ValueError(f"{raw_path}: ownership metadata without privileged mode")
             continue
         if not isinstance(raw_mode, int) or isinstance(raw_mode, bool):
             raise ValueError(f"{raw_path}: invalid manifest mode")
         mode = stat.S_IMODE(raw_mode)
         if not mode & _PRIVILEGE_BITS:
+            if "uid" in entry or "gid" in entry:
+                raise ValueError(f"{raw_path}: ownership metadata without privileged mode")
             continue
         relative = _safe_relative_path(raw_path)
         del relative  # path validation only; no filesystem access here
@@ -107,7 +149,8 @@ def validate_privileged_files(
         seen.add(raw_path)
         if entry.get("link") is not None:
             raise ValueError(f"{raw_path}: privileged symlink rejected")
-        if entry.get("uid") != 0 or entry.get("gid") != 0:
-            raise ValueError(f"{raw_path}: privileged file must be root:root")
+        expected_gid = PRIVILEGED_GROUPS.get((package_name, raw_path), 0)
+        if entry.get("uid") != 0 or entry.get("gid") != expected_gid:
+            raise ValueError(f"{raw_path}: privileged file must be root:{expected_gid}")
         if not _SHA256.fullmatch(str(entry.get("sha256", ""))):
             raise ValueError(f"{raw_path}: privileged file lacks SHA-256")

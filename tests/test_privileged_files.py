@@ -31,6 +31,81 @@ def make_stage(tmp_path: Path, *, name: str = "fusermount3", mode: int = 0o4755)
     return root, binary, [entry]
 
 
+
+def make_dbus_stage(tmp_path: Path, *, mode: int = 0o4750):
+    stage = tmp_path / "dbus-stage"
+    binary = stage / "usr/libexec/dbus-daemon-launch-helper"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"test binary; never executed\n")
+    binary.chmod(mode)
+    return stage, binary, [{
+        "path": "/usr/libexec/dbus-daemon-launch-helper",
+        "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "size": binary.stat().st_size,
+    }]
+
+
+def test_signed_dbus_helper_exact_mode_and_target_group(tmp_path):
+    from lpm.privileged_files import resolve_privileged_gid
+    stage, binary, manifest = make_dbus_stage(tmp_path)
+    annotate_privileged_files(stage, "dbus", manifest)
+    assert (manifest[0]["mode"], manifest[0]["uid"], manifest[0]["gid"]) == (0o4750, 0, "dbus")
+    validate_privileged_files("dbus", manifest, verified=True)
+    target = tmp_path / "target"
+    (target / "etc").mkdir(parents=True)
+    (target / "etc/group").write_text("root:x:0:\ndbus:x:81:\n")
+    assert resolve_privileged_gid(target, "dbus", manifest[0]["path"], "dbus") == 81
+
+
+def test_dbus_helper_rejects_unsigned_package(tmp_path):
+    stage, binary, manifest = make_dbus_stage(tmp_path)
+    annotate_privileged_files(stage, "dbus", manifest)
+    with pytest.raises(ValueError, match="signed verification"):
+        validate_privileged_files("dbus", manifest, verified=False)
+
+
+@pytest.mark.parametrize("mode", [0o4755, 0o2750, 0o6750])
+def test_dbus_helper_rejects_wrong_privileged_mode(tmp_path, mode):
+    stage, binary, manifest = make_dbus_stage(tmp_path, mode=mode)
+    with pytest.raises(ValueError, match="unsupported privileged"):
+        annotate_privileged_files(stage, "dbus", manifest)
+
+
+@pytest.mark.parametrize("gid", [0, 1, "root", "wheel"])
+def test_dbus_helper_rejects_wrong_group(tmp_path, gid):
+    stage, binary, manifest = make_dbus_stage(tmp_path)
+    annotate_privileged_files(stage, "dbus", manifest)
+    manifest[0]["gid"] = gid
+    with pytest.raises(ValueError, match="root:dbus"):
+        validate_privileged_files("dbus", manifest, verified=True)
+
+
+def test_other_package_cannot_stage_privileged_dbus_helper(tmp_path):
+    stage, binary, manifest = make_dbus_stage(tmp_path)
+    with pytest.raises(ValueError, match="unsupported privileged"):
+        annotate_privileged_files(stage, "other-pkg", manifest)
+
+
+def test_dbus_helper_requires_target_group(tmp_path):
+    from lpm.privileged_files import resolve_privileged_gid
+    stage, binary, manifest = make_dbus_stage(tmp_path)
+    annotate_privileged_files(stage, "dbus", manifest)
+    target = tmp_path / "target"
+    (target / "etc").mkdir(parents=True)
+    (target / "etc/group").write_text("root:x:0:\n")
+    with pytest.raises(ValueError, match="create the system group"):
+        resolve_privileged_gid(target, "dbus", manifest[0]["path"], "dbus")
+
+
+@pytest.mark.parametrize("injection", [{"uid": 0}, {"gid": 0}, {"mode": 0o755, "uid": 0, "gid": 0}])
+def test_unprivileged_file_cannot_smuggle_ownership(tmp_path, injection):
+    stage, binary, manifest = make_stage(tmp_path, mode=0o755, name="normal")
+    annotate_privileged_files(stage, "ordinary", manifest)
+    manifest[0].update(injection)
+    with pytest.raises(ValueError, match="ownership metadata"):
+        validate_privileged_files("ordinary", manifest, verified=False)
+
+
 def test_allowlisted_fuse3_manifest_is_root_owned_and_exact_mode(tmp_path):
     stage, binary, manifest = make_stage(tmp_path)
     annotate_privileged_files(stage, "fuse3", manifest)

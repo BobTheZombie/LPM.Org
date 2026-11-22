@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from .parallel import ordered_map
 from .accelerators import configure as configure_accelerators
 from .build_state import resumable_build, BuildStateError
-from .privileged_files import annotate_privileged_files, validate_privileged_files
+from .privileged_files import annotate_privileged_files, resolve_privileged_gid, validate_privileged_files
 from .python_deps import aliases as python_aliases, satisfied as python_dependency_satisfied
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -7612,8 +7612,8 @@ def installpkg(
                 die(f"Incompatible architecture: {meta.arch} (host: {ARCH})")
 
             # Never accept unsigned or unexpected privileged modes even when
-            # --no-verify was requested. Only trusted signed fuse3 can restore
-            # root-owned setuid permissions for /usr/bin/fusermount3.
+            # --no-verify was requested. Only signed allowlisted helpers
+            # may restore privileged ownership and setuid permissions.
             try:
                 validate_privileged_files(meta.name, mani, verified=verify)
             except ValueError as exc:
@@ -7859,7 +7859,10 @@ def installpkg(
                                         f"cannot chown symlink manifest payload {e['path']}"
                                     )
                                 try:
-                                    os.chown(dest, int(e["uid"]), int(e["gid"]))
+                                    gid = resolve_privileged_gid(
+                                        root, meta.name, e["path"], e["gid"]
+                                    )
+                                    os.chown(dest, int(e["uid"]), gid)
                                 except PermissionError as exc:
                                     raise RuntimeError(
                                         f"cannot set ownership for manifest payload {e['path']}"
