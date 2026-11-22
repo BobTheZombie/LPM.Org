@@ -36,12 +36,14 @@ def make_dbus_stage(tmp_path: Path, *, mode: int = 0o4750):
     stage = tmp_path / "dbus-stage"
     binary = stage / "usr/libexec/dbus-daemon-launch-helper"
     binary.parent.mkdir(parents=True)
-    binary.write_bytes(b"test binary; never executed\n")
+    payload = b"test binary; never executed\n"
+    binary.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
     binary.chmod(mode)
     return stage, binary, [{
         "path": "/usr/libexec/dbus-daemon-launch-helper",
-        "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
-        "size": binary.stat().st_size,
+        "sha256": digest,
+        "size": len(payload),
     }]
 
 
