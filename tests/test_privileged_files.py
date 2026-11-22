@@ -79,9 +79,9 @@ def test_dbus_committed_gid_verification_uses_target_root(tmp_path):
     target = tmp_path / "target"
     (target / "etc").mkdir(parents=True)
     (target / "etc/passwd").write_text(
-        "root:x:0:0::/root:/bin/sh\\ndbus:x:81:101::/var/lib/dbus:/usr/bin/nologin\\n"
+        "root:x:0:0::/root:/bin/sh\ndbus:x:81:101::/var/lib/dbus:/usr/bin/nologin\n"
     )
-    (target / "etc/group").write_text("root:x:0:\\nmessagebus:x:101:\\n")
+    (target / "etc/group").write_text("root:x:0:\nmessagebus:x:101:\n")
     path = "/usr/libexec/dbus-daemon-launch-helper"
     assert resolve_privileged_gid(target, "dbus", path, "dbus") == 101
     assert resolve_privileged_gid(target, "fuse3", "/usr/bin/fusermount3", 0) == 0
