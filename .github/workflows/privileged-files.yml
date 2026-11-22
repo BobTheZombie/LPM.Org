@@ -38,6 +38,7 @@ jobs:
             PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
             LPM_STATE_DIR="$RUNNER_TEMP/lpm-fuse-root-state" \
             LPM_LOCK_PATH="$RUNNER_TEMP/lpm-fuse-root-state/lock" \
-            "$(command -v python)" -m pytest -q \
+            "$(command -v python)" -c 'import os; assert os.geteuid() == 0, "root integration requires effective root"' \
+            && "$(command -v python)" -m pytest -q -rs \
             tests/test_privileged_files.py::test_root_install_signed_fuse3_restores_setuid \
             tests/test_privileged_files.py::test_root_install_signed_dbus_helper_restores_target_group

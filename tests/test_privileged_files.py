@@ -65,6 +65,37 @@ def test_dbus_upstream_mode_not_allowed_for_unrelated_package(tmp_path):
     assert stat.S_IMODE(binary.lstat().st_mode) == 0o4110
 
 
+
+def test_dbus_committed_gid_verification_uses_target_root(tmp_path):
+    """Guard against converting a signed symbolic group to int('dbus').
+
+    The code path must resolve group IDs against the target root both before
+    and after maintainer scripts, not the host's group database.
+    """
+    import inspect
+    from lpm import app as lpm
+    from lpm.privileged_files import resolve_privileged_gid
+
+    target = tmp_path / "target"
+    (target / "etc").mkdir(parents=True)
+    (target / "etc/passwd").write_text(
+        "root:x:0:0::/root:/bin/sh\\ndbus:x:81:101::/var/lib/dbus:/usr/bin/nologin\\n"
+    )
+    (target / "etc/group").write_text("root:x:0:\\nmessagebus:x:101:\\n")
+    path = "/usr/libexec/dbus-daemon-launch-helper"
+    assert resolve_privileged_gid(target, "dbus", path, "dbus") == 101
+    assert resolve_privileged_gid(target, "fuse3", "/usr/bin/fusermount3", 0) == 0
+
+    # This internal transaction verifier is nested inside installpkg.
+    # Ensure both call sites pass package identity, and symbolic IDs aren't
+    # parsed using int() during post-install verification.
+    source = inspect.getsource(lpm.installpkg)
+    assert 'int(entry["gid"])' not in source
+    assert "_verify_committed_payload(mani, meta.name)" in source
+    assert "mani, meta.name, verify_content=False" in source
+    assert 'root, package_name, str(raw_path), entry["gid"]' in source
+
+
 def test_signed_dbus_helper_exact_mode_and_target_group(tmp_path):
     from lpm.privileged_files import resolve_privileged_gid
     stage, binary, manifest = make_dbus_stage(tmp_path)

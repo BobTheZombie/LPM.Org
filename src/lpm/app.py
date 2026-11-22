@@ -7432,8 +7432,9 @@ def installpkg(
                 return
 
         def _verify_committed_payload(
-            manifest: Iterable[dict], *, verify_content: bool = True,
-            allow_rewritten_absolute_links: bool = False
+            manifest: Iterable[dict], package_name: str, *,
+            verify_content: bool = True,
+            allow_rewritten_absolute_links: bool = False,
         ) -> None:
             """Prove every manifest payload exists at its final destination."""
             failures: List[str] = []
@@ -7510,8 +7511,19 @@ def installpkg(
                     failures.append(f"{raw_path}: mode mismatch")
                 if "uid" in entry and dest_stat.st_uid != int(entry["uid"]):
                     failures.append(f"{raw_path}: uid mismatch")
-                if "gid" in entry and dest_stat.st_gid != int(entry["gid"]):
-                    failures.append(f"{raw_path}: gid mismatch")
+                if "gid" in entry:
+                    # Signed privileged manifests may use an allowlisted
+                    # symbolic primary user (for example "dbus"), not a
+                    # numeric GID. The installer already resolves it in the
+                    # target root before chown; verification must do the same.
+                    expected_gid = resolve_privileged_gid(
+                        root, package_name, str(raw_path), entry["gid"]
+                    )
+                    if dest_stat.st_gid != expected_gid:
+                        failures.append(
+                            f"{raw_path}: gid mismatch "
+                            f"(expected {expected_gid}, found {dest_stat.st_gid})"
+                        )
 
             if failures:
                 preview = "; ".join(failures[:8])
@@ -7926,7 +7938,7 @@ def installpkg(
 
                         # Verify the archive payload before allowing its
                         # maintainer script to make intentional adjustments.
-                        _verify_committed_payload(mani)
+                        _verify_committed_payload(mani, meta.name)
 
                         if install_script_rel is not None and installed_script is not None and installed_script.exists():
                             install_action = "upgrade" if previous_version is not None else "install"
@@ -7972,7 +7984,7 @@ def installpkg(
                         # Never publish package state to SQLite until every
                         # promised payload has been re-read from its final path.
                         _verify_committed_payload(
-                            mani, verify_content=False,
+                            mani, meta.name, verify_content=False,
                             allow_rewritten_absolute_links=True,
                         )
                         mani = _refresh_manifest_state(mani)
