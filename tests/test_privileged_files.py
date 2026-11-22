@@ -138,7 +138,7 @@ def test_root_install_signed_dbus_helper_restores_target_group(tmp_path, monkeyp
     public = trust / "test.pem"
     subprocess.run([
         "openssl", "genpkey", "-algorithm", "RSA",
-        "-pkeyopt", "rsa_genkey_bits:2048", "-out", str(private)
+        "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(private)
     ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.run([
         "openssl", "pkey", "-in", str(private),
