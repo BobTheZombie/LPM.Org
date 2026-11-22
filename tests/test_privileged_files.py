@@ -106,6 +106,60 @@ def test_unprivileged_file_cannot_smuggle_ownership(tmp_path, injection):
         validate_privileged_files("ordinary", manifest, verified=False)
 
 
+
+def test_root_install_signed_dbus_helper_restores_target_group(tmp_path, monkeypatch):
+    """Exercise signed metadata through the real installer and safe tar filter."""
+    import dataclasses
+    import os
+    import subprocess
+    from lpm import app as lpm
+
+    if os.geteuid() != 0:
+        pytest.skip("requires an isolated root-owned installation directory")
+
+    monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "lpm-dbus-state"))
+    stage, binary, manifest = make_dbus_stage(tmp_path)
+    annotate_privileged_files(stage, "dbus", manifest)
+    meta = lpm.PkgMeta(name="dbus", version="1.16.2", release="4", arch="any")
+    (stage / ".lpm-meta.json").write_text(json.dumps(dataclasses.asdict(meta)))
+    (stage / ".lpm-manifest.json").write_text(json.dumps(manifest))
+
+    package = tmp_path / "dbus-signed.zst"
+    with package.open("wb") as target:
+        with lpm.zstd.ZstdCompressor().stream_writer(target, closefd=False) as compressed:
+            with tarfile.open(fileobj=compressed, mode="w|") as tf:
+                for file in stage.rglob("*"):
+                    if file.is_file():
+                        tf.add(file, arcname=file.relative_to(stage).as_posix())
+
+    trust = tmp_path / "keys"
+    trust.mkdir()
+    private = tmp_path / "private.pem"
+    public = trust / "test.pem"
+    subprocess.run([
+        "openssl", "genpkey", "-algorithm", "RSA",
+        "-pkeyopt", "rsa_genkey_bits:2048", "-out", str(private)
+    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run([
+        "openssl", "pkey", "-in", str(private),
+        "-pubout", "-out", str(public)
+    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run([
+        "openssl", "dgst", "-sha256", "-sign", str(private),
+        "-out", str(package) + ".sig", str(package)
+    ], check=True)
+    monkeypatch.setattr(lpm, "TRUST_DIR", trust)
+
+    root = tmp_path / "target"
+    (root / "etc").mkdir(parents=True)
+    (root / "etc/group").write_text("root:x:0:\ndbus:x:81:\n")
+    lpm.installpkg(package, root=root, verify=True, force=True)
+    final = root / "usr/libexec/dbus-daemon-launch-helper"
+    assert final.read_bytes() == binary.read_bytes()
+    assert stat.S_IMODE(final.stat().st_mode) == 0o4750
+    assert (final.stat().st_uid, final.stat().st_gid) == (0, 81)
+
+
 def test_allowlisted_fuse3_manifest_is_root_owned_and_exact_mode(tmp_path):
     stage, binary, manifest = make_stage(tmp_path)
     annotate_privileged_files(stage, "fuse3", manifest)
