@@ -93,7 +93,8 @@ def test_dbus_committed_gid_verification_uses_target_root(tmp_path):
     assert 'int(entry["gid"])' not in source
     assert "_verify_committed_payload(mani, meta.name)" in source
     assert "mani, meta.name, verify_content=False" in source
-    assert 'root, package_name, str(raw_path), entry["gid"]' in source
+    assert 'root, package_name, str(raw_path), raw_gid' in source
+    assert 'elif type(raw_gid) is int' in source
 
 
 def test_signed_dbus_helper_exact_mode_and_target_group(tmp_path):
