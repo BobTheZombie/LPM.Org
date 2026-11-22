@@ -7516,9 +7516,19 @@ def installpkg(
                     # symbolic primary user (for example "dbus"), not a
                     # numeric GID. The installer already resolves it in the
                     # target root before chown; verification must do the same.
-                    expected_gid = resolve_privileged_gid(
-                        root, package_name, str(raw_path), entry["gid"]
-                    )
+                    raw_gid = entry["gid"]
+                    if isinstance(raw_gid, str):
+                        expected_gid = resolve_privileged_gid(
+                            root, package_name, str(raw_path), raw_gid
+                        )
+                    elif type(raw_gid) is int and 0 <= raw_gid < 2**32:
+                        # Numeric ownership for internally generated metadata
+                        # (e.g. /.lpm-install.sh) is already the on-disk GID.
+                        # Incoming package manifests cannot declare arbitrary
+                        # ownership: validate_privileged_files enforces that.
+                        expected_gid = raw_gid
+                    else:
+                        raise ValueError(f"{raw_path}: invalid GID metadata")
                     if dest_stat.st_gid != expected_gid:
                         failures.append(
                             f"{raw_path}: gid mismatch "
