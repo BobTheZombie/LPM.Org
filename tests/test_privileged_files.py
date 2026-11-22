@@ -45,6 +45,24 @@ def make_dbus_stage(tmp_path: Path, *, mode: int = 0o4750):
     }]
 
 
+def test_dbus_meson_upstream_4110_is_normalized_to_4750(tmp_path):
+    # Upstream Meson post-install sets setuid + execute-only (04110),
+    # while D-Bus documents root:dbus / 04750. Only this exact helper
+    # gets normalized; packaged mode and signed metadata remain strict.
+    stage, binary, manifest = make_dbus_stage(tmp_path, mode=0o4110)
+    annotate_privileged_files(stage, "dbus", manifest)
+    assert stat.S_IMODE(binary.lstat().st_mode) == 0o4750
+    assert (manifest[0]["mode"], manifest[0]["uid"], manifest[0]["gid"]) == (0o4750, 0, "dbus")
+    validate_privileged_files("dbus", manifest, verified=True)
+
+
+def test_dbus_upstream_mode_not_allowed_for_unrelated_package(tmp_path):
+    stage, binary, manifest = make_dbus_stage(tmp_path, mode=0o4110)
+    with pytest.raises(ValueError, match="unsupported privileged"):
+        annotate_privileged_files(stage, "other-pkg", manifest)
+    assert stat.S_IMODE(binary.lstat().st_mode) == 0o4110
+
+
 def test_signed_dbus_helper_exact_mode_and_target_group(tmp_path):
     from lpm.privileged_files import resolve_privileged_gid
     stage, binary, manifest = make_dbus_stage(tmp_path)
@@ -133,8 +151,9 @@ def test_root_install_signed_dbus_helper_restores_target_group(tmp_path, monkeyp
         pytest.skip("requires an isolated root-owned installation directory")
 
     monkeypatch.setenv("LPM_STATE_DIR", str(tmp_path / "lpm-dbus-state"))
-    stage, binary, manifest = make_dbus_stage(tmp_path)
+    stage, binary, manifest = make_dbus_stage(tmp_path, mode=0o4110)
     annotate_privileged_files(stage, "dbus", manifest)
+    assert stat.S_IMODE(binary.stat().st_mode) == 0o4750
     meta = lpm.PkgMeta(name="dbus", version="1.16.2", release="4", arch="any")
     (stage / ".lpm-meta.json").write_text(json.dumps(dataclasses.asdict(meta)))
     (stage / ".lpm-manifest.json").write_text(json.dumps(manifest))

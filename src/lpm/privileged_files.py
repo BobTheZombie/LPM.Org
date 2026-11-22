@@ -18,6 +18,13 @@ PRIVILEGED_FILES = {
     ("fuse3", "/usr/bin/fusermount3"): 0o4755,
     ("dbus", "/usr/libexec/dbus-daemon-launch-helper"): 0o4750,
 }
+# D-Bus 1.16.x's meson_post_install.py calls chmod(S_ISUID | S_IXUSR |
+# S_IXGRP), producing 04110, although D-Bus documents 04750. Normalize
+# only this precise staging mode before inspecting the final package manifest.
+# Every other unexpected privileged mode is still a packaging error.
+STAGED_PRIVILEGED_MODE_NORMALIZATIONS = {
+    ("dbus", "/usr/libexec/dbus-daemon-launch-helper"): (0o4110, 0o4750),
+}
 # Symbolic reference to the daemon account whose primary group can vary by
 # distribution (for example "dbus" or "messagebus"). Never use host NSS.
 PRIVILEGED_PRIMARY_USERS = {
@@ -59,9 +66,19 @@ def annotate_privileged_files(
         else:
             mode = 0
         expected = PRIVILEGED_FILES.get((package_name, raw_path))
+        normalization = STAGED_PRIVILEGED_MODE_NORMALIZATIONS.get((package_name, raw_path))
+        if normalization is not None and mode == normalization[0]:
+            # This build-time correction affects only the known D-Bus
+            # helper (never another package/path or a symlink).
+            if file.is_symlink() or not file.is_file():
+                raise ValueError(f"{package_name}: privileged helper must be a regular file: {raw_path}")
+            file.chmod(normalization[1])
+            mode = stat.S_IMODE(file.lstat().st_mode)
         if mode & _PRIVILEGE_BITS and mode != expected:
             raise ValueError(
-                f"{package_name}: unsupported privileged file mode at {raw_path}"
+                f"{package_name}: unsupported privileged file mode {mode:04o} at {raw_path}"
+                f" (expected {expected:04o})" if expected is not None else
+                f"{package_name}: unsupported privileged file mode {mode:04o} at {raw_path}"
             )
         if expected is None:
             continue
