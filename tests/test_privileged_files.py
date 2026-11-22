@@ -53,8 +53,22 @@ def test_signed_dbus_helper_exact_mode_and_target_group(tmp_path):
     validate_privileged_files("dbus", manifest, verified=True)
     target = tmp_path / "target"
     (target / "etc").mkdir(parents=True)
-    (target / "etc/group").write_text("root:x:0:\ndbus:x:81:\n")
+    (target / "etc/group").write_text("root:x:0:\nmessagebus:x:81:\n")
+    (target / "etc/passwd").write_text("root:x:0:0:root:/root:/bin/sh\ndbus:x:81:81::/var/lib/dbus:/usr/bin/nologin\n")
     assert resolve_privileged_gid(target, "dbus", manifest[0]["path"], "dbus") == 81
+
+
+
+def test_dbus_launch_helper_rejects_extra_primary_group_members(tmp_path):
+    from lpm.privileged_files import resolve_privileged_gid
+    stage, binary, manifest = make_dbus_stage(tmp_path)
+    annotate_privileged_files(stage, "dbus", manifest)
+    target = tmp_path / "target"
+    (target / "etc").mkdir(parents=True)
+    (target / "etc/passwd").write_text("dbus:x:81:81::/var/lib/dbus:/usr/bin/nologin\n")
+    (target / "etc/group").write_text("messagebus:x:81:alice,bob\n")
+    with pytest.raises(ValueError, match="too many members"):
+        resolve_privileged_gid(target, "dbus", manifest[0]["path"], "dbus")
 
 
 def test_dbus_helper_rejects_unsigned_package(tmp_path):
@@ -93,6 +107,7 @@ def test_dbus_helper_requires_target_group(tmp_path):
     target = tmp_path / "target"
     (target / "etc").mkdir(parents=True)
     (target / "etc/group").write_text("root:x:0:\n")
+    (target / "etc/passwd").write_text("root:x:0:0:root:/root:/bin/sh\ndbus:x:81:81::/var/lib/dbus:/usr/bin/nologin\n")
     with pytest.raises(ValueError, match="create the system group"):
         resolve_privileged_gid(target, "dbus", manifest[0]["path"], "dbus")
 
@@ -152,7 +167,8 @@ def test_root_install_signed_dbus_helper_restores_target_group(tmp_path, monkeyp
 
     root = tmp_path / "target"
     (root / "etc").mkdir(parents=True)
-    (root / "etc/group").write_text("root:x:0:\ndbus:x:81:\n")
+    (root / "etc/group").write_text("root:x:0:\nmessagebus:x:81:\n")
+    (root / "etc/passwd").write_text("root:x:0:0:root:/root:/bin/sh\ndbus:x:81:81::/var/lib/dbus:/usr/bin/nologin\n")
     lpm.installpkg(package, root=root, verify=True, force=True)
     final = root / "usr/libexec/dbus-daemon-launch-helper"
     assert final.read_bytes() == binary.read_bytes()

@@ -18,8 +18,9 @@ PRIVILEGED_FILES = {
     ("fuse3", "/usr/bin/fusermount3"): 0o4755,
     ("dbus", "/usr/libexec/dbus-daemon-launch-helper"): 0o4750,
 }
-# Group membership is resolved in the *target root*, never from the build host.
-PRIVILEGED_GROUPS = {
+# Symbolic reference to the daemon account whose primary group can vary by
+# distribution (for example "dbus" or "messagebus"). Never use host NSS.
+PRIVILEGED_PRIMARY_USERS = {
     ("dbus", "/usr/libexec/dbus-daemon-launch-helper"): "dbus",
 }
 _PRIVILEGE_BITS = stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX
@@ -73,7 +74,7 @@ def annotate_privileged_files(
             )
         if not _SHA256.fullmatch(str(entry.get("sha256", ""))):
             raise ValueError(f"{raw_path}: missing SHA-256 file digest")
-        entry.update(mode=expected, uid=0, gid=PRIVILEGED_GROUPS.get((package_name, raw_path), 0))
+        entry.update(mode=expected, uid=0, gid=PRIVILEGED_PRIMARY_USERS.get((package_name, raw_path), 0))
 
     # Don't silently produce a broken FUSE helper when it is present in the
     # manifest but cannot be staged with the required mode.
@@ -85,35 +86,65 @@ def annotate_privileged_files(
 
 
 def resolve_privileged_gid(root: Path, package_name: str, raw_path: str, gid: object) -> int:
-    """Resolve permitted group ownership against target root /etc/group."""
-    expected = PRIVILEGED_GROUPS.get((package_name, raw_path))
+    """Resolve a privileged helper's primary group inside the target root.
+
+    The manifest carries a symbolic, allowlisted service account name, never
+    a build-host numeric GID. D-Bus uses its daemon user's primary group for
+    access to dbus-daemon-launch-helper.
+    """
+    expected = PRIVILEGED_PRIMARY_USERS.get((package_name, raw_path))
     if expected is None:
         if type(gid) is not int or gid != 0:
             raise ValueError(f"{raw_path}: privileged group must be root")
         return 0
     if gid != expected:
-        raise ValueError(f"{raw_path}: privileged group must be {expected}")
+        raise ValueError(f"{raw_path}: privileged owner must use {expected} primary group")
+
+    passwd_file = Path(root) / "etc/passwd"
     group_file = Path(root) / "etc/group"
     try:
-        lines = group_file.read_text(encoding="utf-8").splitlines()
+        users = passwd_file.read_text(encoding="utf-8").splitlines()
+        groups = group_file.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        raise ValueError(f"{raw_path}: missing target group database {group_file}") from exc
-    found = []
-    for line in lines:
-        fields = line.split(":")
-        if len(fields) >= 4 and fields[0] == expected:
-            if not fields[2].isascii() or not fields[2].isdecimal():
-                raise ValueError(f"{raw_path}: invalid {expected} group ID")
-            group_id = int(fields[2])
-            if not 0 < group_id < 2**32:
-                raise ValueError(f"{raw_path}: invalid {expected} group ID")
-            found.append(group_id)
-    if len(found) != 1:
         raise ValueError(
-            f"{raw_path}: expected one {expected} entry in {group_file}; "
+            f"{raw_path}: cannot read target accounts {passwd_file} and {group_file}; "
+            f"create the {expected} service account before installing"
+        ) from exc
+
+    user_ids: list[int] = []
+    for line in users:
+        parts = line.split(":")
+        if len(parts) >= 7 and parts[0] == expected:
+            if not parts[3].isascii() or not parts[3].isdecimal():
+                raise ValueError(f"{raw_path}: invalid {expected} primary group ID")
+            primary_gid = int(parts[3])
+            if not 0 < primary_gid < 2**32:
+                raise ValueError(f"{raw_path}: invalid {expected} primary group ID")
+            user_ids.append(primary_gid)
+    if len(user_ids) != 1:
+        raise ValueError(
+            f"{raw_path}: expected one {expected} service user in {passwd_file}; "
+            "create the service account before installing"
+        )
+
+    primary_gid = user_ids[0]
+    matching_groups = []
+    for line in groups:
+        parts = line.split(":")
+        if len(parts) >= 4 and parts[2].isascii() and parts[2].isdecimal():
+            if int(parts[2]) == primary_gid:
+                matching_groups.append(parts)
+    if len(matching_groups) != 1:
+        raise ValueError(
+            f"{raw_path}: expected one group with GID {primary_gid} in {group_file}; "
             "create the system group before installing"
         )
-    return found[0]
+
+    # Match upstream's restriction on supplementary group memberships.
+    members = [x for x in matching_groups[0][3].split(",") if x]
+    if len(members) > 1:
+        raise ValueError(f"{raw_path}: daemon's primary group has too many members")
+    return primary_gid
 
 
 def validate_privileged_files(
@@ -149,7 +180,7 @@ def validate_privileged_files(
         seen.add(raw_path)
         if entry.get("link") is not None:
             raise ValueError(f"{raw_path}: privileged symlink rejected")
-        expected_gid = PRIVILEGED_GROUPS.get((package_name, raw_path), 0)
+        expected_gid = PRIVILEGED_PRIMARY_USERS.get((package_name, raw_path), 0)
         if entry.get("uid") != 0 or entry.get("gid") != expected_gid:
             raise ValueError(f"{raw_path}: privileged file must be root:{expected_gid}")
         if not _SHA256.fullmatch(str(entry.get("sha256", ""))):
